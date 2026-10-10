@@ -1,0 +1,25 @@
+# Build output
+build/
+out/
+*.user
+*-configure.log
+*.log
+
+# Staged plugin and standalone builds (build these yourself; see README)
+dist/
+
+# Third-party source fetched by CMake
+external/
+
+# Visual Studio / CMake
+.vs/
+CMakeCache.txt
+CMakeFiles/
+*.vcxproj
+*.vcxproj.filters
+*.sln
+
+# OS noise
+Thumbs.db
+desktop.ini
+.DS_Store
