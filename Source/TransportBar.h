@@ -55,9 +55,6 @@ private:
     juce::Rectangle<int> tempoCaptionArea;
     juce::Rectangle<int> swingCaptionArea;
 
-    // Set while a control is being dragged so refresh() cannot fight the user.
-    bool editingSwing = false;
-
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (TransportBar)
 };
 

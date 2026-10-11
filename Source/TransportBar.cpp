@@ -81,17 +81,15 @@ TransportBar::TransportBar (GrooveboxProcessor& processorToUse)
     };
     clearPatternButton.onClick = [this] { handleClearPatternClicked(); };
 
+    // Written straight through, for the same reason as the channel faders: an
+    // earlier version skipped the write while a drag was in progress and relied
+    // on the release to commit it, which never happened because the 200 ms
+    // refresh repopulated the slider from the processor and pulled the thumb
+    // back. Swing then appeared to do nothing at all.
     swingSlider.onValueChange = [this]
     {
-        if (editingSwing)
-            return;
-
         processor.setSwing ((float) swingSlider.getValue());
-        refresh();
     };
-
-    swingSlider.onDragStart = [this] { editingSwing = true; };
-    swingSlider.onDragEnd   = [this] { editingSwing = false; };
 
     // Host tempo and transport can change at any time, so follow them.
     startTimer (200);
@@ -117,8 +115,7 @@ void TransportBar::refresh()
     tempoDownButton.setEnabled (! hostDriven);
     tempoUpButton.setEnabled (! hostDriven);
 
-    if (! editingSwing)
-        swingSlider.setValue ((double) processor.getSwing(), juce::dontSendNotification);
+    swingSlider.setValue ((double) processor.getSwing(), juce::dontSendNotification);
 
     swingValueLabel.setText (juce::String (juce::roundToInt (processor.getSwing() * 100.0f)) + "%",
                              juce::dontSendNotification);
