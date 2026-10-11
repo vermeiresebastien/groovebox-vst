@@ -53,7 +53,7 @@ private:
 
     juce::TextButton pitchDown12Button { "-12" };
     juce::TextButton pitchDownButton { "-" };
-    juce::Slider pitchSlider;
+    juce::Label pitchValueLabel;
     juce::TextButton pitchUpButton { "+" };
     juce::TextButton pitchUp12Button { "+12" };
 
@@ -73,10 +73,6 @@ private:
 
     // True while the channel is firing, so the timer only repaints on a change.
     bool isSounding = false;
-
-    // Set while a control is being edited so refresh() cannot fight the user.
-    bool editingLevel = false;
-    bool editingPitch = false;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (ChannelStrip)
 };

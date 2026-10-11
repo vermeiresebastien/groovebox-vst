@@ -33,13 +33,18 @@ ChannelStrip::ChannelStrip (GrooveboxProcessor& processorToUse, int channelIndex
     clearRowButton.setTooltip ("Remove every step on this channel");
     addAndMakeVisible (clearRowButton);
 
-    pitchSlider.setSliderStyle (juce::Slider::IncDecButtons);
-    pitchSlider.setTextBoxStyle (juce::Slider::TextBoxLeft, false, 44, 18);
-    pitchSlider.setIncDecButtonsMode (juce::Slider::incDecButtonsDraggable_Vertical);
-    pitchSlider.setRange (-36.0, 12.0, 1.0);
-    pitchSlider.setDoubleClickReturnValue (true, 0.0);
-    pitchSlider.setTooltip ("Pitch offset in semitones (-36 to +12)");
-    addAndMakeVisible (pitchSlider);
+    // A 24 px button pair plus a readout is about as much as a strip this narrow
+    // can hold. An IncDecButtons slider wanted 44 px for its text box alone and
+    // was being squeezed to zero width once the octave buttons took their space,
+    // so the readout is a plain label and the buttons do the stepping.
+    pitchValueLabel.setJustificationType (juce::Justification::centred);
+    pitchValueLabel.setMinimumHorizontalScale (0.7f);
+    pitchValueLabel.setColour (juce::Label::backgroundColourId, Colours::chip);
+    pitchValueLabel.setColour (juce::Label::textColourId, Colours::text);
+    pitchValueLabel.setFont (juce::Font (juce::FontOptions (11.0f)));
+    pitchValueLabel.setTooltip ("Pitch offset in semitones (-36 to +12)");
+    pitchValueLabel.setInterceptsMouseClicks (false, false);
+    addAndMakeVisible (pitchValueLabel);
 
     pitchDown12Button.setTooltip ("Down an octave");
     pitchDownButton.setTooltip ("Down a semitone");
@@ -76,29 +81,10 @@ ChannelStrip::ChannelStrip (GrooveboxProcessor& processorToUse, int channelIndex
     pitchUpButton.onClick     = [this] { nudgePitch (1); };
     pitchUp12Button.onClick   = [this] { nudgePitch (12); };
 
-    pitchSlider.onValueChange = [this]
-    {
-        if (editingPitch)
-            return;
-
-        processor.beginTransaction ("Change channel pitch");
-        processor.setChannelPitch (channel, (int) pitchSlider.getValue());
-        refresh();
-    };
-
-    pitchSlider.onDragStart = [this] { editingPitch = true; };
-    pitchSlider.onDragEnd   = [this] { editingPitch = false; };
-
     levelSlider.onValueChange = [this]
     {
-        if (editingLevel)
-            return;
-
         processor.setChannelLevel (channel, (float) levelSlider.getValue());
     };
-
-    levelSlider.onDragStart = [this] { editingLevel = true; };
-    levelSlider.onDragEnd   = [this] { editingLevel = false; };
 
     muteButton.onClick = [this] { processor.setChannelMuted (channel, muteButton.getToggleState()); };
 
@@ -128,14 +114,17 @@ void ChannelStrip::refresh()
                                    ? "Load sample..."
                                    : sampleName);
 
-    // Never fight a control the user is currently holding.
-    if (! editingPitch)
-        pitchSlider.setValue ((double) processor.getChannelPitch (channel), juce::dontSendNotification);
-
-    if (! editingLevel)
-        levelSlider.setValue ((double) processor.getChannelLevel (channel), juce::dontSendNotification);
-
+    // Mirror the processor into the controls. dontSendNotification is what keeps
+    // this from fighting the user: it updates the visuals without re-entering the
+    // value-change callbacks that write back to the processor. Skipping the write
+    // during a drag instead (as an earlier version did) meant a fader move never
+    // reached the processor at all.
+    levelSlider.setValue ((double) processor.getChannelLevel (channel), juce::dontSendNotification);
     muteButton.setToggleState (processor.isChannelMuted (channel), juce::dontSendNotification);
+
+    const auto pitch = processor.getChannelPitch (channel);
+    pitchValueLabel.setText (pitch > 0 ? "+" + juce::String (pitch) : juce::String (pitch),
+                             juce::dontSendNotification);
 
     repaint();
 }
@@ -182,16 +171,21 @@ void ChannelStrip::resized()
     area.removeFromTop (gapSize);
     pitchCaptionArea = area.removeFromTop (captionHeight); // drawn in paint()
     auto pitchRow = area.removeFromTop (pitchRowHeight);
-    pitchDown12Button.setBounds (pitchRow.removeFromLeft (24));
-    pitchRow.removeFromLeft (2);
-    pitchDownButton.setBounds (pitchRow.removeFromLeft (18));
-    pitchRow.removeFromLeft (2);
-    pitchUpButton.setBounds (pitchRow.removeFromRight (18));
-    pitchRow.removeFromRight (2);
-    pitchUp12Button.setBounds (pitchRow.removeFromRight (24));
-    pitchRow.removeFromLeft (2);
-    pitchRow.removeFromRight (2);
-    pitchSlider.setBounds (pitchRow);
+
+    // 14 + 14 + 14 + 14 button widths = 56 of the 77 px available, leaving room
+    // for the readout between them.
+    constexpr int smallButton = 14;
+    constexpr int buttonGap = 2;
+
+    pitchDown12Button.setBounds (pitchRow.removeFromLeft (smallButton));
+    pitchRow.removeFromLeft (buttonGap);
+    pitchDownButton.setBounds (pitchRow.removeFromLeft (smallButton));
+    pitchRow.removeFromLeft (buttonGap);
+    pitchUp12Button.setBounds (pitchRow.removeFromRight (smallButton));
+    pitchRow.removeFromRight (buttonGap);
+    pitchUpButton.setBounds (pitchRow.removeFromRight (smallButton));
+    pitchRow.removeFromRight (buttonGap);
+    pitchValueLabel.setBounds (pitchRow.reduced (1, 1));
 
     area.removeFromTop (gapSize);
     levelCaptionArea = area.removeFromTop (captionHeight); // drawn in paint()

@@ -158,3 +158,32 @@ target_link_libraries(GrooveboxSmokeTest PRIVATE
     juce::juce_recommended_config_flags
     juce::juce_recommended_warning_flags
 )
+
+# ---------------------------------------------------------------------------
+# Editor layout check
+#
+# Builds the real editor and reports the bounds of every control, so a control
+# laid out off-panel or at zero height is caught without needing to look at a GUI.
+# ---------------------------------------------------------------------------
+juce_add_console_app(GrooveboxLayoutTest
+    PRODUCT_NAME "GrooveboxLayoutTest"
+)
+
+target_sources(GrooveboxLayoutTest PRIVATE
+    ${GROOVEBOX_SOURCES}
+    Tests/LayoutTest.cpp
+)
+
+target_include_directories(GrooveboxLayoutTest PRIVATE Source)
+
+target_compile_definitions(GrooveboxLayoutTest PUBLIC ${GROOVEBOX_DEFINES})
+
+juce_generate_juce_header(GrooveboxLayoutTest)
+
+target_link_libraries(GrooveboxLayoutTest PRIVATE
+    juce::juce_audio_utils
+    juce::juce_dsp
+    PUBLIC
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags
+)

@@ -94,6 +94,16 @@ struct RenderResult
 {
     std::vector<float> left;
     std::vector<float> right;
+
+    float peakBetween (int from, int to) const
+    {
+        float peak = 0.0f;
+
+        for (int i = juce::jmax (0, from); i < juce::jmin (to, (int) left.size()); ++i)
+            peak = juce::jmax (peak, std::abs (left[(size_t) i]));
+
+        return peak;
+    }
 };
 
 RenderResult render (GrooveboxProcessor& processor, int totalSamples, int blockSize, double sampleRate)
@@ -408,6 +418,58 @@ int main()
 
         check (peakOf (quiet.left) < peakOf (loud.left), "a lower level is quieter",
                "quiet " + juce::String (peakOf (quiet.left), 4) + ", loud " + juce::String (peakOf (loud.left), 4));
+
+        click.deleteFile();
+    }
+
+    //======================================================================
+    std::printf ("\n[5b] moves made while the sequencer runs take effect\n");
+    {
+        // This is what a slider drag does: the transport never stops, so a level
+        // or mute change has to be picked up by the voices triggered afterwards.
+        GrooveboxProcessor processor;
+        processor.prepareToPlay (sampleRate, blockSize);
+
+        auto click = makeClickWav ("live", 600, sampleRate);
+        juce::String error;
+        processor.loadSampleIntoChannel (0, click, error);
+
+        clearAllSteps (processor);
+        for (int step = 0; step < Layout::numSteps; ++step)
+            processor.setStep (0, step, true);
+
+        rearm (processor);
+        processor.setChannelLevel (0, 1.0f);
+        processor.setPlaying (true);
+
+        // Eight steps at full level, then pull the fader down mid-flight.
+        const auto half = stepSamples * 8;
+        auto firstHalf = render (processor, half, blockSize, sampleRate);
+
+        processor.setChannelLevel (0, 0.25f);
+        auto secondHalf = render (processor, stepSamples * 8, blockSize, sampleRate);
+
+        const auto loudPeak = peakOf (firstHalf.left);
+        const auto quietPeak = peakOf (secondHalf.left);
+
+        check (loudPeak > 0.0f, "first half made sound", juce::String (loudPeak, 4));
+        check (quietPeak > 0.0f, "second half still makes sound", juce::String (quietPeak, 4));
+        check (quietPeak < loudPeak * 0.6f,
+               "lowering the level mid-playback takes effect on later hits",
+               "before " + juce::String (loudPeak, 4) + ", after " + juce::String (quietPeak, 4));
+
+        // Now mute mid-flight, again without stopping.
+        processor.setChannelLevel (0, 1.0f);
+        auto beforeMute = render (processor, stepSamples * 4, blockSize, sampleRate);
+        processor.setChannelMuted (0, true);
+        auto afterMute = render (processor, stepSamples * 4, blockSize, sampleRate);
+
+        check (peakOf (beforeMute.left) > 0.0f, "audible before muting");
+        check (peakOf (afterMute.left) == 0.0f,
+               "muting mid-playback silences later hits",
+               "peak " + juce::String (peakOf (afterMute.left), 4));
+
+        processor.setChannelMuted (0, false);
 
         click.deleteFile();
     }

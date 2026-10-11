@@ -90,10 +90,12 @@ you must point Live at it (the table above).
 The **standalone** app needs no installation at all — just run
 `build\Groovebox_artefacts\Release\Standalone\Groovebox.exe`.
 
-## Verifying the engine
+## Verifying
 
-`GrooveboxSmokeTest` drives the real processor with no UI and no host and checks
-the parts that are easy to get subtly wrong:
+Two test programs run with no GUI window and no host.
+
+`GrooveboxSmokeTest` drives the real processor and checks the parts that are easy
+to get subtly wrong:
 
 ```powershell
 build\GrooveboxSmokeTest_artefacts\Release\GrooveboxSmokeTest.exe
@@ -108,8 +110,27 @@ It asserts, among other things, that:
   the 1/8 and 1/16 grids;
 - an octave of pitch shortens a sample, mute silences a channel, and a lower
   level is quieter;
+- a level or mute change made **while the sequencer is running** takes effect on
+  the hits that follow;
 - a mono sample stays centred;
 - pattern, pitch, names, swing and grid survive a save/load round trip.
+
+`GrooveboxLayoutTest` builds the real editor and inspects it. A control laid out
+at zero size or outside its parent cannot be clicked, and no audio test can see
+that:
+
+```powershell
+build\GrooveboxLayoutTest_artefacts\Release\GrooveboxLayoutTest.exe
+```
+
+It reports the bounds of every control, flags any with no size or outside their
+parent, and drives the level fader with synthetic mouse events to confirm the
+change actually reaches the processor.
+
+Run both after any change to the editor or the engine. Both have already caught
+real bugs: swing that was computed but never applied, a step that fired early
+after a bar wrap, a pitch control laid out at 0 px wide, and faders whose moves
+never reached the processor.
 
 ## How it is put together
 
