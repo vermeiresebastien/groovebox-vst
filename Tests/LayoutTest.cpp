@@ -633,6 +633,82 @@ int main()
         }
     }
 
+    //======================================================================
+    // Row shifting, through the buttons on the strip.
+    std::printf ("\n-- shifting a row from the strip --\n");
+
+    if (anyStrip != nullptr)
+    {
+        juce::Button* shiftLeft = nullptr;
+        juce::Button* shiftRight = nullptr;
+
+        for (int i = 0; i < anyStrip->getNumChildComponents(); ++i)
+        {
+            auto* button = dynamic_cast<juce::TextButton*> (anyStrip->getChildComponent (i));
+
+            if (button == nullptr)
+                continue;
+
+            const auto text = button->getButtonText();
+
+            // The strip is channel 0, so the button text identifies the direction.
+            if (text == juce::CharPointer_UTF8 ("\xe2\x86\x90"))
+                shiftLeft = button;
+            else if (text == juce::CharPointer_UTF8 ("\xe2\x86\x92"))
+                shiftRight = button;
+        }
+
+        ++checked;
+
+        if (shiftLeft == nullptr || shiftRight == nullptr)
+        {
+            fail ("the strip has no shift arrows");
+        }
+        else
+        {
+            pass ("the strip has both shift arrows");
+
+            // Put a step on 0 with a velocity that identifies it.
+            for (int s = 0; s < Layout::numSteps; ++s)
+                processor.setStep (0, s, false);
+
+            processor.setStep (0, 0, true);
+            processor.setStepVelocity (0, 0, 0.3f);
+
+            // Button::triggerClick posts its message rather than calling through,
+            // and this test has no message loop to dispatch it, so the click
+            // callback is invoked directly — the same thing a real click runs.
+            const auto clickButton = [] (juce::Button& button)
+            {
+                if (button.onClick != nullptr)
+                    button.onClick();
+            };
+
+            clickButton (*shiftRight);
+
+            ++checked;
+
+            if (! processor.isStepOn (0, 0) && processor.isStepOn (0, 1)
+                && std::abs (processor.getStepVelocity (0, 1) - 0.3f) < 0.001f)
+                pass ("the right arrow moves the row one step later, velocity included");
+            else
+                fail ("the right arrow did not shift the row"
+                        + juce::String (processor.isStepOn (0, 1) ? "" : " (step 1 not set)")
+                        + " velocity at 0 " + juce::String (processor.getStepVelocity (0, 0), 3)
+                        + ", at 1 " + juce::String (processor.getStepVelocity (0, 1), 3));
+
+            clickButton (*shiftLeft);
+
+            ++checked;
+
+            if (processor.isStepOn (0, 0) && std::abs (processor.getStepVelocity (0, 0) - 0.3f) < 0.001f)
+                pass ("the left arrow moves it back");
+            else
+                fail ("the left arrow did not move the row back (velocity at 0 "
+                        + juce::String (processor.getStepVelocity (0, 0), 3) + ")");
+        }
+    }
+
     std::printf ("\n%s  %d checks, %d problems\n",
                  problems == 0 ? "PASSED" : "FAILED", checked, problems);
 

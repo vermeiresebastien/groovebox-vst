@@ -201,6 +201,38 @@ void GrooveboxProcessor::resetVelocities()
 }
 
 //==============================================================================
+// Row shifting
+
+void GrooveboxProcessor::shiftChannelRow (int channel, int steps)
+{
+    if (! juce::isPositiveAndBelow (channel, Layout::numChannels) || steps == 0)
+        return;
+
+    std::array<bool, (size_t) Layout::numSteps> on {};
+    std::array<float, (size_t) Layout::numSteps> velocity {};
+
+    for (int step = 0; step < Layout::numSteps; ++step)
+    {
+        on[(size_t) step] = sequencerState.pattern[(size_t) channel][(size_t) step].load();
+        velocity[(size_t) step] = sequencerState.velocity[(size_t) channel][(size_t) step].load();
+    }
+
+    // Positive shifts move later; the modulo keeps it inside the bar both ways.
+    for (int step = 0; step < Layout::numSteps; ++step)
+    {
+        const auto from = ((step - steps) % Layout::numSteps + Layout::numSteps) % Layout::numSteps;
+
+        sequencerState.pattern[(size_t) channel][(size_t) step].store (on[(size_t) from]);
+        sequencerState.velocity[(size_t) channel][(size_t) step].store (velocity[(size_t) from]);
+    }
+
+    pushPatternToTree();
+
+    if (onStateChanged != nullptr)
+        onStateChanged();
+}
+
+//==============================================================================
 // Channels
 
 void GrooveboxProcessor::setChannelName (int channel, const juce::String& name)

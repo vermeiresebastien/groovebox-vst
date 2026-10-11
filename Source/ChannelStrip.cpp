@@ -30,8 +30,14 @@ ChannelStrip::ChannelStrip (GrooveboxProcessor& processorToUse, int channelIndex
 
     soundButton.setTooltip ("Click to load a sample for this channel");
     addAndMakeVisible (soundButton);
+    clearRowButton.setButtonText ("Clear");
     clearRowButton.setTooltip ("Remove every step on this channel");
     addAndMakeVisible (clearRowButton);
+
+    shiftLeftButton.setTooltip ("Move this whole row one step earlier, with its velocities");
+    shiftRightButton.setTooltip ("Move this whole row one step later, with its velocities");
+    addAndMakeVisible (shiftLeftButton);
+    addAndMakeVisible (shiftRightButton);
 
     // A 24 px button pair plus a readout is about as much as a strip this narrow
     // can hold. An IncDecButtons slider wanted 44 px for its text box alone and
@@ -115,6 +121,9 @@ ChannelStrip::ChannelStrip (GrooveboxProcessor& processorToUse, int channelIndex
     };
 
     muteButton.onClick = [this] { processor.setChannelMuted (channel, muteButton.getToggleState()); };
+    clearRowButton.onClick = [this] { handleClearRowClicked(); };
+    shiftLeftButton.onClick = [this] { handleShiftRow (-1); };
+    shiftRightButton.onClick = [this] { handleShiftRow (1); };
 
     // Double-click the label to rename; the change is committed on editor close.
     nameLabel.onTextChange = [this] { handleNameChanged(); };
@@ -203,7 +212,16 @@ void ChannelStrip::resized()
     area.removeFromTop (gapSize);
     soundButton.setBounds (area.removeFromTop (soundHeight));
     area.removeFromTop (2);
-    clearRowButton.setBounds (area.removeFromTop (clearRowHeight));
+
+    // Clear and the two shift arrows share one row: they are all row operations,
+    // and the arrows are small enough to stay clickable at this width.
+    auto rowButtons = area.removeFromTop (clearRowHeight);
+    constexpr int shiftWidth = 18;
+    shiftLeftButton.setBounds (rowButtons.removeFromLeft (shiftWidth));
+    rowButtons.removeFromLeft (3);
+    shiftRightButton.setBounds (rowButtons.removeFromLeft (shiftWidth));
+    rowButtons.removeFromLeft (3);
+    clearRowButton.setBounds (rowButtons);
 
     area.removeFromTop (gapSize);
     pitchCaptionArea = area.removeFromTop (captionHeight); // drawn in paint()
@@ -398,6 +416,16 @@ void ChannelStrip::handleClearRowClicked()
     if (processor.onStateChanged != nullptr)
         processor.onStateChanged();
 
+    refresh();
+}
+
+void ChannelStrip::handleShiftRow (int steps)
+{
+    processor.beginTransaction (steps > 0 ? "Shift row later" : "Shift row earlier");
+    processor.shiftChannelRow (channel, steps);
+
+    // The processor already told the editor; refreshing here keeps this strip's
+    // own controls in step straight away.
     refresh();
 }
 

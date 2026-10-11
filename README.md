@@ -18,6 +18,7 @@ sample you drag onto its row, and which also plays from MIDI notes.
 | Tempo | Follows the host project tempo; in the standalone build it has its own transport and tempo |
 | Mix | Per-channel level and mute, plus a "clear row" button |
 | Row editing | Click a cell to toggle it; drag across cells to paint a run |
+| **Shift a row** | **The ← and → buttons in a channel strip turn that whole row one step earlier or later, and every step's velocity goes with it** |
 | Persistence | Pattern, pitch, levels, mutes, names, colours and sample paths are saved in the session |
 
 ## Step velocity
@@ -34,6 +35,10 @@ high the pointer is in the row, so the bar follows the pointer.
   switched off, and dragging to nothing never switches a step off. An on step is
   never stored as "off", so a quiet hit stays a hit.
 - **Press 100%** next to the toggle to put every step back to full velocity.
+- **Shifting a row moves its velocities too.** The ← and → buttons in a channel
+  strip turn that row one step earlier or later, and each step carries its velocity
+  with it, so an accented pattern stays accented after it moves. The last step
+  wraps round to the first rather than falling off the end.
 - Outside velocity mode the steps are dimmed by their velocity, so you can see the
   dynamics without opening the overlay.
 - The grid's velocity and a played note's velocity are separate: the grid uses the
@@ -218,7 +223,9 @@ It asserts, among other things, that:
 - the envelope values survive a save/load round trip, and a channel that was never
   touched keeps the defaults;
 - step velocities survive a save and load, including a very quiet step, and an off
-  step never comes back as on.
+  step never comes back as on;
+- shifting a row carries each step's velocity with it, wraps the last step to the
+  first, is a no-op over a whole bar, and leaves every other row alone.
 
 `GrooveboxLayoutTest` builds the real editor and inspects it. A control laid out
 at zero size or outside its parent cannot be clicked, and no audio test can see

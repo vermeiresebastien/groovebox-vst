@@ -96,6 +96,16 @@ public:
     /** Puts every step's velocity back to full. */
     void resetVelocities();
 
+    /**
+        Rotates one channel's row, carrying each step's velocity with it.
+
+        A shift of +1 moves every step one place later, wrapping the last step back
+        to the first, so the pattern is turned rather than pushed off the end. The
+        step and its velocity always travel together, which is the whole point of
+        shifting the row rather than retyping it.
+    */
+    void shiftChannelRow (int channel, int steps);
+
     void clearPattern();
     void clearChannelRow (int channel);
 

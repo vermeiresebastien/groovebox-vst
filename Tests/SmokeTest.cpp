@@ -639,6 +639,86 @@ int main()
     }
 
     //======================================================================
+    std::printf ("\n[7c] shifting a row carries its velocities\n");
+    {
+        GrooveboxProcessor processor;
+        processor.prepareToPlay (sampleRate, blockSize);
+
+        // One step on with a velocity that identifies it, so a shift that lost the
+        // velocity would be obvious.
+        const auto setUp = [&processor]
+        {
+            clearAllSteps (processor);
+
+            for (int step = 0; step < Layout::numSteps; ++step)
+                processor.setStepVelocity (2, step, 1.0f);
+
+            processor.setStep (2, 0, true);
+            processor.setStepVelocity (2, 0, 0.25f);
+        };
+
+        setUp();
+
+        // Moving later by one puts the step at index 1...
+        processor.shiftChannelRow (2, 1);
+        check (! processor.isStepOn (2, 0), "after a shift right, step 0 is empty");
+        check (processor.isStepOn (2, 1), "the step moved one place later");
+
+        // ...and its velocity travelled with it, rather than staying behind.
+        check (std::abs (processor.getStepVelocity (2, 1) - 0.25f) < 0.001f,
+               "the velocity moved with the step",
+               juce::String (processor.getStepVelocity (2, 1), 3));
+        check (std::abs (processor.getStepVelocity (2, 0) - 1.0f) < 0.001f,
+               "the place it left holds the default velocity again",
+               juce::String (processor.getStepVelocity (2, 0), 3));
+
+        // Back the other way restores it exactly.
+        processor.shiftChannelRow (2, -1);
+        check (processor.isStepOn (2, 0) && ! processor.isStepOn (2, 1),
+               "shifting back returns the step to where it was");
+        check (std::abs (processor.getStepVelocity (2, 0) - 0.25f) < 0.001f,
+               "and its velocity came back too",
+               juce::String (processor.getStepVelocity (2, 0), 3));
+
+        // The last step wraps round to the first instead of falling off the end.
+        setUp();
+        processor.setStep (2, 15, true);
+        processor.setStepVelocity (2, 15, 0.6f);
+        processor.shiftChannelRow (2, 1);
+
+        check (processor.isStepOn (2, 0), "the last step wraps round to the first");
+        check (std::abs (processor.getStepVelocity (2, 0) - 0.6f) < 0.001f,
+               "and its velocity wrapped with it",
+               juce::String (processor.getStepVelocity (2, 0), 3));
+
+        // Shifting by a whole bar is a no-op, in either direction.
+        setUp();
+        processor.setStepVelocity (2, 0, 0.25f);
+
+        processor.shiftChannelRow (2, Layout::numSteps);
+        check (processor.isStepOn (2, 0) && std::abs (processor.getStepVelocity (2, 0) - 0.25f) < 0.001f,
+               "shifting by a whole bar changes nothing");
+
+        processor.shiftChannelRow (2, -Layout::numSteps);
+        check (processor.isStepOn (2, 0) && std::abs (processor.getStepVelocity (2, 0) - 0.25f) < 0.001f,
+               "shifting back by a whole bar changes nothing either");
+
+        // Only the row that was asked for moves.
+        setUp();
+        processor.setStep (5, 3, true);
+
+        processor.shiftChannelRow (2, 1);
+
+        check (processor.isStepOn (5, 3) && ! processor.isStepOn (5, 4),
+               "another channel's row is untouched");
+
+        // Out-of-range requests are ignored rather than crashing.
+        processor.shiftChannelRow (-1, 1);
+        processor.shiftChannelRow (Layout::numChannels, 1);
+        check (true, "a shift outside the channel range is ignored");
+    }
+
+    //======================================================================
     std::printf ("\n[8] MIDI notes play the channels\n");
     {
         GrooveboxProcessor processor;

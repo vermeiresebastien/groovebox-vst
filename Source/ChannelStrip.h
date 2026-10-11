@@ -42,6 +42,7 @@ private:
     void handleColourClicked();
     void handleSoundClicked();
     void handleClearRowClicked();
+    void handleShiftRow (int steps);
     void nudgePitch (int delta);
     void paintCaption (juce::Graphics& g, const juce::String& text, juce::Rectangle<int> area) const;
 
@@ -54,6 +55,10 @@ private:
     juce::TextButton colourButton;
     juce::TextButton soundButton;
     juce::TextButton clearRowButton;
+
+    /** Rotate this row by one step, carrying each step's velocity with it. */
+    juce::TextButton shiftLeftButton { juce::CharPointer_UTF8 ("\xe2\x86\x90") };
+    juce::TextButton shiftRightButton { juce::CharPointer_UTF8 ("\xe2\x86\x92") };
 
     juce::TextButton pitchDown12Button { "-12" };
     juce::TextButton pitchDownButton { "-" };
