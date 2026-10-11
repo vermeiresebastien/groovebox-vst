@@ -47,6 +47,13 @@ GrooveboxEditor::GrooveboxEditor (GrooveboxProcessor& p)
         refreshAll();
     };
 
+    // The velocity toggle lives in the transport bar but changes how the grid
+    // behaves, so the editor joins the two.
+    transportBar.onVelocityModeChanged = [this] (bool editVelocity)
+    {
+        stepGrid.setVelocityMode (editVelocity);
+    };
+
     setSize (editorWidth, editorHeight);
     setResizable (true, true);
     setResizeLimits (editorWidth, editorHeight, 2200, 1400);
@@ -55,6 +62,7 @@ GrooveboxEditor::GrooveboxEditor (GrooveboxProcessor& p)
 GrooveboxEditor::~GrooveboxEditor()
 {
     processor.onStateChanged = nullptr;
+    transportBar.onVelocityModeChanged = nullptr;
     setLookAndFeel (nullptr);
 }
 

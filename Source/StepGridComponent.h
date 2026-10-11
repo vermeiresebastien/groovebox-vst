@@ -36,6 +36,8 @@ public:
     void mouseDown (const juce::MouseEvent& e) override;
     void mouseDrag (const juce::MouseEvent& e) override;
     void mouseUp (const juce::MouseEvent& e) override;
+    void mouseMove (const juce::MouseEvent& e) override;
+    void mouseExit (const juce::MouseEvent& e) override;
 
     //==========================================================================
     // FileDragAndDropTarget
@@ -53,21 +55,32 @@ public:
     /** Repaints the grid; call this after the pattern changed elsewhere. */
     void refresh();
 
+    /**
+        Switches between toggling steps and editing their velocity.
+
+        In velocity mode a drag inside a cell sets how hard that step hits, drawn
+        as a bar rising from the bottom of the cell. The step's on/off state is
+        left alone, so a level can be set before a step is switched on, and
+        dragging down to nothing never switches the step off.
+    */
+    void setVelocityMode (bool shouldEditVelocity);
+    bool isVelocityMode() const noexcept { return velocityMode; }
+
     /** Channel whose row contains `y`, or -1 when y is outside every row. */
     int channelAtY (int y) const;
 
 private:
-    //==========================================================================
-    // Timer
-    //==========================================================================
-    void timerCallback() override;
-
     /** A cell address; a channel of -1 means "no cell" (e.g. in the label column). */
     struct Cell
     {
         int channel = -1;
         int step = -1;
     };
+
+    //==========================================================================
+    // Timer
+    //==========================================================================
+    void timerCallback() override;
 
     Cell cellAt (juce::Point<int> position) const;
 
@@ -85,6 +98,28 @@ private:
 
     /** Sets the highlighted drop row, repainting only when it actually changed. */
     void setDragHoverChannel (int channel);
+
+    //==========================================================================
+    // Velocity editing
+    //==========================================================================
+
+    /** Draws the velocity bars and the value under the pointer. */
+    void paintVelocityOverlay (juce::Graphics& g);
+
+    /** Sets one cell's velocity from where the pointer is inside that cell. */
+    void setVelocityFromPointer (int channel, int step, juce::Point<int> position);
+
+    bool velocityMode = false;
+
+    /** Cell the pointer is over in velocity mode, or {-1, -1}. */
+    Cell velocityHover;
+
+    /** Cell the velocity drag started in, so the drag stays on one step. */
+    Cell velocityDragCell;
+
+    int velocityDragStartY = 0;
+    float velocityDragStartValue = 1.0f;
+    bool isDraggingVelocity = false;
 
     GrooveboxProcessor& processor;
 

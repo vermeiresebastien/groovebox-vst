@@ -168,6 +168,39 @@ void GrooveboxProcessor::clearChannelRow (int channel)
 }
 
 //==============================================================================
+// Velocity
+
+float GrooveboxProcessor::getStepVelocity (int channel, int step) const
+{
+    if (! juce::isPositiveAndBelow (channel, Layout::numChannels)
+        || ! juce::isPositiveAndBelow (step, Layout::numSteps))
+        return 1.0f;
+
+    return sequencerState.velocity[(size_t) channel][(size_t) step].load();
+}
+
+void GrooveboxProcessor::setStepVelocity (int channel, int step, float velocity)
+{
+    if (! juce::isPositiveAndBelow (channel, Layout::numChannels)
+        || ! juce::isPositiveAndBelow (step, Layout::numSteps))
+        return;
+
+    // Velocity edits are as frequent as pattern edits, so they stay out of the
+    // undo manager for the same reason: a drag would create one entry per cell.
+    sequencerState.velocity[(size_t) channel][(size_t) step].store (juce::jlimit (0.0f, 1.0f, velocity));
+    pushPatternToTree();
+}
+
+void GrooveboxProcessor::resetVelocities()
+{
+    for (int channel = 0; channel < Layout::numChannels; ++channel)
+        for (int step = 0; step < Layout::numSteps; ++step)
+            sequencerState.velocity[(size_t) channel][(size_t) step].store (1.0f);
+
+    pushPatternToTree();
+}
+
+//==============================================================================
 // Channels
 
 void GrooveboxProcessor::setChannelName (int channel, const juce::String& name)
@@ -479,13 +512,27 @@ void GrooveboxProcessor::pushChannelToTree (int channel)
 
 void GrooveboxProcessor::pushPatternToTree()
 {
-    // One character per step keeps the saved state compact and readable.
+    // Two characters per step: 00 for an off step, 01..99 for a step that fires,
+    // carrying its velocity. Fixed width, so a row is always 32 characters and the
+    // decoder never has to guess where it is.
+    //
+    // An on step never stores 00, so that value keeps meaning "off" and a step can
+    // never be silently switched off by dragging its velocity to the bottom.
     juce::String encoded;
 
     for (int channel = 0; channel < Layout::numChannels; ++channel)
     {
         for (int step = 0; step < Layout::numSteps; ++step)
-            encoded += sequencerState.pattern[(size_t) channel][(size_t) step].load() ? '1' : '0';
+        {
+            const auto on = sequencerState.pattern[(size_t) channel][(size_t) step].load();
+            const auto velocity = sequencerState.velocity[(size_t) channel][(size_t) step].load();
+
+            const auto level = on
+                                 ? juce::jlimit (1, 99, juce::roundToInt (velocity * 100.0f))
+                                 : 0;
+
+            encoded += juce::String (level).paddedLeft ('0', 2);
+        }
 
         if (channel < Layout::numChannels - 1)
             encoded += ',';
@@ -503,19 +550,47 @@ void GrooveboxProcessor::applyTree (const juce::ValueTree& tree)
     sequencerState.swingGrid.store ((int) tree.getProperty ("swingGrid", 4));
     sequencerState.manualTempo.store ((double) tree.getProperty ("tempo", 120.0));
 
-    // Restore the pattern.
+    // Start from nothing, then read whatever the pattern property holds.
+    for (int channel = 0; channel < Layout::numChannels; ++channel)
+    {
+        for (int step = 0; step < Layout::numSteps; ++step)
+        {
+            sequencerState.pattern[(size_t) channel][(size_t) step].store (false);
+            sequencerState.velocity[(size_t) channel][(size_t) step].store (1.0f);
+        }
+    }
+
     const auto encoded = tree.getProperty ("pattern").toString();
     const auto rows = juce::StringArray::fromTokens (encoded, ",", "");
 
-    for (int channel = 0; channel < Layout::numChannels; ++channel)
+    for (int channel = 0; channel < juce::jmin (rows.size(), Layout::numChannels); ++channel)
     {
-        const auto row = channel < rows.size() ? rows[channel] : juce::String();
+        const auto row = rows[channel].trim();
+
+        // Sessions written before velocities existed hold one character per step,
+        // where 1 meant on. Those steps come back at full velocity.
+        const auto legacy = row.length() == Layout::numSteps;
 
         for (int step = 0; step < Layout::numSteps; ++step)
         {
-            const auto on = step < row.length() && row[step] == '1';
+            if (legacy)
+            {
+                const auto on = step < row.length() && row[step] == '1';
+                sequencerState.pattern[(size_t) channel][(size_t) step].store (on);
+                sequencerState.velocity[(size_t) channel][(size_t) step].store (1.0f);
+                continue;
+            }
+
+            const auto at = step * 2;
+
+            if (at + 1 >= row.length())
+                break;
+
+            const auto level = row.substring (at, at + 2).getIntValue();
+            const auto on = level > 0;
+
             sequencerState.pattern[(size_t) channel][(size_t) step].store (on);
-        }
+            sequencerState.velocity[(size_t) channel][(size_t) step].store (on ? (float) level / 100.0f : 1.0f);        }
     }
 
     for (int channel = 0; channel < Layout::numChannels; ++channel)

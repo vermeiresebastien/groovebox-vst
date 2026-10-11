@@ -592,6 +592,53 @@ int main()
     }
 
     //======================================================================
+    std::printf ("\n[7b] step velocities survive a save and load\n");
+    {
+        GrooveboxProcessor processor;
+        processor.prepareToPlay (sampleRate, blockSize);
+
+        clearAllSteps (processor);
+
+        // A spread of values, including the two that are easy to get wrong: full
+        // velocity, and the quietest step the encoding can express.
+        processor.setStep (0, 0, true);
+        processor.setStepVelocity (0, 0, 1.0f);
+
+        processor.setStep (0, 1, true);
+        processor.setStepVelocity (0, 1, 0.5f);
+
+        processor.setStep (3, 6, true);
+        processor.setStepVelocity (3, 6, 0.01f);
+
+        // An off step carries a velocity too, which has to come back as off.
+        processor.setStep (5, 9, false);
+        processor.setStepVelocity (5, 9, 0.8f);
+
+        juce::MemoryBlock saved;
+        processor.getStateInformation (saved);
+
+        GrooveboxProcessor restored;
+        restored.prepareToPlay (sampleRate, blockSize);
+        restored.setStateInformation (saved.getData(), (int) saved.getSize());
+
+        const auto near = [] (float a, float b) { return std::abs (a - b) < 0.02f; };
+
+        check (restored.isStepOn (0, 0), "a full-velocity step is still on");
+        check (near (restored.getStepVelocity (0, 0), 1.0f), "full velocity survived",
+               juce::String (restored.getStepVelocity (0, 0), 3));
+        check (near (restored.getStepVelocity (0, 1), 0.5f), "half velocity survived",
+               juce::String (restored.getStepVelocity (0, 1), 3));
+        check (near (restored.getStepVelocity (3, 6), 0.01f), "a very quiet step survived",
+               juce::String (restored.getStepVelocity (3, 6), 3));
+        check (! restored.isStepOn (5, 9), "an off step stayed off even with a velocity set",
+               juce::String (restored.getStepVelocity (5, 9), 3));
+        check (! restored.isStepOn (0, 2), "a step that was never set stayed off");
+
+        // A step that is on and quiet must not read back as off.
+        check (restored.isStepOn (3, 6), "a quiet step is still on");
+    }
+
+    //======================================================================
     std::printf ("\n[8] MIDI notes play the channels\n");
     {
         GrooveboxProcessor processor;

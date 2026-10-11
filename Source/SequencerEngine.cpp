@@ -345,7 +345,9 @@ void SequencerEngine::fireStep (int step)
         const auto pitch = state.pitch[(size_t) channel].load();
         const auto pitchRatio = std::pow (2.0, (double) pitch / 12.0);
 
-        trigger (channel, rateRatio * pitchRatio, 1.0f, false);
+        // A grid hit carries the velocity stored against its step, so the grid has
+        // the same dynamics a played note does.
+        trigger (channel, rateRatio * pitchRatio, state.velocity[(size_t) channel][(size_t) step].load(), false);
     }
 }
 

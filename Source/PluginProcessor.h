@@ -89,6 +89,13 @@ public:
     void setStep (int channel, int step, bool shouldBeOn);
     void toggleStep (int channel, int step);
 
+    /** Velocity of one step, 0..1. Steps default to full velocity. */
+    float getStepVelocity (int channel, int step) const;
+    void setStepVelocity (int channel, int step, float velocity);
+
+    /** Puts every step's velocity back to full. */
+    void resetVelocities();
+
     void clearPattern();
     void clearChannelRow (int channel);
 

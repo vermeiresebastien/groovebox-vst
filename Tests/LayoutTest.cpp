@@ -303,6 +303,7 @@ int main()
 
     TransportBar* transportBar = nullptr;
     ChannelStrip* anyStrip = nullptr;
+    StepGridComponent* stepGrid = nullptr;
 
     //======================================================================
     std::printf ("\n-- editor children --\n");
@@ -316,6 +317,8 @@ int main()
 
         if (dynamic_cast<TransportBar*> (child) != nullptr)
             transportBar = dynamic_cast<TransportBar*> (child);
+        else if (dynamic_cast<StepGridComponent*> (child) != nullptr)
+            stepGrid = dynamic_cast<StepGridComponent*> (child);
         else if (dynamic_cast<ChannelStrip*> (child) != nullptr && anyStrip == nullptr)
             anyStrip = dynamic_cast<ChannelStrip*> (child);
 
@@ -485,6 +488,148 @@ int main()
                         + ", expected a shift of " + juce::String (expectedShift) + ")");
 
             click.deleteFile();
+        }
+    }
+
+    //======================================================================
+    // Velocity editing has to work through the real UI: the button switches the
+    // grid over, a drag in a cell sets the step's velocity, and the audio that
+    // comes out is quieter. That whole chain is invisible to an audio-only test.
+    std::printf ("\n-- velocity editing --\n");
+
+    if (transportBar != nullptr && stepGrid != nullptr)
+    {
+        // Find the velocity toggle in the transport bar.
+        juce::Button* velocityButton = nullptr;
+
+        for (int i = 0; i < transportBar->getNumChildComponents(); ++i)
+        {
+            auto* button = dynamic_cast<juce::TextButton*> (transportBar->getChildComponent (i));
+
+            if (button != nullptr && button->getButtonText() == "Velocity")
+                velocityButton = button;
+        }
+
+        ++checked;
+
+        if (velocityButton == nullptr)
+        {
+            fail ("no Velocity button in the transport bar");
+        }
+        else
+        {
+            // Clicking it should switch the grid over, through the editor's wiring.
+            velocityButton->setToggleState (true, juce::sendNotificationSync);
+
+            ++checked;
+
+            if (stepGrid->isVelocityMode())
+                pass ("the Velocity button switches the grid into velocity mode");
+            else
+                fail ("the Velocity button did not reach the grid");
+
+            // Now drag inside a cell and check the processor recorded a velocity.
+            processor.setStep (0, 0, true);
+            processor.setStepVelocity (0, 0, 1.0f);
+
+            // Cell (channel 11, step 0) is the top-left of the grid, so it is easy
+            // to locate without knowing the row order.
+            const auto cell = juce::Rectangle<int> (0, 0, 1, 1);
+            juce::ignoreUnused (cell);
+
+            // Use the grid's own geometry: drag in the first column of the bottom
+            // row, which is channel 0.
+            const auto gridArea = stepGrid->getLocalBounds();
+            const auto labelWidth = juce::jmin (108, juce::jmax (40, gridArea.getWidth() / 4));
+            const auto gridX = gridArea.getX() + labelWidth + 3;
+            const auto rowSpan = juce::jmax (2, (gridArea.getHeight() - (Layout::numChannels - 1) * 3) / Layout::numChannels);
+            const auto bottomRowY = gridArea.getY() + (Layout::numChannels - 1) * (rowSpan + 3);
+
+            // A quarter of the way up the row should land near 25%.
+            const auto targetY = bottomRowY + rowSpan - juce::jmax (2, rowSpan / 4);
+            const auto point = juce::Point<int> (gridX + 3, targetY);
+
+            stepGrid->mouseDown (makeEvent (*stepGrid, point.toFloat()));
+            stepGrid->mouseUp (makeEvent (*stepGrid, point.toFloat()));
+
+            const auto recorded = processor.getStepVelocity (0, 0);
+
+            ++checked;
+
+            if (recorded > 0.05f && recorded < 0.6f)
+                pass ("a drag in a step sets its velocity (" + juce::String (recorded, 2) + ")");
+            else
+                fail ("a drag in a step did not set a sensible velocity (got "
+                        + juce::String (recorded, 2) + ")");
+
+            // And the velocity has to reach the audio: compare a full-velocity hit
+            // against the one just set.
+            auto click = makeClickWav ("velocity", 400, 44100.0);
+            juce::String loadError;
+
+            if (click.existsAsFile() && processor.loadSampleIntoChannel (0, click, loadError))
+            {
+                // A fresh processor per render, so the previous hit's tail cannot
+                // leak into the next measurement.
+                const auto renderHit = [&click] (float velocity)
+                {
+                    GrooveboxProcessor p;
+                    p.prepareToPlay (44100.0, 256);
+
+                    juce::String err;
+                    p.loadSampleIntoChannel (0, click, err);
+
+                    for (int s = 0; s < Layout::numSteps; ++s)
+                        p.setStep (0, s, false);
+
+                    p.setStep (0, 0, true);
+                    p.setStepVelocity (0, 0, velocity);
+                    p.setSwing (0.0f);
+                    p.setSwingGrid (4);
+                    p.setManualTempo (120.0);
+                    p.setPlaying (true);
+
+                    juce::AudioBuffer<float> buffer (2, 256);
+                    juce::MidiBuffer midi;
+                    float peak = 0.0f;
+
+                    for (int block = 0; block < 8; ++block)
+                    {
+                        buffer.clear();
+                        p.processBlock (buffer, midi);
+                        peak = juce::jmax (peak, buffer.getMagnitude (0, buffer.getNumSamples()));
+                    }
+
+                    p.setPlaying (false);
+                    return peak;
+                };
+
+                const auto loud = renderHit (1.0f);
+                const auto quiet = renderHit (0.25f);
+
+                ++checked;
+
+                if (loud > 0.0f && quiet > 0.0f && quiet < loud * 0.5f)
+                    pass ("a step's velocity scales its audio ("
+                            + juce::String (loud, 3) + " full vs " + juce::String (quiet, 3) + " at 25%)");
+                else
+                    fail ("velocity did not scale the audio (full " + juce::String (loud, 3)
+                            + ", 25% " + juce::String (quiet, 3) + ")");
+
+                click.deleteFile();
+            }
+
+            // Leaving velocity mode must switch the grid back.
+            velocityButton->setToggleState (false, juce::sendNotificationSync);
+
+            ++checked;
+
+            if (! stepGrid->isVelocityMode())
+                pass ("clearing the Velocity button returns the grid to step editing");
+            else
+                fail ("the grid stayed in velocity mode");
+
+            processor.setPlaying (false);
         }
     }
 

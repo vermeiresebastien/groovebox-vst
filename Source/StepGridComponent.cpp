@@ -223,7 +223,11 @@ void StepGridComponent::paint (juce::Graphics& g)
 
             if (processor.isStepOn (channel, step))
             {
-                g.setColour (channelColour);
+                // Dimmed by velocity, so the dynamics are visible without opening
+                // the velocity overlay.
+                const auto velocity = juce::jlimit (0.0f, 1.0f, processor.getStepVelocity (channel, step));
+
+                g.setColour (channelColour.withMultipliedAlpha (0.35f + 0.65f * velocity));
                 g.fillRoundedRectangle (cell, corner);
             }
             else
@@ -282,6 +286,103 @@ void StepGridComponent::paint (juce::Graphics& g)
             g.drawText ("Drop to load", row, juce::Justification::centred, true);
         }
     }
+
+    // Velocity editing replaces the plain on/off cells with a bar per step.
+    if (velocityMode)
+        paintVelocityOverlay (g);
+}
+
+void StepGridComponent::setVelocityMode (bool shouldEditVelocity)
+{
+    if (velocityMode == shouldEditVelocity)
+        return;
+
+    velocityMode = shouldEditVelocity;
+
+    if (! velocityMode)
+    {
+        velocityHover = {};
+        isDraggingVelocity = false;
+    }
+
+    repaint();
+}
+
+void StepGridComponent::setVelocityFromPointer (int channel, int step, juce::Point<int> position)
+{
+    const auto row = getRowBounds (channel);
+
+    if (row.isEmpty())
+        return;
+
+    // The value comes from how high the pointer sits in the row, so the bar
+    // follows the pointer. Rounded to twentieths so it is easy to land on a value
+    // and reads as a tidy number.
+    const auto fromBottom = (float) (row.getBottom() - position.y) / (float) juce::jmax (1, row.getHeight());
+    const auto rounded = juce::jlimit (0.0f, 1.0f, std::round (fromBottom * 20.0f) / 20.0f);
+
+    if (std::abs (rounded - processor.getStepVelocity (channel, step)) < 0.001f)
+        return;
+
+    processor.setStepVelocity (channel, step, rounded);
+    repaint();
+}
+
+void StepGridComponent::paintVelocityOverlay (juce::Graphics& g)
+{
+    const auto valueFont = juce::Font (juce::FontOptions (9.0f));
+
+    for (int channel = 0; channel < Layout::numChannels; ++channel)
+    {
+        for (int step = 0; step < Layout::numSteps; ++step)
+        {
+            const auto cell = getCellBounds (channel, step);
+
+            if (cell.isEmpty())
+                continue;
+
+            const auto velocity = juce::jlimit (0.0f, 1.0f, processor.getStepVelocity (channel, step));
+            const auto on = processor.isStepOn (channel, step);
+            const auto colour = processor.getChannelColour (channel);
+
+            // A bar rising from the bottom of the cell: its height is the velocity,
+            // and it is dimmed while the step is off so an on step still stands out.
+            const auto body = cell.toFloat().reduced (1.0f);
+            const auto barHeight = juce::jmax (2.0f, body.getHeight() * velocity);
+            const auto bar = body.withTop (body.getBottom() - barHeight);
+
+            g.setColour (on ? colour : colour.withAlpha (0.35f));
+            g.fillRoundedRectangle (bar, 2.0f);
+
+            g.setColour (on ? Colours::text.withAlpha (0.45f) : Colours::chipBorder);
+            g.drawRoundedRectangle (cell.toFloat().reduced (0.5f), (float) cornerRadius * 0.5f, 1.0f);
+        }
+    }
+
+    // The value under the pointer, so a drag is precise rather than guesswork.
+    if (juce::isPositiveAndBelow (velocityHover.channel, Layout::numChannels)
+        && juce::isPositiveAndBelow (velocityHover.step, Layout::numSteps))
+    {
+        const auto cell = getCellBounds (velocityHover.channel, velocityHover.step);
+
+        if (! cell.isEmpty())
+        {
+            g.setColour (Colours::text);
+            g.drawRoundedRectangle (cell.toFloat().reduced (0.5f), (float) cornerRadius * 0.5f, 2.0f);
+
+            const auto value = juce::roundToInt (juce::jlimit (0.0f, 1.0f,
+                                 processor.getStepVelocity (velocityHover.channel, velocityHover.step)) * 100.0f);
+
+            const auto label = juce::Rectangle<int> (cell.getX() - 4, cell.getY() - 12,
+                                                     juce::jmax (cell.getWidth(), 22), 11);
+
+            g.setColour (Colours::background);
+            g.fillRoundedRectangle (label.toFloat(), 2.0f);
+            g.setColour (Colours::text);
+            g.setFont (valueFont);
+            g.drawText (juce::String (value), label, juce::Justification::centred, false);
+        }
+    }
 }
 
 //==============================================================================
@@ -293,6 +394,18 @@ void StepGridComponent::mouseDown (const juce::MouseEvent& e)
 
     if (cell.channel < 0)               // label column or outside the grid
         return;
+
+    if (velocityMode)
+    {
+        // A drag edits the one step it started on, so it stays put even if the
+        // pointer wanders into a neighbouring cell part way through.
+        velocityDragCell = cell;
+        isDraggingVelocity = true;
+        velocityHover = cell;
+
+        setVelocityFromPointer (cell.channel, cell.step, e.getPosition());
+        return;
+    }
 
     // The clicked cell is the anchor: toggling it decides what the rest of the
     // drag paints.
@@ -310,6 +423,26 @@ void StepGridComponent::mouseDown (const juce::MouseEvent& e)
 
 void StepGridComponent::mouseDrag (const juce::MouseEvent& e)
 {
+    if (velocityMode)
+    {
+        if (isDraggingVelocity)
+        {
+            setVelocityFromPointer (velocityDragCell.channel, velocityDragCell.step, e.getPosition());
+            return;
+        }
+
+        // Not dragging: just keep the readout under the pointer.
+        const auto cell = cellAt (e.getPosition());
+
+        if (cell.channel != velocityHover.channel || cell.step != velocityHover.step)
+        {
+            velocityHover = cell;
+            repaint();
+        }
+
+        return;
+    }
+
     if (! isDragPainting)
         return;
 
@@ -330,6 +463,33 @@ void StepGridComponent::mouseDrag (const juce::MouseEvent& e)
 void StepGridComponent::mouseUp (const juce::MouseEvent&)
 {
     isDragPainting = false;
+    isDraggingVelocity = false;
+}
+
+void StepGridComponent::mouseMove (const juce::MouseEvent& e)
+{
+    if (! velocityMode)
+        return;
+
+    const auto cell = cellAt (e.getPosition());
+
+    if (cell.channel == velocityHover.channel && cell.step == velocityHover.step)
+        return;
+
+    velocityHover = cell;
+    repaint();
+}
+
+void StepGridComponent::mouseExit (const juce::MouseEvent&)
+{
+    if (! velocityMode)
+        return;
+
+    if (velocityHover.channel >= 0)
+    {
+        velocityHover = {};
+        repaint();
+    }
 }
 
 //==============================================================================

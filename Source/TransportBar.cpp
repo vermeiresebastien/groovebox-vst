@@ -72,6 +72,16 @@ TransportBar::TransportBar (GrooveboxProcessor& processorToUse)
 
     addAndMakeVisible (clearPatternButton);
 
+    // Velocity editing: a toggle, so it stays lit while the grid is showing bars.
+    velocityButton.setClickingTogglesState (true);
+    velocityButton.setTooltip ("Edit how hard each step hits: drag up and down inside a step");
+    velocityButton.setColour (juce::TextButton::buttonOnColourId, Colours::text);
+    velocityButton.setColour (juce::TextButton::textColourOnId, Colours::background);
+    addAndMakeVisible (velocityButton);
+
+    resetVelocitiesButton.setTooltip ("Put every step back to full velocity");
+    addAndMakeVisible (resetVelocitiesButton);
+
     // Values first, callbacks afterwards: refresh() therefore cannot trigger a
     // write back into the processor while the bar is being built.
     refresh();
@@ -90,6 +100,8 @@ TransportBar::TransportBar (GrooveboxProcessor& processorToUse)
         refresh();
     };
     clearPatternButton.onClick = [this] { handleClearPatternClicked(); };
+    velocityButton.onClick    = [this] { handleVelocityClicked(); };
+    resetVelocitiesButton.onClick = [this] { handleResetVelocitiesClicked(); };
 
     // Written straight through, for the same reason as the channel faders: an
     // earlier version skipped the write while a drag was in progress and relied
@@ -174,6 +186,11 @@ void TransportBar::resized()
     area.removeFromLeft (8);
 
     clearPatternButton.setBounds (area.removeFromLeft (108).withSizeKeepingCentre (108, 24));
+    area.removeFromLeft (8);
+
+    velocityButton.setBounds (area.removeFromLeft (76).withSizeKeepingCentre (76, 24));
+    area.removeFromLeft (4);
+    resetVelocitiesButton.setBounds (area.removeFromLeft (52).withSizeKeepingCentre (52, 22));
     area.removeFromLeft (10);
 
     // Whatever horizontal space is left names the incoming-note mapping.
@@ -234,6 +251,22 @@ void TransportBar::handleClearPatternClicked()
 {
     processor.beginTransaction ("Clear pattern");
     processor.clearPattern();
+
+    if (processor.onStateChanged != nullptr)
+        processor.onStateChanged();
+
+    refresh();
+}
+
+void TransportBar::handleVelocityClicked()
+{
+    if (onVelocityModeChanged != nullptr)
+        onVelocityModeChanged (velocityButton.getToggleState());
+}
+
+void TransportBar::handleResetVelocitiesClicked()
+{
+    processor.resetVelocities();
 
     if (processor.onStateChanged != nullptr)
         processor.onStateChanged();

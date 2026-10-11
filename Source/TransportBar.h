@@ -24,6 +24,9 @@ public:
     /** Re-reads tempo, transport state and swing settings. Safe to call any time. */
     void refresh();
 
+    /** Called when the velocity toggle changes, so the editor can tell the grid. */
+    std::function<void (bool)> onVelocityModeChanged;
+
     void paint (juce::Graphics& g) override;
     void resized() override;
 
@@ -34,6 +37,8 @@ private:
     void handleTempoMinus();
     void handleTempoPlus();
     void handleClearPatternClicked();
+    void handleVelocityClicked();
+    void handleResetVelocitiesClicked();
     void paintCaption (juce::Graphics& g, const juce::String& text, juce::Rectangle<int> area) const;
 
     static constexpr int swingRadioGroupId = 1;
@@ -51,6 +56,10 @@ private:
     juce::TextButton swingEighthButton { "1/8" };   // grid of 4 steps per pair
     juce::TextButton swingSixteenthButton { "1/16" }; // grid of 2 steps per pair
     juce::TextButton clearPatternButton { "Clear pattern" };
+
+    /** Switches the grid into velocity editing; toggles, so it stays lit. */
+    juce::TextButton velocityButton { "Velocity" };
+    juce::TextButton resetVelocitiesButton { "100%" };
 
     // Caption strips filled in by resized() and drawn by paint().
     juce::Rectangle<int> tempoCaptionArea;

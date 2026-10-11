@@ -150,6 +150,16 @@ struct SequencerState
     /** pattern[channel][step] — true when that drum fires on that step. */
     std::array<std::array<std::atomic<bool>, (size_t) Layout::numSteps>, (size_t) Layout::numChannels> pattern {};
 
+    /**
+        velocity[channel][step], 0..1, used when that step fires.
+
+        Kept alongside the pattern rather than inside it so the grid stays a plain
+        on/off view and the velocity overlay can read the same data. A step that is
+        off can still carry a velocity, which is what makes it possible to set the
+        level before switching the step on.
+    */
+    std::array<std::array<std::atomic<float>, (size_t) Layout::numSteps>, (size_t) Layout::numChannels> velocity {};
+
     /** Per-channel output level, linear gain. */
     std::array<std::atomic<float>, (size_t) Layout::numChannels> level {};
 
@@ -188,6 +198,12 @@ struct SequencerState
         for (auto& row : pattern)
             for (auto& cell : row)
                 cell.store (false);
+
+        // Full velocity by default, so a new step behaves exactly as it did before
+        // velocities existed.
+        for (auto& row : velocity)
+            for (auto& cell : row)
+                cell.store (1.0f);
 
         for (int i = 0; i < Layout::numChannels; ++i)
         {

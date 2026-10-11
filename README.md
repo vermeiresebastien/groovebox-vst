@@ -10,6 +10,7 @@ sample you drag onto its row, and which also plays from MIDI notes.
 |---|---|
 | Step grid | 16 steps per bar, 12 drum channels, painted in the channel's own colour |
 | **MIDI input** | **Play the channels from a keyboard or pads: the channels answer C1 upwards, with velocity** |
+| **Step velocity** | **Every step has its own velocity. Hit *Velocity* in the top bar and drag up or down inside a step to set how hard it hits** |
 | Sample loading | Drag a `.wav` / `.aiff` / `.mp3` / `.flac` / `.ogg` onto any channel **row**, or click the channel's sound button to browse |
 | Per-channel pitch | −36 to +12 semitones, with `-12` / `+12` octave buttons |
 | **ADSR per channel** | **Attack, Decay, Sustain and Release for every channel, so a hit can be tightened or turned into a sustained sound** |
@@ -18,6 +19,25 @@ sample you drag onto its row, and which also plays from MIDI notes.
 | Mix | Per-channel level and mute, plus a "clear row" button |
 | Row editing | Click a cell to toggle it; drag across cells to paint a run |
 | Persistence | Pattern, pitch, levels, mutes, names, colours and sample paths are saved in the session |
+
+## Step velocity
+
+Every step carries its own velocity, so a pattern can have accents instead of
+every hit landing at the same level.
+
+Press **Velocity** in the top bar to switch the grid into velocity editing. A bar
+rises from the bottom of each step showing how hard it hits, with the value under
+the pointer; drag up or down inside a step to set it. The value is taken from how
+high the pointer is in the row, so the bar follows the pointer.
+
+- **The step's on/off state is left alone.** You can set a level on a step that is
+  switched off, and dragging to nothing never switches a step off. An on step is
+  never stored as "off", so a quiet hit stays a hit.
+- **Press 100%** next to the toggle to put every step back to full velocity.
+- Outside velocity mode the steps are dimmed by their velocity, so you can see the
+  dynamics without opening the overlay.
+- The grid's velocity and a played note's velocity are separate: the grid uses the
+  value on the step, while a pad or keyboard uses how hard you hit it.
 
 ## The envelope
 
@@ -196,7 +216,9 @@ It asserts, among other things, that:
   off releases a held note, and a longer attack, decay or release measures longer
   in the audio;
 - the envelope values survive a save/load round trip, and a channel that was never
-  touched keeps the defaults.
+  touched keeps the defaults;
+- step velocities survive a save and load, including a very quiet step, and an off
+  step never comes back as on.
 
 `GrooveboxLayoutTest` builds the real editor and inspects it. A control laid out
 at zero size or outside its parent cannot be clicked, and no audio test can see
