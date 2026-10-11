@@ -122,6 +122,23 @@ public:
     bool isChannelSounding (int channel) const { return engine.isChannelSounding (channel); }
 
     //==========================================================================
+    // MIDI
+    //==========================================================================
+
+    /** The note that triggers a channel, e.g. 36 (C1) for channel 0. */
+    static int getMidiNoteForChannel (int channel) { return SequencerEngine::midiNoteForChannel (channel); }
+
+    /** Name of that note, e.g. "C1". */
+    static juce::String getMidiNoteNameForChannel (int channel);
+
+    /** Plays a channel as if a note had arrived, for previewing from the editor. */
+    void previewChannel (int channel, float velocity = 1.0f);
+
+    /** Voice state, for diagnostics and tests. */
+    SequencerEngine::VoiceDebug debugVoice (int index) const { return engine.getVoiceDebug (index); }
+    int debugActiveVoices() const noexcept { return engine.getActiveVoiceCount(); }
+
+    //==========================================================================
     // Groove
     //==========================================================================
 

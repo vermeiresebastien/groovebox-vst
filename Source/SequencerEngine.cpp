@@ -113,11 +113,14 @@ double SequencerEngine::onsetPositionInSteps (int step) const
 //==============================================================================
 // Voices
 
-void SequencerEngine::trigger (int channel, double increment)
+void SequencerEngine::trigger (int channel, double increment, float velocity, bool fromMidi)
 {
     auto sample = samples.retainSampleForChannel (channel);
 
     if (sample == nullptr || sample->buffer.getNumSamples() <= 0)
+        return;
+
+    if (state.channelMuted[channel].load())
         return;
 
     const auto level = juce::jlimit (0.0f, 2.0f, state.level[(size_t) channel].load());
@@ -126,7 +129,9 @@ void SequencerEngine::trigger (int channel, double increment)
         return;
 
     // A little headroom so stacked hits do not clip the master bus outright.
-    const auto gain = level * 0.8f;
+    // Velocity scales the hit: the grid always plays at full velocity, while a
+    // note from a keyboard or pad carries how hard it was struck.
+    const auto gain = level * 0.8f * juce::jlimit (0.0f, 1.0f, velocity);
 
     Voice* target = nullptr;
 
@@ -159,8 +164,137 @@ void SequencerEngine::trigger (int channel, double increment)
     target->attackTotal = juce::jmax (2, (int) (currentSampleRate * attackSeconds));
     target->attackCounter = 0;
     target->active = true;
+    target->fromMidi = fromMidi;
+
+    voiceVelocity[(size_t) (target - voices.data())] = velocity;
 
     soundingChannels[(size_t) channel].store (true);
+}
+
+SequencerEngine::VoiceDebug SequencerEngine::getVoiceDebug (int index) const
+{
+    VoiceDebug info;
+
+    if (! juce::isPositiveAndBelow (index, (int) voices.size()))
+        return info;
+
+    const auto& voice = voices[(size_t) index];
+
+    info.active = voice.active;
+    info.channel = voice.channel;
+    info.position = voice.position;
+    info.increment = voice.increment;
+    info.gain = voice.gain;
+    info.velocity = voiceVelocity[(size_t) index];
+    info.sampleLength = voice.sample != nullptr ? voice.sample->buffer.getNumSamples() : 0;
+    info.attackCounter = voice.attackCounter;
+    info.attackTotal = voice.attackTotal;
+    info.releasing = voice.releasing;
+
+    return info;
+}
+
+//==============================================================================
+// MIDI
+
+int SequencerEngine::channelForMidiNote (int midiNote) noexcept
+{
+    const auto channel = midiNote - Layout::firstMidiNote;
+    return juce::isPositiveAndBelow (channel, Layout::numChannels) ? channel : -1;
+}
+
+int SequencerEngine::midiNoteForChannel (int channel) noexcept
+{
+    return juce::isPositiveAndBelow (channel, Layout::numChannels)
+             ? Layout::firstMidiNote + channel
+             : -1;
+}
+
+void SequencerEngine::triggerChannel (int channel, float velocity)
+{
+    if (! juce::isPositiveAndBelow (channel, Layout::numChannels))
+        return;
+
+    auto sample = samples.retainSampleForChannel (channel);
+
+    if (sample == nullptr)
+        return;
+
+    const auto rateRatio = sample->rateRatioFor (currentSampleRate);
+    const auto pitch = state.pitch[(size_t) channel].load();
+    const auto pitchRatio = std::pow (2.0, (double) pitch / 12.0);
+
+    trigger (channel, rateRatio * pitchRatio, velocity, true);
+}
+
+void SequencerEngine::processMidi (const juce::MidiBuffer& midi, int numSamples)
+{
+    if (midi.isEmpty())
+        return;
+
+    // Note starts are collected before anything is played so the block can be
+    // rendered in order: an extra voice must not be started before the samples
+    // that precede it. At 5 ms blocks there are only ever a handful.
+    struct NoteStart { int sampleOffset; int channel; float velocity; };
+
+    std::array<NoteStart, 32> starts {};
+    int numStarts = 0;
+
+    for (const auto metadata : midi)
+    {
+        const auto message = metadata.getMessage();
+
+        // Note off is deliberately ignored: each drum voice is a one-shot whose
+        // own envelope decides how long it rings, which is how a drum machine
+        // behaves when you hold a pad.
+        if (! message.isNoteOn())
+            continue;
+
+        const auto channel = channelForMidiNote (message.getNoteNumber());
+
+        if (channel < 0 || state.channelMuted[channel].load())
+            continue; // outside the mapped range, or muted
+
+        if (numStarts >= (int) starts.size())
+            break;
+
+        starts[(size_t) numStarts++] = { juce::jlimit (0, juce::jmax (0, numSamples - 1), metadata.samplePosition),
+                                         channel,
+                                         message.getFloatVelocity() };
+    }
+
+    if (numStarts == 0)
+        return;
+
+    // Only reachable if a note arrives before any block has been rendered.
+    if (currentBlock == nullptr)
+    {
+        for (int i = 0; i < numStarts; ++i)
+            triggerChannel (starts[(size_t) i].channel, starts[(size_t) i].velocity);
+
+        return;
+    }
+
+    std::sort (starts.begin(), starts.begin() + numStarts,
+               [] (const NoteStart& a, const NoteStart& b) { return a.sampleOffset < b.sampleOffset; });
+
+    int rendered = 0;
+
+    for (int i = 0; i < numStarts; ++i)
+    {
+        const auto& start = starts[(size_t) i];
+
+        if (start.sampleOffset > rendered)
+        {
+            renderVoices (*currentBlock, rendered, start.sampleOffset - rendered);
+            rendered = start.sampleOffset;
+        }
+
+        triggerChannel (start.channel, start.velocity);
+    }
+
+    if (rendered < numSamples)
+        renderVoices (*currentBlock, rendered, numSamples - rendered);
 }
 
 void SequencerEngine::fireStep (int step)
@@ -182,7 +316,7 @@ void SequencerEngine::fireStep (int step)
         const auto pitch = state.pitch[(size_t) channel].load();
         const auto pitchRatio = std::pow (2.0, (double) pitch / 12.0);
 
-        trigger (channel, rateRatio * pitchRatio);
+        trigger (channel, rateRatio * pitchRatio, 1.0f, false);
     }
 }
 
@@ -218,7 +352,11 @@ void SequencerEngine::renderVoices (juce::AudioBuffer<float>& buffer, int startS
         const auto sourceLength = source.getNumSamples();
 
         auto samplePosition = voice.position;
-        auto gain = voice.gain;
+
+        // The hit's velocity travels with the voice, because rendering can be
+        // split across a block when a note arrives part way through it.
+        auto targetGain = voice.gain * voiceVelocity[(size_t) (&voice - voices.data())];
+        auto gain = targetGain;
 
         for (int i = 0; i < numSamples; ++i)
         {
@@ -231,7 +369,7 @@ void SequencerEngine::renderVoices (juce::AudioBuffer<float>& buffer, int startS
 
             if (voice.releasing > 0)
             {
-                gain = voice.gain * ((float) voice.releasing / (float) releaseSamples);
+                gain = targetGain * ((float) voice.releasing / (float) releaseSamples);
                 --voice.releasing;
 
                 if (voice.releasing <= 0)
@@ -244,12 +382,12 @@ void SequencerEngine::renderVoices (juce::AudioBuffer<float>& buffer, int startS
             else if (voice.attackCounter < voice.attackTotal)
             {
                 // Ramp in over the attack, then hold the voice's own gain.
-                gain = voice.gain * ((float) voice.attackCounter / (float) voice.attackTotal);
+                gain = targetGain * ((float) voice.attackCounter / (float) voice.attackTotal);
                 ++voice.attackCounter;
             }
             else
             {
-                gain = voice.gain;
+                gain = targetGain;
             }
 
             const auto index = (int) samplePosition;
@@ -291,6 +429,10 @@ void SequencerEngine::processBlock (juce::AudioBuffer<float>& buffer,
     if (numSamples <= 0 || buffer.getNumChannels() == 0)
         return;
 
+    // Remembered so a note arriving part way through the block can be rendered
+    // from its own sample onward.
+    currentBlock = &buffer;
+
     // Tempo comes from the host when it has one, from the editor otherwise.
     const auto hostBpm = positionInfo.getBpm();
     const auto tempo = (haveHostPosition && hostBpm.hasValue()) ? *hostBpm : state.manualTempo.load();
@@ -304,9 +446,11 @@ void SequencerEngine::processBlock (juce::AudioBuffer<float>& buffer,
     {
         if (activeVoices > 0 || lastFired >= 0)
         {
-            // Let the tails ring out instead of cutting them dead.
+            // Let the tails ring out instead of cutting them dead. Voices played
+            // from a note are left alone: they were not started by the transport,
+            // so stopping the transport must not silence them.
             for (auto& voice : voices)
-                if (voice.active && voice.releasing == 0)
+                if (voice.active && ! voice.fromMidi && voice.releasing == 0)
                     voice.releasing = juce::jmax (2, (int) (currentSampleRate * releaseSeconds));
 
             renderVoices (buffer, 0, numSamples);

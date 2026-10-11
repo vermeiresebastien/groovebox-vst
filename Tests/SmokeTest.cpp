@@ -40,7 +40,25 @@ void check (bool condition, const juce::String& what, const juce::String& detail
     }
 }
 
-/** Writes a short click into a temporary wav so we can load it like a real sample.
+/** Folder for the throwaway wav files these tests load.
+
+    Deliberately not the system temp folder: it is not guaranteed writable from
+    every launching context, and when it is not, every test that loads a sample
+    fails for a reason that has nothing to do with the engine.
+*/
+juce::File testScratchDirectory()
+{
+    auto dir = juce::File::getSpecialLocation (juce::File::currentExecutableFile)
+                   .getParentDirectory()
+                   .getChildFile ("groovebox-test-scratch");
+
+    if (! dir.isDirectory())
+        dir.createDirectory();
+
+    return dir;
+}
+
+/** Writes a short click into a scratch wav so we can load it like a real sample.
 
     The click stays exactly at +/-1.0 for its first three samples and then decays,
     so the first sample above any small threshold is the onset itself and the
@@ -48,8 +66,7 @@ void check (bool condition, const juce::String& what, const juce::String& detail
 */
 juce::File makeClickWav (const juce::String& name, int lengthSamples, double sampleRate)
 {
-    auto file = juce::File::getSpecialLocation (juce::File::tempDirectory)
-                    .getChildFile ("groovebox-test-" + name + ".wav");
+    auto file = testScratchDirectory().getChildFile ("click-" + name + ".wav");
 
     file.deleteFile();
 
@@ -143,6 +160,51 @@ float peakOf (const std::vector<float>& data)
         peak = juce::jmax (peak, std::abs (value));
 
     return peak;
+}
+
+/**
+    One block carrying a single note, rendered through the real MIDI path.
+
+    The transport is left stopped throughout, so anything that comes out can only
+    have come from the note.
+*/
+std::vector<float> renderNote (GrooveboxProcessor& processor,
+                               int midiNote,
+                               float velocity = 1.0f,
+                               int blockSize = 512,
+                               int totalSamples = 2048)
+{
+    std::vector<float> out;
+    out.reserve ((size_t) totalSamples);
+
+    juce::AudioBuffer<float> buffer (2, blockSize);
+    int rendered = 0;
+    auto sent = false;
+
+    while (rendered < totalSamples)
+    {
+        const auto thisBlock = juce::jmin (blockSize, totalSamples - rendered);
+
+        buffer.setSize (2, thisBlock, false, true, true);
+        buffer.clear();
+
+        juce::MidiBuffer midi;
+
+        if (! sent)
+        {
+            midi.addEvent (juce::MidiMessage::noteOn (1, midiNote, velocity), 0);
+            sent = true;
+        }
+
+        processor.processBlock (buffer, midi);
+
+        for (int i = 0; i < thisBlock; ++i)
+            out.push_back (buffer.getSample (0, i));
+
+        rendered += thisBlock;
+    }
+
+    return out;
 }
 
 void clearAllSteps (GrooveboxProcessor& processor)
@@ -527,6 +589,184 @@ int main()
                "got " + restored.getChannelName (2));
         check (std::abs (restored.getSwing() - 0.42f) < 0.001f, "swing survived");
         check (restored.getSwingGrid() == 2, "swing grid survived");
+    }
+
+    //======================================================================
+    std::printf ("\n[8] MIDI notes play the channels\n");
+    {
+        GrooveboxProcessor processor;
+        processor.prepareToPlay (sampleRate, blockSize);
+
+        auto click = makeClickWav ("midi", 600, sampleRate);
+        juce::String error;
+
+        // A distinct sound on each of the first three channels, so a note can be
+        // shown to reach the channel it is mapped to and no other.
+        check (processor.loadSampleIntoChannel (0, click, error), "sample on channel 0", error);
+        check (processor.loadSampleIntoChannel (1, click, error), "sample on channel 1", error);
+        check (processor.loadSampleIntoChannel (2, click, error), "sample on channel 2", error);
+
+        clearAllSteps (processor);          // nothing is on the grid
+        processor.setManualTempo (120.0);
+        processor.setPlaying (false);       // and the transport is stopped
+
+        check (GrooveboxProcessor::getMidiNoteForChannel (0) == 36, "channel 0 is mapped to C1 (36)",
+               juce::String (GrooveboxProcessor::getMidiNoteForChannel (0)));
+        check (GrooveboxProcessor::getMidiNoteNameForChannel (0) == "C1", "and is named C1",
+               GrooveboxProcessor::getMidiNoteNameForChannel (0));
+        check (GrooveboxProcessor::getMidiNoteNameForChannel (1) == "C#1", "channel 1 is C#1",
+               GrooveboxProcessor::getMidiNoteNameForChannel (1));
+
+        // The transport is stopped, so this can only come from the note.
+        auto hit = renderNote (processor, 36);
+        check (peakOf (hit) > 0.0f, "a note plays with the transport stopped",
+               "peak " + juce::String (peakOf (hit), 4));
+
+        // A note outside the mapped range must stay silent.
+        auto stray = renderNote (processor, 60);
+        check (peakOf (stray) == 0.0f, "a note outside the range is ignored",
+               "peak " + juce::String (peakOf (stray), 4));
+
+        // Velocity scales the hit.
+        auto soft = renderNote (processor, 36, 0.25f);
+        auto hard = renderNote (processor, 36, 1.0f);
+
+        check (peakOf (soft) > 0.0f && peakOf (hard) > peakOf (soft),
+               "velocity scales the hit",
+               "soft " + juce::String (peakOf (soft), 4) + ", hard " + juce::String (peakOf (hard), 4));
+
+        // Muting a channel silences its note.
+        processor.setChannelMuted (0, true);
+        auto muted = renderNote (processor, 36);
+        check (peakOf (muted) == 0.0f, "a muted channel does not answer its note");
+        processor.setChannelMuted (0, false);
+
+        // Every channel answers its own note, and each note reaches exactly one
+        // channel: mute all but one and check the others stay silent.
+        for (int channel = 0; channel < Layout::numChannels; ++channel)
+        {
+            if (channel != 1)
+                processor.setChannelMuted (channel, true);
+        }
+
+        auto note1 = renderNote (processor, GrooveboxProcessor::getMidiNoteForChannel (1));
+        auto note0 = renderNote (processor, GrooveboxProcessor::getMidiNoteForChannel (0));
+
+        check (peakOf (note1) > 0.0f, "channel 1 answers its own note",
+               "peak " + juce::String (peakOf (note1), 4));
+        check (peakOf (note0) == 0.0f, "channel 0 stays silent while muted",
+               "peak " + juce::String (peakOf (note0), 4));
+
+        for (int channel = 0; channel < Layout::numChannels; ++channel)
+            processor.setChannelMuted (channel, false);
+
+        // Note off must not cut a one-shot short: a drum machine rings out. This
+        // needs a sample long enough that the difference would be audible, so it
+        // is rendered here rather than using the short test click.
+        {
+            auto longFile = testScratchDirectory().getChildFile ("midi-sustain.wav");
+            longFile.deleteFile();
+
+            {
+                constexpr int length = 8000;
+                juce::AudioBuffer<float> content (1, length);
+                auto* data = content.getWritePointer (0);
+
+                // A flat tone that stays loud, so any truncation is obvious.
+                for (int i = 0; i < length; ++i)
+                    data[i] = 0.9f * std::sin (2.0 * juce::MathConstants<double>::pi * 220.0 * i / sampleRate);
+
+                juce::WavAudioFormat format;
+                std::unique_ptr<juce::FileOutputStream> stream (longFile.createOutputStream());
+                std::unique_ptr<juce::AudioFormatWriter> writer (
+                    stream != nullptr ? format.createWriterFor (stream.get(), sampleRate, 1, 24, {}, 0) : nullptr);
+
+                if (writer != nullptr)
+                {
+                    stream.release();
+                    writer->writeFromAudioSampleBuffer (content, 0, length);
+                }
+            }
+
+            GrooveboxProcessor midiProcessor;
+            midiProcessor.prepareToPlay (sampleRate, blockSize);
+
+            juce::String loadError;
+            const auto loaded = midiProcessor.loadSampleIntoChannel (0, longFile, loadError);
+
+            if (! loaded)
+                std::printf ("        (long sample did not load: %s)\n", loadError.toRawUTF8());
+
+            clearAllSteps (midiProcessor);
+            midiProcessor.setPlaying (false);
+
+            const auto renderWithOptionalNoteOff = [&longFile, sampleRate, blockSize] (bool sendNoteOff)
+            {
+                // A fresh processor per render: reusing one would let the first
+                // render's still-ringing voice leak into the second, since an
+                // 8000-sample one-shot is far longer than the window rendered.
+                GrooveboxProcessor p;
+                p.prepareToPlay (sampleRate, blockSize);
+
+                juce::String err;
+                p.loadSampleIntoChannel (0, longFile, err);
+                clearAllSteps (p);
+                p.setPlaying (false);
+
+                constexpr int block = 256;
+                constexpr int blocks = 8;
+
+                juce::AudioBuffer<float> buffer (2, block);
+                juce::MidiBuffer midi;
+                std::vector<float> out;
+
+                for (int b = 0; b < blocks; ++b)
+                {
+                    buffer.clear();
+                    midi.clear();
+
+                    if (b == 0)
+                        midi.addEvent (juce::MidiMessage::noteOn (1, 36, 1.0f), 0);
+                    else if (b == 1 && sendNoteOff)
+                        midi.addEvent (juce::MidiMessage::noteOff (1, 36), 0);
+
+                    p.processBlock (buffer, midi);
+
+                    for (int i = 0; i < block; ++i)
+                        out.push_back (buffer.getSample (0, i));
+                }
+
+                return out;
+            };
+
+            auto sustained = renderWithOptionalNoteOff (false);
+            auto released = renderWithOptionalNoteOff (true);
+
+            // Sample 512 is where the note off lands, so the tail is everything
+            // after it. With an 8000-sample one-shot there is plenty left.
+            constexpr int tailFrom = 600;
+            const auto tailPeak = [] (const std::vector<float>& data, int from)
+            {
+                float peak = 0.0f;
+
+                for (int i = from; i < (int) data.size(); ++i)
+                    peak = juce::jmax (peak, std::abs (data[(size_t) i]));
+
+                return peak;
+            };
+
+            check (tailPeak (released, tailFrom) > 0.1f,
+                   "audio continues after a note off",
+                   "tail peak " + juce::String (tailPeak (released, tailFrom), 4));
+            check (std::abs (tailPeak (released, tailFrom) - tailPeak (sustained, tailFrom)) < 0.001f,
+                   "a note off does not change the tail at all",
+                   "with note off " + juce::String (tailPeak (released, tailFrom), 5)
+                     + ", without " + juce::String (tailPeak (sustained, tailFrom), 5));
+
+            longFile.deleteFile();
+        }
+
+        click.deleteFile();
     }
 
     //======================================================================

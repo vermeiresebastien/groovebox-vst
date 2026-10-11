@@ -2,13 +2,14 @@
 
 A VST3 / standalone drum machine built from the drum page of **Earworm Studio**
 (`earworm-studio/index.html`): a 16-step sequencer where each drum channel is a
-sample you drag onto its row.
+sample you drag onto its row, and which also plays from MIDI notes.
 
 ## What it does
 
 | Feature | Detail |
 |---|---|
 | Step grid | 16 steps per bar, 12 drum channels, painted in the channel's own colour |
+| **MIDI input** | **Play the channels from a keyboard or pads: the channels answer C1 upwards, with velocity** |
 | Sample loading | Drag a `.wav` / `.aiff` / `.mp3` / `.flac` / `.ogg` onto any channel **row**, or click the channel's sound button to browse |
 | Per-channel pitch | −36 to +12 semitones, with `-12` / `+12` octave buttons |
 | Swing | 0–100 % on either a 1/8 or 1/16 grid |
@@ -16,6 +17,22 @@ sample you drag onto its row.
 | Mix | Per-channel level and mute, plus a "clear row" button |
 | Row editing | Click a cell to toggle it; drag across cells to paint a run |
 | Persistence | Pattern, pitch, levels, mutes, names, colours and sample paths are saved in the session |
+
+## Playing it from MIDI
+
+The channels answer **C1 upwards** — C1 plays channel 0, C#1 channel 1, and so on
+to B1 for channel 11. That is the range a General MIDI drum map uses for its first
+twelve pieces, and what most pad controllers send out of the box, so a kick pad
+plays the kick without any setup. The note range is shown in the top bar.
+
+- **Velocity scales the hit**, so a pad or keyboard plays dynamically. The step
+  grid always plays at full velocity.
+- **Notes play whether or not the transport is running**, so you can play the kit
+  with the sequencer stopped. Grid hits are faded out when the transport stops;
+  played notes are not, because they did not come from the transport.
+- **Note off is ignored.** Each voice is a one-shot whose own envelope decides how
+  long it rings, which is how a drum machine responds when you hold a pad.
+- Notes outside the mapped range are ignored, and a muted channel ignores its note.
 
 ## Layout
 
@@ -142,7 +159,10 @@ It asserts, among other things, that:
 - a level or mute change made **while the sequencer is running** takes effect on
   the hits that follow;
 - a mono sample stays centred;
-- pattern, pitch, names, swing and grid survive a save/load round trip.
+- pattern, pitch, names, swing and grid survive a save/load round trip;
+- an incoming note plays its channel with the transport stopped, a note outside
+  the mapped range stays silent, velocity scales the hit, a muted channel ignores
+  its note, and a note off leaves the one-shot ringing.
 
 `GrooveboxLayoutTest` builds the real editor and inspects it. A control laid out
 at zero size or outside its parent cannot be clicked, and no audio test can see

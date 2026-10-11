@@ -76,8 +76,48 @@ public:
                        const juce::AudioPlayHead::PositionInfo& position,
                        bool haveHostPosition);
 
+    /**
+        Plays any incoming note-on through the channel it is mapped to.
+
+        Lanes map to consecutive notes from `Layout::firstMidiNote`, so the
+        default layout answers to C1 upwards. A note off is ignored: each drum
+        voice is a one-shot whose own envelope decides how long it rings, which is
+        what a drum machine does.
+
+        `sampleOffset` is where in the block the message sits, so a note played a
+        little late still starts on the right sample.
+    */
+    void processMidi (const juce::MidiBuffer& midi, int numSamples);
+
+    /** Channel a note maps to, or -1 when the note is outside the range. */
+    static int channelForMidiNote (int midiNote) noexcept;
+
+    /** Note that triggers a channel, or -1 when the channel is out of range. */
+    static int midiNoteForChannel (int channel) noexcept;
+
+    /** Plays one channel directly, with `velocity` in 0..1. Used by the MIDI
+        path, and by tests that do not want to build a MIDI buffer. */
+    void triggerChannel (int channel, float velocity);
+
     /** Voices currently sounding; used by the editor for channel activity. */
     int getActiveVoiceCount() const noexcept { return activeVoices; }
+
+    /** Voice state, for diagnostics and tests. */
+    struct VoiceDebug
+    {
+        bool active = false;
+        int channel = -1;
+        double position = 0.0;
+        double increment = 1.0;
+        float gain = 0.0f;
+        float velocity = 0.0f;
+        int sampleLength = 0;
+        int attackCounter = 0;
+        int attackTotal = 0;
+        int releasing = 0;
+    };
+
+    VoiceDebug getVoiceDebug (int index) const;
 
     /** Step that is sounding right now, or -1 when stopped. */
     int getCurrentStep() const noexcept { return currentStep.load(); }
@@ -114,10 +154,19 @@ private:
         int attackTotal = 1;
         int releasing = 0;
         bool active = false;
+
+        /**
+            True when the voice came from an incoming note rather than the grid.
+
+            A note has to survive the transport being stopped: playing pads while
+            the sequencer is idle is the whole point. Grid hits, by contrast, are
+            faded out when the transport stops so that stopping is not abrupt.
+        */
+        bool fromMidi = false;
     };
 
     void renderVoices (juce::AudioBuffer<float>& buffer, int startSample, int numSamples);
-    void trigger (int channel, double increment);
+    void trigger (int channel, double increment, float velocity, bool fromMidi);
     void stopAllVoices();
 
     /** Where one step starts inside its bar, in steps from the top of the bar.
@@ -145,6 +194,24 @@ private:
     std::array<std::atomic<bool>, (size_t) Layout::numChannels> soundingChannels {};
     int activeVoices = 0;
     int voiceCounter = 0;
+
+    /**
+        Velocity of the hit each voice is playing.
+
+        Kept per voice rather than applied once, so rendering a voice mid-block —
+        which happens when a note arrives part way through — keeps the velocity it
+        was struck with.
+    */
+    std::array<float, (size_t) Layout::maxVoices> voiceVelocity {};
+
+    /**
+        The buffer being filled by the current `processBlock`.
+
+        A note arriving part way through a block has to be rendered from its own
+        sample onward, and `processMidi` is called by the processor after the
+        sequencer has had its turn, so it needs to know which buffer to write to.
+    */
+    juce::AudioBuffer<float>* currentBlock = nullptr;
 
     /**
         The one clock: how far into the pattern we are, in steps, from the start

@@ -42,6 +42,7 @@ private:
 
     juce::TextButton playButton { "Play" };
     juce::Label hostCaption;
+    juce::Label midiHintLabel;
     juce::TextButton tempoDownButton { "-" };
     juce::Label tempoLabel;
     juce::TextButton tempoUpButton { "+" };

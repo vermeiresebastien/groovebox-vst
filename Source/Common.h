@@ -1,6 +1,7 @@
 #pragma once
 
 #include <JuceHeader.h>
+#include <algorithm>
 #include <array>
 #include <map>
 
@@ -13,6 +14,16 @@ namespace Layout
     inline constexpr int numSteps    = 16;
     inline constexpr int numChannels = 12;
     inline constexpr int maxVoices   = 64;
+
+    /**
+        The note the first channel answers to.
+
+        Channels are consecutive from here, so the default layout is C1 upwards
+        (MIDI 36..47): what a General MIDI drum map uses for its first twelve
+        pieces, and what most pad controllers send out of the box. Octave naming
+        follows the DAW convention, where MIDI 36 is C1 and middle C (60) is C3.
+    */
+    inline constexpr int firstMidiNote = 36;
 }
 
 /** Palette lifted from the Earworm Studio drum page. */

@@ -49,7 +49,6 @@ bool GrooveboxProcessor::isBusesLayoutSupported (const BusesLayout& layouts) con
 void GrooveboxProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midiMessages)
 {
     juce::ScopedNoDenormals noDenormals;
-    midiMessages.clear();
 
     // Clear the output; the engine only ever adds to it.
     for (int channel = 0; channel < buffer.getNumChannels(); ++channel)
@@ -61,6 +60,11 @@ void GrooveboxProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::M
 
     const auto havePosition = position.hasValue();
     engine.processBlock (buffer, havePosition ? *position : juce::AudioPlayHead::PositionInfo(), havePosition);
+
+    // Notes play after the sequencer has had its turn, so both land in the same
+    // buffer and either can be used without the other.
+    engine.processMidi (midiMessages, buffer.getNumSamples());
+    midiMessages.clear();
 
     if (havePosition)
     {
@@ -467,6 +471,26 @@ void GrooveboxProcessor::setStateInformation (const void* data, int sizeInBytes)
         if (tree.isValid())
             applyTree (tree);
     }
+}
+
+void GrooveboxProcessor::previewChannel (int channel, float velocity)
+{
+    engine.triggerChannel (channel, velocity);
+}
+
+juce::String GrooveboxProcessor::getMidiNoteNameForChannel (int channel)
+{
+    const auto note = SequencerEngine::midiNoteForChannel (channel);
+
+    if (note < 0)
+        return {};
+
+    static const char* names[] = { "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B" };
+
+    // Octave numbering follows the convention DAWs use, where middle C (MIDI 60)
+    // is C3 and the first channel is C1. Scientific pitch notation would call
+    // these C2 and C4.
+    return juce::String (names[note % 12]) + juce::String (note / 12 - 2);
 }
 
 juce::AudioProcessorEditor* GrooveboxProcessor::createEditor()

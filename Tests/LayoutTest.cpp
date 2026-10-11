@@ -187,11 +187,21 @@ void checkFadersIn (juce::Component& parent,
     }
 }
 
-/** Writes a short click to a temp wav, for the audio half of the swing check. */
+/** Writes a short click to a scratch wav, for the audio half of the swing check.
+
+    Written beside the executable rather than to the system temp folder, which is
+    not guaranteed writable from every launching context.
+*/
 juce::File makeClickWav (const juce::String& name, int lengthSamples, double sampleRate)
 {
-    auto file = juce::File::getSpecialLocation (juce::File::tempDirectory)
-                    .getChildFile ("groovebox-layout-" + name + ".wav");
+    auto dir = juce::File::getSpecialLocation (juce::File::currentExecutableFile)
+                   .getParentDirectory()
+                   .getChildFile ("groovebox-test-scratch");
+
+    if (! dir.isDirectory())
+        dir.createDirectory();
+
+    auto file = dir.getChildFile ("click-" + name + ".wav");
 
     file.deleteFile();
 

@@ -17,11 +17,21 @@ TransportBar::TransportBar (GrooveboxProcessor& processorToUse)
 {
     addAndMakeVisible (playButton);
 
+    // Caption for the plugin build: the host owns transport there. The note range
+    // tells a player which notes the channels answer to.
     hostCaption.setText ("Host transport", juce::dontSendNotification);
     hostCaption.setJustificationType (juce::Justification::centred);
     hostCaption.setColour (juce::Label::textColourId, Colours::muted);
     hostCaption.setFont (captionFont());
     addAndMakeVisible (hostCaption);
+
+    midiHintLabel.setJustificationType (juce::Justification::centredLeft);
+    midiHintLabel.setColour (juce::Label::textColourId, Colours::muted);
+    midiHintLabel.setFont (captionFont());
+    midiHintLabel.setTooltip ("Incoming notes play the channels: the first channel answers C1, "
+                              "and the rest follow upwards.");
+    midiHintLabel.setInterceptsMouseClicks (false, false);
+    addAndMakeVisible (midiHintLabel);
 
     tempoDownButton.setTooltip ("Decrease tempo by 1 BPM");
     tempoUpButton.setTooltip ("Increase tempo by 1 BPM");
@@ -123,6 +133,13 @@ void TransportBar::refresh()
     const auto grid = processor.getSwingGrid();
     swingEighthButton.setToggleState (grid == 4, juce::dontSendNotification);
     swingSixteenthButton.setToggleState (grid == 2, juce::dontSendNotification);
+
+    // Name the note range the channels answer to, using this build's mapping.
+    const auto first = GrooveboxProcessor::getMidiNoteNameForChannel (0);
+    const auto last = GrooveboxProcessor::getMidiNoteNameForChannel (Layout::numChannels - 1);
+
+    midiHintLabel.setText ("MIDI notes " + first + "-" + last + " play the channels",
+                           juce::dontSendNotification);
 }
 
 void TransportBar::resized()
@@ -157,6 +174,13 @@ void TransportBar::resized()
     area.removeFromLeft (8);
 
     clearPatternButton.setBounds (area.removeFromLeft (108).withSizeKeepingCentre (108, 24));
+    area.removeFromLeft (10);
+
+    // Whatever horizontal space is left names the incoming-note mapping.
+    if (area.getWidth() > 150)
+        midiHintLabel.setBounds (area.withSizeKeepingCentre (area.getWidth(), 18));
+    else
+        midiHintLabel.setBounds ({});
 }
 
 //==============================================================================
