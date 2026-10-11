@@ -90,6 +90,35 @@ you must point Live at it (the table above).
 The **standalone** app needs no installation at all — just run
 `build\Groovebox_artefacts\Release\Standalone\Groovebox.exe`.
 
+### Ableton Live specifics
+
+Live does **not** scan `Documents\VST3` by default. Its scan database showed only
+`C:\Program Files\Common Files\VST3`, so a plugin placed anywhere else is simply
+invisible until you tell Live where to look:
+
+1. **Settings → Plug-Ins**
+2. Tick **Use VST3 Plug-In System Folder** (keeps your existing plugins working)
+3. Tick **VST3 Plug-In Custom Folder** and point it at the folder you used
+4. Click **Rescan** — hold `Alt` while clicking to force a full rescan
+
+The plugin appears under **Plug-Ins → VST3 → Earworm → Groovebox** and loads on a
+**MIDI** track (it is an instrument, so it is not listed under Audio Effects).
+
+If Live reports *"this VST plugin could not be opened"*, its log says why. The
+scanner writes to:
+
+```
+%APPDATA%\Ableton\Live <version>\Preferences\PluginScanner.txt
+%APPDATA%\Ableton\Live <version>\Preferences\Log.txt
+```
+
+Search those for the plugin name; a bug in this plugin was diagnosed that way
+(see the MIDI input bus note below).
+
+Two things can stop a rebuild from reaching Live: Live holds the plugin DLL open
+while it is running, so quit it before replacing the bundle, and Windows Explorer
+will not overwrite a bundle that is in use.
+
 ## Verifying
 
 Two test programs run with no GUI window and no host.
