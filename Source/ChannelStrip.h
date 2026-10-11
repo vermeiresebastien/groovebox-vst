@@ -2,6 +2,7 @@
 
 #include "Common.h"
 #include "PluginProcessor.h"
+#include "EnvelopeControls.h"
 
 namespace gb
 {
@@ -27,6 +28,9 @@ public:
 
     /** Re-reads only the channel name (used when a rename is cancelled). */
     void refreshName();
+
+    /** Room left at the bottom after the last control, for the layout test. */
+    int getSpareHeight() const noexcept { return lastSpareHeight; }
 
     void paint (juce::Graphics& g) override;
     void resized() override;
@@ -60,6 +64,11 @@ private:
     juce::Slider levelSlider;
     juce::TextButton muteButton { "Mute" };
 
+    EnvelopeControls envelope;
+
+    /** Reads one envelope value back out of the processor. */
+    float envelopeValueFromProcessor (EnvelopeStage stage) const;
+
     // Kept alive for the lifetime of the async dialog.
     std::unique_ptr<juce::FileChooser> chooser;
 
@@ -69,10 +78,13 @@ private:
     // Caption strips filled in by resized() and drawn by paint().
     juce::Rectangle<int> pitchCaptionArea;
     juce::Rectangle<int> levelCaptionArea;
+    juce::Rectangle<int> envelopeCaptionArea;
     juce::Rectangle<int> soundingDotArea;
 
     // True while the channel is firing, so the timer only repaints on a change.
     bool isSounding = false;
+
+    int lastSpareHeight = 0;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (ChannelStrip)
 };

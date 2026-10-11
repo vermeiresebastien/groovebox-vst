@@ -7,6 +7,15 @@
 namespace gb
 {
 
+/** Which part of the amplitude envelope a value belongs to. */
+enum class EnvelopeStage
+{
+    attack,
+    decay,
+    sustain,
+    release,
+};
+
 class GrooveboxEditor;
 
 /**
@@ -109,6 +118,38 @@ public:
 
     bool isChannelMuted (int channel) const;
     void setChannelMuted (int channel, bool shouldBeMuted);
+
+    //==========================================================================
+    // Envelope
+    //
+    // Each channel has its own ADSR. A, D and R are held normalised (0..1) and
+    // mapped onto Layout::maxAttackSeconds and friends, so the editor only ever
+    // deals with 0..1; S is the sustain level, also 0..1.
+    //
+    // Sustain 0 makes the channel a one-shot, which is what a drum channel wants
+    // by default: the envelope lets go as soon as it reaches the sustain stage.
+    //==========================================================================
+
+    float getChannelAttack (int channel) const;
+    void setChannelAttack (int channel, float normalised);
+
+    float getChannelDecay (int channel) const;
+    void setChannelDecay (int channel, float normalised);
+
+    float getChannelSustain (int channel) const;
+    void setChannelSustain (int channel, float level);
+
+    float getChannelRelease (int channel) const;
+    void setChannelRelease (int channel, float normalised);
+
+    /** Puts one channel's envelope back to the defaults for a drum hit. */
+    void resetChannelEnvelope (int channel);
+
+    /** Attack, decay and release in seconds; sustain as a level. For display. */
+    static double envelopeSecondsFor (float normalised, EnvelopeStage stage);
+
+    /** "12 ms", "1.20 s", "45 %" — a display string for an envelope value. */
+    static juce::String formatEnvelopeValue (float normalised, EnvelopeStage stage);
 
     /** Loads a file as the sound for a channel. Returns false and fills
         `errorOut` when the file cannot be decoded. */

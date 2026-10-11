@@ -12,11 +12,39 @@ sample you drag onto its row, and which also plays from MIDI notes.
 | **MIDI input** | **Play the channels from a keyboard or pads: the channels answer C1 upwards, with velocity** |
 | Sample loading | Drag a `.wav` / `.aiff` / `.mp3` / `.flac` / `.ogg` onto any channel **row**, or click the channel's sound button to browse |
 | Per-channel pitch | −36 to +12 semitones, with `-12` / `+12` octave buttons |
+| **ADSR per channel** | **Attack, Decay, Sustain and Release for every channel, so a hit can be tightened or turned into a sustained sound** |
 | Swing | 0–100 % on either a 1/8 or 1/16 grid |
 | Tempo | Follows the host project tempo; in the standalone build it has its own transport and tempo |
 | Mix | Per-channel level and mute, plus a "clear row" button |
 | Row editing | Click a cell to toggle it; drag across cells to paint a run |
 | Persistence | Pattern, pitch, levels, mutes, names, colours and sample paths are saved in the session |
+
+## The envelope
+
+Every channel has its own ADSR, shown as four rows (**A D S R**) under the level
+fader in that channel's strip. Drag a row up or down to change it — horizontally
+works too — and double-click a row to reset just that one.
+
+The defaults are a drum hit: instant attack, a slow decay, **no sustain** and a
+short release. Sustain 0 is what makes a channel a one-shot: the envelope lets go
+as soon as it reaches the sustain stage, so the decay and release are what shape
+the hit.
+
+**Raise sustain and the channel holds.** It then behaves like a sustained
+instrument: the note rings until you let go, and the note off starts the release.
+That is what makes a pad or a keyboard play a sustained sound rather than a blip.
+
+| Control | Range | Notes |
+|---|---|---|
+| Attack | 0 – 2 s | Linear rise; at 0 the hit starts instantly |
+| Decay | 0 – 3 s | Falls from full to the sustain level |
+| Sustain | 0 – 100 % | 0 = one-shot; above 0 the note holds until released |
+| Release | 0 – 4 s | How long the tail takes to fade after release |
+
+The times are on a squared curve, so the low end of a row's travel is usable —
+most drum shaping happens in the first few milliseconds, and a linear control
+would put all of that in its first percent. Each row shows its value in
+milliseconds, seconds or percent.
 
 ## Playing it from MIDI
 
@@ -30,8 +58,9 @@ plays the kick without any setup. The note range is shown in the top bar.
 - **Notes play whether or not the transport is running**, so you can play the kit
   with the sequencer stopped. Grid hits are faded out when the transport stops;
   played notes are not, because they did not come from the transport.
-- **Note off is ignored.** Each voice is a one-shot whose own envelope decides how
-  long it rings, which is how a drum machine responds when you hold a pad.
+- **A note off releases the note.** With the default sustain of 0 that makes no
+  audible difference, because the one-shot has already let go of itself; raise
+  sustain and the note off is what ends the sound.
 - Notes outside the mapped range are ignored, and a muted channel ignores its note.
 
 ## Layout
@@ -162,7 +191,12 @@ It asserts, among other things, that:
 - pattern, pitch, names, swing and grid survive a save/load round trip;
 - an incoming note plays its channel with the transport stopped, a note outside
   the mapped range stays silent, velocity scales the hit, a muted channel ignores
-  its note, and a note off leaves the one-shot ringing.
+  its note, and a note off leaves the one-shot ringing;
+- the envelopes behave: sustain 0 makes a one-shot while sustain 1 holds, a note
+  off releases a held note, and a longer attack, decay or release measures longer
+  in the audio;
+- the envelope values survive a save/load round trip, and a channel that was never
+  touched keeps the defaults.
 
 `GrooveboxLayoutTest` builds the real editor and inspects it. A control laid out
 at zero size or outside its parent cannot be clicked, and no audio test can see

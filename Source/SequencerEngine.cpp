@@ -46,7 +46,8 @@ void SequencerEngine::stopAllVoices()
     for (auto& voice : voices)
     {
         voice.active = false;
-        voice.releasing = 0;
+        voice.released = false;
+        voice.envelope = Envelope();
         voice.sample = nullptr;
     }
 
@@ -160,15 +161,40 @@ void SequencerEngine::trigger (int channel, double increment, float velocity, bo
     target->increment = increment;
     target->gain = gain;
     target->age = ++voiceCounter;
-    target->releasing = 0;
-    target->attackTotal = juce::jmax (2, (int) (currentSampleRate * attackSeconds));
-    target->attackCounter = 0;
     target->active = true;
     target->fromMidi = fromMidi;
+    target->released = false;
+
+    // The channel's envelope, rebuilt per hit so an edit is heard on the next one.
+    target->envelope.setSampleRate (currentSampleRate);
+    target->envelope.setParameters (
+        (float) envelopeSeconds (state.attack[(size_t) channel].load(), Layout::maxAttackSeconds),
+        (float) envelopeSeconds (state.decay[(size_t) channel].load(), Layout::maxDecaySeconds),
+        state.sustain[(size_t) channel].load(),
+        (float) envelopeSeconds (state.release[(size_t) channel].load(), Layout::maxReleaseSeconds));
+    target->envelope.noteOn();
 
     voiceVelocity[(size_t) (target - voices.data())] = velocity;
 
     soundingChannels[(size_t) channel].store (true);
+}
+
+bool SequencerEngine::channelHolds (int channel) const
+{
+    return state.sustain[(size_t) channel].load() > 0.0001f;
+}
+
+/** Lets go of every voice on a channel that is still holding. Used by note off. */
+void SequencerEngine::releaseChannel (int channel)
+{
+    for (auto& voice : voices)
+    {
+        if (voice.active && ! voice.released && voice.channel == channel)
+        {
+            voice.envelope.noteOff();
+            voice.released = true;
+        }
+    }
 }
 
 SequencerEngine::VoiceDebug SequencerEngine::getVoiceDebug (int index) const
@@ -187,9 +213,9 @@ SequencerEngine::VoiceDebug SequencerEngine::getVoiceDebug (int index) const
     info.gain = voice.gain;
     info.velocity = voiceVelocity[(size_t) index];
     info.sampleLength = voice.sample != nullptr ? voice.sample->buffer.getNumSamples() : 0;
-    info.attackCounter = voice.attackCounter;
-    info.attackTotal = voice.attackTotal;
-    info.releasing = voice.releasing;
+    info.envelopeValue = voice.envelope.getCurrentValue();
+    info.envelopeActive = voice.envelope.isActive();
+    info.released = voice.released;
 
     return info;
 }
@@ -232,69 +258,72 @@ void SequencerEngine::processMidi (const juce::MidiBuffer& midi, int numSamples)
     if (midi.isEmpty())
         return;
 
-    // Note starts are collected before anything is played so the block can be
+    // Note events are collected before anything is played so the block can be
     // rendered in order: an extra voice must not be started before the samples
     // that precede it. At 5 ms blocks there are only ever a handful.
-    struct NoteStart { int sampleOffset; int channel; float velocity; };
+    struct NoteEvent
+    {
+        int sampleOffset;
+        int channel;
+        float velocity;
+        bool isNoteOn;
+    };
 
-    std::array<NoteStart, 32> starts {};
-    int numStarts = 0;
+    std::array<NoteEvent, 64> events {};
+    int numEvents = 0;
 
     for (const auto metadata : midi)
     {
         const auto message = metadata.getMessage();
 
-        // Note off is deliberately ignored: each drum voice is a one-shot whose
-        // own envelope decides how long it rings, which is how a drum machine
-        // behaves when you hold a pad.
-        if (! message.isNoteOn())
-            continue;
+        if (! message.isNoteOn() && ! message.isNoteOff())
+            continue; // the sequencer has no use for anything else yet
 
         const auto channel = channelForMidiNote (message.getNoteNumber());
 
-        if (channel < 0 || state.channelMuted[channel].load())
-            continue; // outside the mapped range, or muted
+        if (channel < 0)
+            continue; // outside the mapped range
 
-        if (numStarts >= (int) starts.size())
+        if (numEvents >= (int) events.size())
             break;
 
-        starts[(size_t) numStarts++] = { juce::jlimit (0, juce::jmax (0, numSamples - 1), metadata.samplePosition),
+        events[(size_t) numEvents++] = { juce::jlimit (0, juce::jmax (0, numSamples - 1), metadata.samplePosition),
                                          channel,
-                                         message.getFloatVelocity() };
+                                         message.getFloatVelocity(),
+                                         message.isNoteOn() };
     }
 
-    if (numStarts == 0)
+    if (numEvents == 0)
         return;
 
-    // Only reachable if a note arrives before any block has been rendered.
-    if (currentBlock == nullptr)
+    std::sort (events.begin(), events.begin() + numEvents,
+               [] (const NoteEvent& a, const NoteEvent& b) { return a.sampleOffset < b.sampleOffset; });
+
+    const auto renderUpTo = [this, numSamples] (int from, int to)
     {
-        for (int i = 0; i < numStarts; ++i)
-            triggerChannel (starts[(size_t) i].channel, starts[(size_t) i].velocity);
-
-        return;
-    }
-
-    std::sort (starts.begin(), starts.begin() + numStarts,
-               [] (const NoteStart& a, const NoteStart& b) { return a.sampleOffset < b.sampleOffset; });
+        if (currentBlock != nullptr && to > from && from < numSamples)
+            renderVoices (*currentBlock, from, juce::jmin (to, numSamples) - from);
+    };
 
     int rendered = 0;
 
-    for (int i = 0; i < numStarts; ++i)
+    for (int i = 0; i < numEvents; ++i)
     {
-        const auto& start = starts[(size_t) i];
+        const auto& event = events[(size_t) i];
 
-        if (start.sampleOffset > rendered)
+        if (event.sampleOffset > rendered)
         {
-            renderVoices (*currentBlock, rendered, start.sampleOffset - rendered);
-            rendered = start.sampleOffset;
+            renderUpTo (rendered, event.sampleOffset);
+            rendered = event.sampleOffset;
         }
 
-        triggerChannel (start.channel, start.velocity);
+        if (event.isNoteOn)
+            triggerChannel (event.channel, event.velocity);
+        else
+            releaseChannel (event.channel); // only bites once sustain is opened up
     }
 
-    if (rendered < numSamples)
-        renderVoices (*currentBlock, rendered, numSamples - rendered);
+    renderUpTo (rendered, numSamples);
 }
 
 void SequencerEngine::fireStep (int step)
@@ -325,7 +354,6 @@ void SequencerEngine::renderVoices (juce::AudioBuffer<float>& buffer, int startS
     if (numSamples <= 0)
         return;
 
-    const auto releaseSamples = juce::jmax (2, (int) (currentSampleRate * releaseSeconds));
     const auto numOutputChannels = buffer.getNumChannels();
 
     for (auto& flag : soundingChannels)
@@ -355,8 +383,12 @@ void SequencerEngine::renderVoices (juce::AudioBuffer<float>& buffer, int startS
 
         // The hit's velocity travels with the voice, because rendering can be
         // split across a block when a note arrives part way through it.
-        auto targetGain = voice.gain * voiceVelocity[(size_t) (&voice - voices.data())];
-        auto gain = targetGain;
+        const auto targetGain = voice.gain * voiceVelocity[(size_t) (&voice - voices.data())];
+
+        // A channel with no sustain is a one-shot: its envelope is let go the
+        // moment it reaches the sustain stage, so the release setting shapes the
+        // tail instead of the note ringing at a fixed level for ever.
+        const auto holds = channelHolds (voice.channel);
 
         for (int i = 0; i < numSamples; ++i)
         {
@@ -367,28 +399,16 @@ void SequencerEngine::renderVoices (juce::AudioBuffer<float>& buffer, int startS
                 break;
             }
 
-            if (voice.releasing > 0)
+            // Check the stage before taking the sample, so a one-shot is already
+            // heading into its release as it arrives at the end of its decay.
+            if (voice.envelope.getStage() == Envelope::Stage::sustain
+                && (! holds || voice.released))
             {
-                gain = targetGain * ((float) voice.releasing / (float) releaseSamples);
-                --voice.releasing;
+                voice.envelope.noteOff();
+                voice.released = true;
+            }
 
-                if (voice.releasing <= 0)
-                {
-                    voice.active = false;
-                    voice.sample = nullptr;
-                    break;
-                }
-            }
-            else if (voice.attackCounter < voice.attackTotal)
-            {
-                // Ramp in over the attack, then hold the voice's own gain.
-                gain = targetGain * ((float) voice.attackCounter / (float) voice.attackTotal);
-                ++voice.attackCounter;
-            }
-            else
-            {
-                gain = targetGain;
-            }
+            const auto gain = targetGain * voice.envelope.getNextSample();
 
             const auto index = (int) samplePosition;
             const auto fraction = (float) (samplePosition - (double) index);
@@ -403,6 +423,15 @@ void SequencerEngine::renderVoices (juce::AudioBuffer<float>& buffer, int startS
                 buffer.getWritePointer (1, startSample + i)[0] += rightSample * gain;
 
             samplePosition += voice.increment;
+
+            // Once the envelope has run out there is nothing left to hear, so the
+            // voice stops even if the sample has more left in it.
+            if (! voice.envelope.isActive())
+            {
+                voice.active = false;
+                voice.sample = nullptr;
+                break;
+            }
         }
 
         voice.position = samplePosition;
@@ -450,8 +479,11 @@ void SequencerEngine::processBlock (juce::AudioBuffer<float>& buffer,
             // from a note are left alone: they were not started by the transport,
             // so stopping the transport must not silence them.
             for (auto& voice : voices)
-                if (voice.active && ! voice.fromMidi && voice.releasing == 0)
-                    voice.releasing = juce::jmax (2, (int) (currentSampleRate * releaseSeconds));
+                if (voice.active && ! voice.fromMidi && ! voice.released)
+                {
+                    voice.envelope.noteOff();
+                    voice.released = true;
+                }
 
             renderVoices (buffer, 0, numSamples);
         }

@@ -259,6 +259,103 @@ void GrooveboxProcessor::setChannelMuted (int channel, bool shouldBeMuted)
 }
 
 //==============================================================================
+// Envelope
+
+float GrooveboxProcessor::getChannelAttack (int channel) const
+{
+    return juce::isPositiveAndBelow (channel, Layout::numChannels)
+             ? sequencerState.attack[(size_t) channel].load() : 0.0f;
+}
+
+float GrooveboxProcessor::getChannelDecay (int channel) const
+{
+    return juce::isPositiveAndBelow (channel, Layout::numChannels)
+             ? sequencerState.decay[(size_t) channel].load() : 0.0f;
+}
+
+float GrooveboxProcessor::getChannelSustain (int channel) const
+{
+    return juce::isPositiveAndBelow (channel, Layout::numChannels)
+             ? sequencerState.sustain[(size_t) channel].load() : 0.0f;
+}
+
+float GrooveboxProcessor::getChannelRelease (int channel) const
+{
+    return juce::isPositiveAndBelow (channel, Layout::numChannels)
+             ? sequencerState.release[(size_t) channel].load() : 0.0f;
+}
+
+void GrooveboxProcessor::setChannelAttack (int channel, float normalised)
+{
+    if (! juce::isPositiveAndBelow (channel, Layout::numChannels))
+        return;
+
+    sequencerState.attack[(size_t) channel].store (juce::jlimit (0.0f, 1.0f, normalised));
+    pushChannelToTree (channel);
+}
+
+void GrooveboxProcessor::setChannelDecay (int channel, float normalised)
+{
+    if (! juce::isPositiveAndBelow (channel, Layout::numChannels))
+        return;
+
+    sequencerState.decay[(size_t) channel].store (juce::jlimit (0.0f, 1.0f, normalised));
+    pushChannelToTree (channel);
+}
+
+void GrooveboxProcessor::setChannelSustain (int channel, float level)
+{
+    if (! juce::isPositiveAndBelow (channel, Layout::numChannels))
+        return;
+
+    sequencerState.sustain[(size_t) channel].store (juce::jlimit (0.0f, 1.0f, level));
+    pushChannelToTree (channel);
+}
+
+void GrooveboxProcessor::setChannelRelease (int channel, float normalised)
+{
+    if (! juce::isPositiveAndBelow (channel, Layout::numChannels))
+        return;
+
+    sequencerState.release[(size_t) channel].store (juce::jlimit (0.0f, 1.0f, normalised));
+    pushChannelToTree (channel);
+}
+
+void GrooveboxProcessor::resetChannelEnvelope (int channel)
+{
+    setChannelAttack (channel, Layout::defaultAttack);
+    setChannelDecay (channel, Layout::defaultDecay);
+    setChannelSustain (channel, Layout::defaultSustain);
+    setChannelRelease (channel, Layout::defaultRelease);
+}
+
+double GrooveboxProcessor::envelopeSecondsFor (float normalised, EnvelopeStage stage)
+{
+    switch (stage)
+    {
+        case EnvelopeStage::attack:  return gb::envelopeSeconds (normalised, Layout::maxAttackSeconds);
+        case EnvelopeStage::decay:   return gb::envelopeSeconds (normalised, Layout::maxDecaySeconds);
+        case EnvelopeStage::release: return gb::envelopeSeconds (normalised, Layout::maxReleaseSeconds);
+        case EnvelopeStage::sustain: return (double) juce::jlimit (0.0f, 1.0f, normalised);
+    }
+
+    return 0.0;
+}
+
+juce::String GrooveboxProcessor::formatEnvelopeValue (float normalised, EnvelopeStage stage)
+{
+    if (stage == EnvelopeStage::sustain)
+        return juce::String (juce::roundToInt (juce::jlimit (0.0f, 1.0f, normalised) * 100.0f)) + "%";
+
+    const auto seconds = envelopeSecondsFor (normalised, stage);
+
+    if (seconds < 1.0)
+        return juce::String (juce::roundToInt (seconds * 1000.0)) + " ms";
+
+    return juce::String (seconds, 2) + " s";
+}
+
+//==============================================================================
 // Sample loading
 
 bool GrooveboxProcessor::loadSampleIntoChannel (int channel, const juce::File& file, juce::String& errorOut)
@@ -374,6 +471,10 @@ void GrooveboxProcessor::pushChannelToTree (int channel)
     child.setProperty ("pitch", sequencerState.pitch[(size_t) channel].load(), &undoManager);
     child.setProperty ("level", sequencerState.level[(size_t) channel].load(), &undoManager);
     child.setProperty ("mute", sequencerState.channelMuted[channel].load(), &undoManager);
+    child.setProperty ("attack", sequencerState.attack[(size_t) channel].load(), &undoManager);
+    child.setProperty ("decay", sequencerState.decay[(size_t) channel].load(), &undoManager);
+    child.setProperty ("sustain", sequencerState.sustain[(size_t) channel].load(), &undoManager);
+    child.setProperty ("release", sequencerState.release[(size_t) channel].load(), &undoManager);
 }
 
 void GrooveboxProcessor::pushPatternToTree()
@@ -429,6 +530,17 @@ void GrooveboxProcessor::applyTree (const juce::ValueTree& tree)
         sequencerState.pitch[(size_t) channel].store ((int) child.getProperty ("pitch", 0));
         sequencerState.level[(size_t) channel].store ((float) (double) child.getProperty ("level", 1.0));
         sequencerState.channelMuted[channel].store ((bool) child.getProperty ("mute", false));
+
+        // Envelopes were added after the first release, so a session saved before
+        // that has no values here and falls back to the drum defaults.
+        sequencerState.attack[(size_t) channel].store (
+            (float) (double) child.getProperty ("attack", (double) Layout::defaultAttack));
+        sequencerState.decay[(size_t) channel].store (
+            (float) (double) child.getProperty ("decay", (double) Layout::defaultDecay));
+        sequencerState.sustain[(size_t) channel].store (
+            (float) (double) child.getProperty ("sustain", (double) Layout::defaultSustain));
+        sequencerState.release[(size_t) channel].store (
+            (float) (double) child.getProperty ("release", (double) Layout::defaultRelease));
 
         // Samples themselves are not stored inside the session: the file path is
         // remembered and reloaded from disk when it still exists.

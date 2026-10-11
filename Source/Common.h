@@ -24,6 +24,24 @@ namespace Layout
         follows the DAW convention, where MIDI 36 is C1 and middle C (60) is C3.
     */
     inline constexpr int firstMidiNote = 36;
+
+    /**
+        Envelope ranges, in seconds, plus the defaults.
+
+        A, D and R are stored normalised (0..1) and mapped onto these maxima, so
+        the editor never has to know about seconds. The ranges are short enough
+        that the control stays useful across its whole travel for percussion, and
+        long enough to shape something sustained.
+    */
+    inline constexpr double maxAttackSeconds  = 2.0;
+    inline constexpr double maxDecaySeconds   = 3.0;
+    inline constexpr double maxReleaseSeconds = 4.0;
+
+    /** Defaults: effectively a one-shot until sustain is raised. */
+    inline constexpr float defaultAttack  = 0.0f;   // 0 s
+    inline constexpr float defaultDecay   = 0.25f;  // ~0.21 s
+    inline constexpr float defaultSustain = 0.0f;   // one-shot
+    inline constexpr float defaultRelease = 0.15f;  // ~0.14 s
 }
 
 /** Palette lifted from the Earworm Studio drum page. */

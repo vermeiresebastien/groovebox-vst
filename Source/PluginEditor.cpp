@@ -7,13 +7,16 @@ namespace gb
 namespace
 {
     constexpr int editorWidth = 1240;
-    constexpr int editorHeight = 720;
+    constexpr int editorHeight = 830;
 
     constexpr int margin = 18;
     constexpr int titleHeight = 34;
     constexpr int transportHeight = 60;
-    constexpr int gridHeight = 452;
-    constexpr int stripHeight = 168;
+    constexpr int gridHeight = 400;
+    // Tall enough for every control in a channel strip: the sound and clear
+    // buttons, the pitch row, the level fader, the four ADSR rows and mute. A
+    // shorter strip still lays out, but the bottom control gets clipped.
+    constexpr int stripHeight = 254;
     constexpr int gap = 10;
 }
 
@@ -92,9 +95,10 @@ void GrooveboxEditor::resized()
     transportBar.setBounds (area.removeFromTop (transportHeight));
     area.removeFromTop (gap);
 
-    // The channel strips share the full width, so every strip stays aligned with
-    // the grid rows and the layout survives a resize.
-    auto stripRow = area.removeFromBottom (juce::jmin (stripHeight, area.getHeight() / 3));
+    // The channel strips take their full height: the clamp that used to be here
+    // (a third of the remaining area) silently squeezed the bottom control out of
+    // the strip whenever the window was a little short.
+    auto stripRow = area.removeFromBottom (juce::jmin (stripHeight, juce::jmax (0, area.getHeight() - 120)));
     const auto stripWidth = (stripRow.getWidth() - gap * (Layout::numChannels - 1)) / Layout::numChannels;
 
     for (int channel = 0; channel < channelStrips.size(); ++channel)

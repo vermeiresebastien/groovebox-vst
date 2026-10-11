@@ -294,7 +294,11 @@ int main()
         return 1;
     }
 
-    editor->setSize (1240, 720);
+    // Lay out at the size the plugin itself uses. Hard-coding it here once meant
+    // the test was laying out a size the editor never actually takes.
+    const auto preferredWidth = editor->getWidth();
+    const auto preferredHeight = editor->getHeight();
+    editor->setSize (juce::jmax (preferredWidth, 1240), juce::jmax (preferredHeight, 790));
     std::printf ("\neditor size: %d x %d\n", editor->getWidth(), editor->getHeight());
 
     TransportBar* transportBar = nullptr;
@@ -346,9 +350,27 @@ int main()
         {
             auto* inner = anyStrip->getChildComponent (i);
 
-            if (inner != nullptr && inner->isVisible())
-                checkBounds (*anyStrip, *inner, "child " + juce::String (i));
+            if (inner == nullptr || ! inner->isVisible())
+                continue;
+
+            const auto kind = dynamic_cast<juce::TextButton*> (inner) != nullptr ? juce::String ("TextButton:'")
+                                + dynamic_cast<juce::TextButton*> (inner)->getButtonText() + "'"
+                              : dynamic_cast<juce::Slider*> (inner) != nullptr ? juce::String ("Slider")
+                              : dynamic_cast<juce::Label*> (inner) != nullptr ? juce::String ("Label:'")
+                                + dynamic_cast<juce::Label*> (inner)->getText() + "'"
+                              : juce::String ("component");
+
+            checkBounds (*anyStrip, *inner, juce::String (i) + " " + kind);
         }
+
+        // A negative spare means the strip ran out of room and something below it
+        // was laid out with nothing, which is how the mute button went missing.
+        ++checked;
+
+        if (anyStrip->getSpareHeight() >= 0)
+            pass ("strip has " + juce::String (anyStrip->getSpareHeight()) + " px to spare");
+        else
+            fail ("strip is " + juce::String (-anyStrip->getSpareHeight()) + " px too short");
     }
 
     //======================================================================

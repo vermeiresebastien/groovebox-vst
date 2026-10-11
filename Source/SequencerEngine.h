@@ -6,6 +6,139 @@
 namespace gb
 {
 
+/** A normalised envelope value mapped onto a time range, in seconds.
+
+    The curve makes the low end of the travel usable: without it, almost all of a
+    linear control's useful range would sit in its first few percent, which is
+    exactly the part a drum envelope needs.
+*/
+inline double envelopeSeconds (float normalised, double maximum) noexcept
+{
+    const auto clamped = juce::jlimit (0.0f, 1.0f, normalised);
+    return (double) clamped * (double) clamped * maximum;
+}
+
+/**
+    A small amplitude envelope with an exponential feel.
+
+    Written by hand rather than using juce::ADSR because the sequencer has to know
+    when the decay has reached the sustain stage: a channel with no sustain is a
+    one-shot, and that is the moment it should let go. juce::ADSR keeps its stage
+    private, so it cannot answer that question.
+
+    Attack ramps linearly (an exponential rise from zero is inaudible for most of
+    its length), while decay and release fall towards their target the way an
+    analogue envelope does, which is what the web app's envelope does too.
+*/
+class Envelope
+{
+public:
+    enum class Stage { idle, attack, decay, sustain, release };
+
+    void setSampleRate (double newRate) noexcept
+    {
+        sampleRate = newRate > 0.0 ? newRate : 44100.0;
+    }
+
+    void setParameters (float attackSeconds, float decaySeconds, float sustainLevel, float releaseSeconds) noexcept
+    {
+        attackSamples  = juce::jmax (1.0, (double) attackSeconds * sampleRate);
+        decaySamples   = juce::jmax (1.0, (double) decaySeconds * sampleRate);
+        releaseSamples = juce::jmax (1.0, (double) releaseSeconds * sampleRate);
+        sustain = juce::jlimit (0.0f, 1.0f, sustainLevel);
+    }
+
+    void noteOn() noexcept
+    {
+        value = 0.0f;
+        stage = Stage::attack;
+        stagePosition = 0.0;
+        releaseBegin = 0.0f;
+    }
+
+    void noteOff() noexcept
+    {
+        if (stage == Stage::idle || stage == Stage::release)
+            return;
+
+        stage = Stage::release;
+        releaseBegin = value;
+        stagePosition = 0.0;
+    }
+
+    float getNextSample() noexcept
+    {
+        switch (stage)
+        {
+            case Stage::idle:
+                value = 0.0f;
+                break;
+
+            case Stage::attack:
+                value = (float) juce::jmin (1.0, stagePosition / attackSamples);
+                stagePosition += 1.0;
+
+                if (value >= 1.0f)
+                {
+                    stage = Stage::decay;
+                    stagePosition = 0.0;
+                }
+                break;
+
+            case Stage::decay:
+            {
+                const auto progress = juce::jlimit (0.0, 1.0, stagePosition / decaySamples);
+                value = 1.0f - (1.0f - sustain) * (float) progress;
+                stagePosition += 1.0;
+
+                if (progress >= 1.0)
+                {
+                    value = sustain;
+                    stage = Stage::sustain;
+                }
+                break;
+            }
+
+            case Stage::sustain:
+                value = sustain;
+                break;
+
+            case Stage::release:
+            {
+                const auto progress = juce::jlimit (0.0, 1.0, stagePosition / releaseSamples);
+                value = releaseBegin * (1.0f - (float) progress);
+                stagePosition += 1.0;
+
+                if (progress >= 1.0)
+                {
+                    value = 0.0f;
+                    stage = Stage::idle;
+                }
+                break;
+            }
+        }
+
+        return value;
+    }
+
+    Stage getStage() const noexcept { return stage; }
+    bool isActive() const noexcept { return stage != Stage::idle; }
+    float getCurrentValue() const noexcept { return value; }
+
+private:
+    double sampleRate = 44100.0;
+    double attackSamples = 1.0;
+    double decaySamples = 1.0;
+    double releaseSamples = 1.0;
+
+    float sustain = 0.0f;
+    float value = 0.0f;
+    float releaseBegin = 0.0f;
+
+    double stagePosition = 0.0;
+    Stage stage = Stage::idle;
+};
+
 /**
     Everything the audio thread reads while sequencing.
 
@@ -37,6 +170,19 @@ struct SequencerState
     /** Fallback tempo used when no host transport is available (standalone). */
     std::atomic<double> manualTempo { 120.0 };
 
+    /**
+        Per-channel amplitude envelope, each parameter normalised to 0..1.
+
+        Normalised rather than in seconds because the editor stores these and a
+        curve should feel even across its whole travel; `Layout::attackSeconds`
+        and its neighbours give the ranges. Defaults are short and sustain-free,
+        so a channel behaves like a one-shot drum until you open it up.
+    */
+    std::array<std::atomic<float>, (size_t) Layout::numChannels> attack {};
+    std::array<std::atomic<float>, (size_t) Layout::numChannels> decay {};
+    std::array<std::atomic<float>, (size_t) Layout::numChannels> sustain {};
+    std::array<std::atomic<float>, (size_t) Layout::numChannels> release {};
+
     SequencerState()
     {
         for (auto& row : pattern)
@@ -48,6 +194,11 @@ struct SequencerState
             level[(size_t) i].store (1.0f);
             pitch[(size_t) i].store (0);
             channelMuted[i].store (false);
+
+            attack[(size_t) i].store (Layout::defaultAttack);
+            decay[(size_t) i].store (Layout::defaultDecay);
+            sustain[(size_t) i].store (Layout::defaultSustain);
+            release[(size_t) i].store (Layout::defaultRelease);
         }
     }
 
@@ -112,9 +263,9 @@ public:
         float gain = 0.0f;
         float velocity = 0.0f;
         int sampleLength = 0;
-        int attackCounter = 0;
-        int attackTotal = 0;
-        int releasing = 0;
+        float envelopeValue = 0.0f;
+        bool envelopeActive = false;
+        bool released = false;
     };
 
     VoiceDebug getVoiceDebug (int index) const;
@@ -150,9 +301,13 @@ private:
         double increment = 1.0;
         float gain = 1.0f;
         int age = 0;
-        int attackCounter = 0;
-        int attackTotal = 1;
-        int releasing = 0;
+
+        /** The hit's amplitude envelope, stepped per sample. */
+        Envelope envelope;
+
+        /** Set once the envelope has been told to let go, so it happens once. */
+        bool released = false;
+
         bool active = false;
 
         /**
@@ -168,6 +323,14 @@ private:
     void renderVoices (juce::AudioBuffer<float>& buffer, int startSample, int numSamples);
     void trigger (int channel, double increment, float velocity, bool fromMidi);
     void stopAllVoices();
+
+    /** True when a voice's channel currently has sustain, so it holds rather than
+        decaying away. A channel with no sustain is a one-shot: its envelope is
+        released the moment it reaches the sustain stage. */
+    bool channelHolds (int channel) const;
+
+    /** Lets go of every voice on a channel that is still holding. */
+    void releaseChannel (int channel);
 
     /** Where one step starts inside its bar, in steps from the top of the bar.
 

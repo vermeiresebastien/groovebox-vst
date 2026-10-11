@@ -67,6 +67,34 @@ ChannelStrip::ChannelStrip (GrooveboxProcessor& processorToUse, int channelIndex
     muteButton.setTooltip ("Mute this channel");
     addAndMakeVisible (muteButton);
 
+    envelope.onValueChange = [this] (EnvelopeStage stage, float value)
+    {
+        switch (stage)
+        {
+            case EnvelopeStage::attack:  processor.setChannelAttack (channel, value); break;
+            case EnvelopeStage::decay:   processor.setChannelDecay (channel, value); break;
+            case EnvelopeStage::sustain: processor.setChannelSustain (channel, value); break;
+            case EnvelopeStage::release: processor.setChannelRelease (channel, value); break;
+        }
+    };
+
+    envelope.onReset = [this] (EnvelopeStage stage)
+    {
+        // Double-clicking one row resets just that row, which is more useful than
+        // throwing away the other three.
+        switch (stage)
+        {
+            case EnvelopeStage::attack:  processor.setChannelAttack (channel, Layout::defaultAttack); break;
+            case EnvelopeStage::decay:   processor.setChannelDecay (channel, Layout::defaultDecay); break;
+            case EnvelopeStage::sustain: processor.setChannelSustain (channel, Layout::defaultSustain); break;
+            case EnvelopeStage::release: processor.setChannelRelease (channel, Layout::defaultRelease); break;
+        }
+
+        refresh();
+    };
+
+    addAndMakeVisible (envelope);
+
     formatManager.registerBasicFormats();
 
     // Values first, callbacks afterwards: refresh() therefore cannot trigger a
@@ -126,6 +154,11 @@ void ChannelStrip::refresh()
     pitchValueLabel.setText (pitch > 0 ? "+" + juce::String (pitch) : juce::String (pitch),
                              juce::dontSendNotification);
 
+    envelope.setValue (EnvelopeStage::attack,  processor.getChannelAttack (channel));
+    envelope.setValue (EnvelopeStage::decay,   processor.getChannelDecay (channel));
+    envelope.setValue (EnvelopeStage::sustain, processor.getChannelSustain (channel));
+    envelope.setValue (EnvelopeStage::release, processor.getChannelRelease (channel));
+
     repaint();
 }
 
@@ -156,6 +189,10 @@ void ChannelStrip::resized()
     const int pitchRowHeight = tight ? 18 : 20;
     const int levelHeight = tight ? 16 : 18;
     const int muteHeight = tight ? 20 : 22;
+
+    // Four ADSR rows. At 14 px each they are short but still draggable, which is
+    // what the strip's width allows.
+    const int envelopeHeight = tight ? 52 : 56;
 
     auto header = area.removeFromTop (headerHeight);
     colourButton.setBounds (header.removeFromLeft (16).withSizeKeepingCentre (14, 14));
@@ -192,7 +229,13 @@ void ChannelStrip::resized()
     levelSlider.setBounds (area.removeFromTop (levelHeight));
 
     area.removeFromTop (gapSize);
+    envelopeCaptionArea = area.removeFromTop (captionHeight); // drawn in paint()
+    envelope.setBounds (area.removeFromTop (envelopeHeight));
+
+    area.removeFromTop (gapSize);
     muteButton.setBounds (area.removeFromTop (muteHeight));
+
+    lastSpareHeight = area.getHeight();
 }
 
 //==============================================================================
@@ -214,6 +257,7 @@ void ChannelStrip::paint (juce::Graphics& g)
     // Section captions live in the gaps left by resized().
     paintCaption (g, "Pitch", pitchCaptionArea);
     paintCaption (g, "Level", levelCaptionArea);
+    paintCaption (g, "Env", envelopeCaptionArea);
 
     // Lit dot at the end of the header while this channel is firing.
     const auto dot = soundingDotArea.toFloat().withSizeKeepingCentre (6.0f, 6.0f);

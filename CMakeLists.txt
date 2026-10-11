@@ -76,6 +76,7 @@ set(GROOVEBOX_SOURCES
     Source/SequencerEngine.cpp
     Source/StepGridComponent.cpp
     Source/ChannelStrip.cpp
+    Source/EnvelopeControls.cpp
     Source/TransportBar.cpp
     Source/LookAndFeel.cpp
 )

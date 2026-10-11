@@ -755,18 +755,234 @@ int main()
                 return peak;
             };
 
-            check (tailPeak (released, tailFrom) > 0.1f,
-                   "audio continues after a note off",
+            check (tailPeak (released, tailFrom) > 0.0f,
+                   "audio continues past where the note off lands",
                    "tail peak " + juce::String (tailPeak (released, tailFrom), 4));
-            check (std::abs (tailPeak (released, tailFrom) - tailPeak (sustained, tailFrom)) < 0.001f,
-                   "a note off does not change the tail at all",
-                   "with note off " + juce::String (tailPeak (released, tailFrom), 5)
-                     + ", without " + juce::String (tailPeak (sustained, tailFrom), 5));
+
+            juce::ignoreUnused (sustained);
 
             longFile.deleteFile();
         }
 
         click.deleteFile();
+    }
+
+    //======================================================================
+    std::printf ("\n[9] per-channel ADSR\n");
+    {
+        // A long flat tone, so anything the envelope does is easy to see: the
+        // sample itself would otherwise decide how long a hit lasts.
+        auto toneFile = testScratchDirectory().getChildFile ("adsr-tone.wav");
+        toneFile.deleteFile();
+
+        constexpr int toneLength = 60000;
+
+        {
+            juce::AudioBuffer<float> content (1, toneLength);
+            auto* data = content.getWritePointer (0);
+
+            for (int i = 0; i < toneLength; ++i)
+                data[i] = 0.9f * std::sin (2.0 * juce::MathConstants<double>::pi * 220.0 * i / sampleRate);
+
+            juce::WavAudioFormat format;
+            std::unique_ptr<juce::FileOutputStream> stream (toneFile.createOutputStream());
+            std::unique_ptr<juce::AudioFormatWriter> writer (
+                stream != nullptr ? format.createWriterFor (stream.get(), sampleRate, 1, 24, {}, 0) : nullptr);
+
+            if (writer != nullptr)
+            {
+                stream.release();
+                writer->writeFromAudioSampleBuffer (content, 0, toneLength);
+            }
+        }
+
+        // Plays one note and returns the rendered left channel. Everything about
+        // the envelope is set by the caller first.
+        const auto renderNoteWithEnvelope = [sampleRate, blockSize] (float attack, float decay, float sustainLevel,
+                                                                    float release, int noteOffBlock, int blocks)
+        {
+            GrooveboxProcessor p;
+            p.prepareToPlay (sampleRate, blockSize);
+
+            juce::String err;
+            p.loadSampleIntoChannel (0, testScratchDirectory().getChildFile ("adsr-tone.wav"), err);
+            clearAllSteps (p);
+            p.setPlaying (false);
+
+            p.setChannelAttack (0, attack);
+            p.setChannelDecay (0, decay);
+            p.setChannelSustain (0, sustainLevel);
+            p.setChannelRelease (0, release);
+
+            constexpr int block = 256;
+            juce::AudioBuffer<float> buffer (2, block);
+            juce::MidiBuffer midi;
+            std::vector<float> out;
+
+            for (int b = 0; b < blocks; ++b)
+            {
+                buffer.clear();
+                midi.clear();
+
+                if (b == 0)
+                    midi.addEvent (juce::MidiMessage::noteOn (1, 36, 1.0f), 0);
+                else if (b == noteOffBlock)
+                    midi.addEvent (juce::MidiMessage::noteOff (1, 36), 0);
+
+                p.processBlock (buffer, midi);
+
+                for (int i = 0; i < block; ++i)
+                    out.push_back (buffer.getSample (0, i));
+            }
+
+            return out;
+        };
+
+        const auto rmsBetween = [] (const std::vector<float>& data, int from, int to)
+        {
+            double sum = 0.0;
+            int count = 0;
+
+            for (int i = juce::jmax (0, from); i < juce::jmin (to, (int) data.size()); ++i)
+            {
+                sum += (double) data[(size_t) i] * data[(size_t) i];
+                ++count;
+            }
+
+            return count > 0 ? (float) std::sqrt (sum / count) : 0.0f;
+        };
+
+        // -------- sustain: a channel with sustain holds, one without does not ----
+        {
+            // Decay 0.4 of the range is about 0.48 s, so by one second in the
+            // one-shot has finished while the sustaining one is still going.
+            auto oneShot = renderNoteWithEnvelope (0.0f, 0.4f, 0.0f, 0.1f, 999, 220);
+            auto held = renderNoteWithEnvelope (0.0f, 0.4f, 1.0f, 0.1f, 999, 220);
+
+            const auto lateFrom = 44100; // one second in
+            const auto oneShotTail = rmsBetween (oneShot, lateFrom, (int) oneShot.size());
+            const auto heldTail = rmsBetween (held, lateFrom, (int) held.size());
+
+            check (oneShotTail < 0.01f, "sustain at 0 makes the channel a one-shot",
+                   "level at 1 s " + juce::String (oneShotTail, 4));
+            check (heldTail > 0.2f, "sustain at 1 holds the note",
+                   "level at 1 s " + juce::String (heldTail, 4));
+        }
+
+        // -------- note off releases a sustaining channel -------------------------
+        {
+            auto neverReleased = renderNoteWithEnvelope (0.0f, 0.75f, 1.0f, 0.3f, 999, 220);
+            auto releasedAt = renderNoteWithEnvelope (0.0f, 0.75f, 1.0f, 0.3f, 8, 220);
+
+            const auto afterRelease = 8 * 256 + 20000;
+
+            const auto stillHeld = rmsBetween (neverReleased, afterRelease, (int) neverReleased.size());
+            const auto letGo = rmsBetween (releasedAt, afterRelease, (int) releasedAt.size());
+
+            check (stillHeld > 0.2f, "a held note keeps sounding without a note off",
+                   "level " + juce::String (stillHeld, 4));
+            check (letGo < 0.01f, "a note off releases the note",
+                   "level " + juce::String (letGo, 4));
+        }
+
+        // -------- release length decides how long the tail is --------------------
+        {
+            auto shortRelease = renderNoteWithEnvelope (0.0f, 0.75f, 1.0f, 0.0f, 4, 220);
+            auto longRelease = renderNoteWithEnvelope (0.0f, 0.75f, 1.0f, 1.0f, 4, 220);
+
+            // Shortly after the note off, a long release is still sounding while a
+            // short one has already finished.
+            const auto justAfter = 4 * 256 + 3000;
+
+            const auto shortTail = rmsBetween (shortRelease, justAfter, justAfter + 4000);
+            const auto longTail = rmsBetween (longRelease, justAfter, justAfter + 4000);
+
+            check (longTail > shortTail * 3.0f, "a longer release leaves a longer tail",
+                   "short " + juce::String (shortTail, 4) + ", long " + juce::String (longTail, 4));
+        }
+
+        // -------- attack: a slow attack ramps in --------------------------------
+        {
+            auto fast = renderNoteWithEnvelope (0.0f, 0.75f, 1.0f, 0.1f, 999, 120);
+            auto slow = renderNoteWithEnvelope (1.0f, 0.75f, 1.0f, 0.1f, 999, 120);
+
+            // The very start of the note: with a slow attack it should be much quieter.
+            const auto opening = rmsBetween (fast, 0, 4000);
+            const auto openingSlow = rmsBetween (slow, 0, 4000);
+
+            check (opening > openingSlow * 3.0f, "a longer attack ramps in more slowly",
+                   "fast " + juce::String (opening, 4) + ", slow " + juce::String (openingSlow, 4));
+        }
+
+        // -------- decay: a longer decay holds the note up longer -----------------
+        {
+            auto quick = renderNoteWithEnvelope (0.0f, 0.1f, 0.0f, 0.1f, 999, 220);
+            auto gradual = renderNoteWithEnvelope (0.0f, 0.75f, 0.0f, 0.1f, 999, 220);
+
+            const auto midway = 20000;
+            const auto quickLevel = rmsBetween (quick, midway, midway + 4000);
+            const auto gradualLevel = rmsBetween (gradual, midway, midway + 4000);
+
+            check (gradualLevel > quickLevel * 3.0f, "a longer decay holds the note up longer",
+                   "quick " + juce::String (quickLevel, 4) + ", gradual " + juce::String (gradualLevel, 4));
+        }
+
+        // -------- the ramp is normalised and formats for display ----------------
+        {
+            check (GrooveboxProcessor::formatEnvelopeValue (0.0f, EnvelopeStage::sustain) == "0%",
+                   "sustain formats as a percentage",
+                   GrooveboxProcessor::formatEnvelopeValue (0.0f, EnvelopeStage::sustain));
+            check (GrooveboxProcessor::formatEnvelopeValue (0.5f, EnvelopeStage::sustain) == "50%",
+                   "sustain shows its level",
+                   GrooveboxProcessor::formatEnvelopeValue (0.5f, EnvelopeStage::sustain));
+            check (GrooveboxProcessor::formatEnvelopeValue (0.0f, EnvelopeStage::attack).contains ("ms"),
+                   "a very short time is shown in milliseconds",
+                   GrooveboxProcessor::formatEnvelopeValue (0.0f, EnvelopeStage::attack));
+            check (GrooveboxProcessor::formatEnvelopeValue (1.0f, EnvelopeStage::attack).contains ("s"),
+                   "a long time is shown in seconds",
+                   GrooveboxProcessor::formatEnvelopeValue (1.0f, EnvelopeStage::attack));
+
+            // The curve means half travel is well under half the maximum time.
+            const auto half = GrooveboxProcessor::envelopeSecondsFor (0.5f, EnvelopeStage::attack);
+            check (half > 0.0 && half < Layout::maxAttackSeconds * 0.5,
+                   "the time curve favours the short end",
+                   juce::String (half, 3) + " s of " + juce::String (Layout::maxAttackSeconds, 1) + " s");
+        }
+
+        // -------- envelope values survive a save/load round trip ----------------
+        {
+            GrooveboxProcessor saved;
+            saved.prepareToPlay (sampleRate, blockSize);
+            saved.setChannelAttack (2, 0.8f);
+            saved.setChannelDecay (2, 0.4f);
+            saved.setChannelSustain (2, 0.65f);
+            saved.setChannelRelease (2, 0.2f);
+
+            juce::MemoryBlock state;
+            saved.getStateInformation (state);
+
+            GrooveboxProcessor restored;
+            restored.prepareToPlay (sampleRate, blockSize);
+            restored.setStateInformation (state.getData(), (int) state.getSize());
+
+            const auto near = [] (float a, float b) { return std::abs (a - b) < 0.001f; };
+
+            check (near (restored.getChannelAttack (2), 0.8f), "attack survived",
+                   juce::String (restored.getChannelAttack (2), 3));
+            check (near (restored.getChannelDecay (2), 0.4f), "decay survived",
+                   juce::String (restored.getChannelDecay (2), 3));
+            check (near (restored.getChannelSustain (2), 0.65f), "sustain survived",
+                   juce::String (restored.getChannelSustain (2), 3));
+            check (near (restored.getChannelRelease (2), 0.2f), "release survived",
+                   juce::String (restored.getChannelRelease (2), 3));
+
+            // A channel that was never touched keeps the drum defaults.
+            check (near (restored.getChannelSustain (0), Layout::defaultSustain),
+                   "an untouched channel keeps the default sustain",
+                   juce::String (restored.getChannelSustain (0), 3));
+        }
+
+        toneFile.deleteFile();
     }
 
     //======================================================================
