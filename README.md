@@ -115,6 +115,12 @@ once, so the build deliberately does not enable `/MP`; capping MSBuild's own
 parallelism keeps it reliable. If a build does fail that way, just run it again —
 it is not a code error.
 
+This checkout was relocated from `D:\CURSOR LOCAL PROJECTS\Groovebox VST`, so the
+`build\` directory here holds a CMake cache naming a path that no longer exists
+and cannot be built into. The working tree on this machine is `build-new\`: use
+it in place of `build\` in the commands below, or delete the stale `build\` and
+reconfigure into it.
+
 The first configure clones JUCE 8.0.4 into `external/JUCE` (shallow, ~1 minute).
 On this machine git's default schannel backend cannot acquire credentials, so the
 configure step passes `-c http.sslBackend=openssl`; if the clone still fails,
@@ -135,10 +141,25 @@ does not match (`cmake --help` lists the available ones).
 | `Groovebox_Standalone` | `build/Groovebox_artefacts/Release/Standalone/Groovebox.exe` |
 | `GrooveboxSmokeTest` | `build/GrooveboxSmokeTest_artefacts/Release/GrooveboxSmokeTest.exe` |
 
+The two shippable artefacts are assembled into **`launch/`** by a dedicated
+target, the same way the other skeer-audio projects do it:
+
+```powershell
+cmake --build build-new --config Release --parallel 2 --target launch
+```
+
+That gives you `launch\Groovebox.exe` and `launch\Groovebox.vst3` — the one
+folder to run from and the one folder to install from, whatever `build/` happens
+to look like. It is a target rather than an automatic post-build copy because
+Ableton Live holds the plugin DLL open: a locked bundle should fail the release
+step loudly, not break the build you were trying to test. If the copy fails,
+quit Live and run it again.
+
 ## Installing
 
 Build the plugin first (above), then copy the whole `Groovebox.vst3` **folder**
-(not just the inner binary) into your VST3 folder and rescan in your DAW.
+(not just the inner binary) from `launch/` into your VST3 folder and rescan in
+your DAW.
 
 Which folder depends on your DAW:
 
@@ -151,7 +172,7 @@ Which folder depends on your DAW:
 # e.g. a user-writable folder, which needs no administrator rights
 $dest = "$env:USERPROFILE\Documents\VST3"
 New-Item -ItemType Directory -Force -Path $dest | Out-Null
-Copy-Item -Recurse -Force build\Groovebox_artefacts\Release\VST3\Groovebox.vst3 $dest
+Copy-Item -Recurse -Force launch\Groovebox.vst3 $dest
 ```
 
 `C:\Program Files\Common Files\VST3\` needs administrator rights. Note that
@@ -159,7 +180,7 @@ Ableton Live scans only that folder by default, so if you install somewhere else
 you must point Live at it (the table above).
 
 The **standalone** app needs no installation at all — just run
-`build\Groovebox_artefacts\Release\Standalone\Groovebox.exe`.
+`launch\Groovebox.exe`.
 
 ### Ableton Live specifics
 
@@ -198,7 +219,7 @@ Two test programs run with no GUI window and no host.
 to get subtly wrong:
 
 ```powershell
-build\GrooveboxSmokeTest_artefacts\Release\GrooveboxSmokeTest.exe
+build-new\GrooveboxSmokeTest_artefacts\Release\GrooveboxSmokeTest.exe
 ```
 
 It asserts, among other things, that:
@@ -232,7 +253,7 @@ at zero size or outside its parent cannot be clicked, and no audio test can see
 that:
 
 ```powershell
-build\GrooveboxLayoutTest_artefacts\Release\GrooveboxLayoutTest.exe
+build-new\GrooveboxLayoutTest_artefacts\Release\GrooveboxLayoutTest.exe
 ```
 
 It reports the bounds of every control, flags any with no size or outside their

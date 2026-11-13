@@ -132,6 +132,37 @@ target_link_libraries(Groovebox PRIVATE
 )
 
 # ---------------------------------------------------------------------------
+# launch/
+#
+# The one folder the binaries are run from, matching the other skeer-audio
+# projects. Hunting through build\Groovebox_artefacts\Release\... is how the
+# wrong build ends up being judged, so a target assembles the standalone and the
+# bundle here. It is a target rather than a POST_BUILD step on purpose: Ableton
+# Live holds the plugin DLL open, and failing the whole build over a copy that
+# only the release step needs would hide the real result.
+#
+#   cmake --build build-new --config Release --target launch
+#
+# The bundle is removed before the copy so a file that no longer belongs to the
+# build cannot survive in it.
+# ---------------------------------------------------------------------------
+set(GROOVEBOX_LAUNCH_DIR "${CMAKE_CURRENT_SOURCE_DIR}/launch")
+set(GROOVEBOX_LAUNCH_BUNDLE "${CMAKE_CURRENT_BINARY_DIR}/Groovebox_artefacts/$<CONFIG>/VST3/Groovebox.vst3")
+
+add_custom_target(launch
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${GROOVEBOX_LAUNCH_DIR}"
+    COMMAND ${CMAKE_COMMAND} -E rm -rf "${GROOVEBOX_LAUNCH_DIR}/Groovebox.vst3"
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+            "${GROOVEBOX_LAUNCH_BUNDLE}" "${GROOVEBOX_LAUNCH_DIR}/Groovebox.vst3"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:Groovebox_Standalone>" "${GROOVEBOX_LAUNCH_DIR}/Groovebox.exe"
+    COMMENT "Assembling launch/"
+    VERBATIM
+)
+
+add_dependencies(launch Groovebox_VST3 Groovebox_Standalone)
+
+# ---------------------------------------------------------------------------
 # Headless smoke test
 #
 # Drives the real processor with no UI and no host, and checks the timing,

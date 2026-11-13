@@ -1,5 +1,7 @@
-# Build output
+# Build output. `build*/` covers build-new/, the tree in use since this checkout
+# was relocated (see README) — without it, 1.2 GB of objects shows as untracked.
 build/
+build*/
 out/
 *.user
 *-configure.log
@@ -7,6 +9,9 @@ out/
 
 # Staged plugin and standalone builds (build these yourself; see README)
 dist/
+
+# Unified launch folder, populated by the build (launch/Groovebox.exe + Groovebox.vst3)
+launch/
 
 # Third-party source fetched by CMake
 external/
