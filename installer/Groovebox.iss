@@ -6,9 +6,11 @@
 ;
 ;   * no administrator rights needed by default -- everything lands under LOCALAPPDATA;
 ;   * the VST3 goes into the per-user VST3 folder, which Bitwig, Reaper and Studio One
-;     scan without any configuration;
-;   * a task copies it into Documents\VST3 as well, because Ableton only looks there if
-;     you add it as a custom folder -- and that is where this plugin has been living;
+;     scan without any configuration -- and which, measured on this machine, is the
+;     custom folder Ableton Live 12 is already set to scan;
+;   * a task copies it into Documents\VST3 as well, for hosts that only see a folder the
+;     user names explicitly (Live does not look in Documents\VST3 unless you point its
+;     VST3 Plug-In Custom Folder setting there);
 ;   * the uninstaller removes every copy, so uninstalling really uninstalls.
 ;
 ; Sources are read straight from launch/, the one folder the build exports to, so the
@@ -63,8 +65,14 @@ Compression=lzma2/max
 SolidCompression=yes
 WizardStyle=modern
 SetupLogging=yes
-CloseApplications=yes
-CloseApplicationsFilter=*.exe,*.vst3
+; Do NOT let Setup close running applications to get at a file. With "yes", a silent
+; install that finds its target locked force-quits whatever holds it -- and on a machine
+; where a host has the plugin loaded, that host is Ableton Live, unsaved set and all.
+; Failing to write a locked file is the safe outcome: the wizard says so, the README
+; says to quit the host first, and nothing gets killed on somebody's behalf. The house
+; template (PulseKit, SKULPT) still sets "yes" with a *.vst3 filter, which is the worst
+; combination -- it names exactly the file the DAW is holding.
+CloseApplications=no
 RestartApplications=no
 AllowNoIcons=yes
 

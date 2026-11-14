@@ -215,31 +215,43 @@ installer the other skeer-audio products ship, reading its payload straight out 
 `launch/` so a setup file can never contain binaries older than the last build. The
 version comes from `project(... VERSION ...)` in `CMakeLists.txt` unless `-Version`
 overrides it. It needs no administrator rights by default, puts the VST3 in the
-per-user VST3 folder that most hosts scan, and offers a task that also copies it
-into `Documents\VST3` for Ableton's custom folder. See `installer\Groovebox.iss` for
-every path it touches.
+per-user VST3 folder that most hosts scan, and offers a task that also copies it into
+`Documents\VST3`. See `installer\Groovebox.iss` for every path it touches.
+
+**Quit your DAW before installing.** The installer deliberately does not close running
+applications (`CloseApplications=no`): if the plugin DLL is held open by Live or
+another host, the copy fails with a clear message instead of killing the host and the
+unsaved set inside it. Quit the host, run the setup again.
 
 To install by hand instead: build the plugin first (above), then copy the whole
 `Groovebox.vst3` **folder** (not just the inner binary) from `launch/` into your
 VST3 folder and rescan in your DAW.
 
-Which folder depends on your DAW:
+Which folder your host actually looks at is measurable rather than assumed. Live
+12.3.5 on this machine keeps its scan set in
+`%APPDATA%\Ableton\Live 12 Suite\Preferences\PluginManager\PluginScanDb.ldb`, and the
+folders it had configured were the global one plus a custom VST3 folder:
 
 | DAW | VST3 folder |
 |---|---|
-| Ableton Live | `C:\Program Files\Common Files\VST3\` (its default), or any extra folder you add under **Settings → Plug-Ins → VST3 Plug-In Custom Folder** |
-| Most others | `C:\Program Files\Common Files\VST3\` |
+| Ableton Live | `C:\Program Files\Common Files\VST3\` (its default), plus whatever you set as **Settings → Plug-Ins → VST3 Plug-In Custom Folder** — on this machine that is `%LOCALAPPDATA%\Programs\Common\VST3\` |
+| Most others | `C:\Program Files\Common Files\VST3\`, and they also scan `%LOCALAPPDATA%\Programs\Common\VST3\` without being told to |
+
+`Documents\VST3` is **not** scanned unless you add it as the custom folder yourself —
+Live does not look there just because it exists, which is why the installer's
+`abletonfolder` task is optional and the default per-user destination is the one Live
+already watches.
 
 ```powershell
-# e.g. a user-writable folder, which needs no administrator rights
-$dest = "$env:USERPROFILE\Documents\VST3"
+# the per-user folder: writable without administrator rights, scanned by Live here
+$dest = "$env:LOCALAPPDATA\Programs\Common\VST3"
 New-Item -ItemType Directory -Force -Path $dest | Out-Null
 Copy-Item -Recurse -Force launch\Groovebox.vst3 $dest
 ```
 
-`C:\Program Files\Common Files\VST3\` needs administrator rights. Note that
-Ableton Live scans only that folder by default, so if you install somewhere else
-you must point Live at it (the table above).
+`C:\Program Files\Common Files\VST3\` needs administrator rights; use it when several
+accounts on the machine should get the plugin, which is also what Cubase and Nuendo
+expect.
 
 The **standalone** app needs no installation at all — just run
 `launch\Groovebox.exe`.

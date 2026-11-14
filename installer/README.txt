@@ -1,5 +1,5 @@
-Groovebox - Workshop Audio / Skeer Audio
-========================================
+Groovebox - Skeer Audio
+=======================
 
 A drag-and-drop sample step sequencer: 16 steps, 12 drum channels, per-channel
 pitch, ADSR and velocity, swing on a 1/8 or 1/16 grid, and a master trim with a
@@ -13,10 +13,18 @@ VST3 (the plugin hosts load):
   per-user install  -> %LOCALAPPDATA%\Programs\Common\VST3\Groovebox.vst3
   all-users install -> %ProgramFiles%\Common Files\VST3\Groovebox.vst3
   with the Ableton task -> %USERPROFILE%\Documents\VST3\Groovebox.vst3
+    (Live does not scan Documents\VST3 on its own; the task exists for hosts
+     that were told to read a folder you chose. Leave it unticked unless that
+     is your setup — the per-user path above is scanned as-is by Live here.)
 
 Standalone app (no host needed):
   Groovebox.exe in this folder. Double-click it, or run it from a terminal if
   you want to see any startup message.
+
+Quit your DAW before installing or reinstalling. The installer will not close
+running programs to get at a file — if a host is holding Groovebox.vst3 open,
+the copy stops with a message instead of killing your session. Close the host
+and run the setup again.
 
 After installing, rescan in your host. In Ableton Live: Options > Preferences >
 Plug-Ins, tick "Use VST3 Plug-In System Folder", and click Rescan (hold Alt to
