@@ -192,8 +192,9 @@ target, the same way the other skeer-audio projects do it:
 cmake --build build-new --config Release --parallel 2 --target launch
 ```
 
-That gives you `launch\Groovebox.exe` and `launch\Groovebox.vst3` — the one
-folder to run from and the one folder to install from, whatever the build tree
+That gives you `launch\Groovebox.exe`, `launch\Groovebox.vst3` and — once
+`installer\build-installer.ps1` has run — `launch\Groovebox Setup <version>.exe`:
+the one folder to run from, to install from and to ship, whatever the build tree
 happens to look like. It is a target rather than an automatic post-build copy
 because Ableton Live holds the plugin DLL open: a locked bundle should fail the
 release step loudly, not break the build you were trying to test. If the copy
@@ -201,9 +202,26 @@ fails, quit Live and run it again.
 
 ## Installing
 
-Build the plugin first (above), then copy the whole `Groovebox.vst3` **folder**
-(not just the inner binary) from `launch/` into your VST3 folder and rescan in
-your DAW.
+There are two ways in: the **installer** for a machine you are shipping to, and a
+**manual copy** for this one.
+
+```powershell
+.\installer\build-installer.ps1              # build, refresh launch/, then compile the setup
+.\installer\build-installer.ps1 -SkipBuild   # package whatever launch/ already holds
+```
+
+That produces **`launch\Groovebox Setup <version>.exe`** — Inno Setup, the same
+installer the other skeer-audio products ship, reading its payload straight out of
+`launch/` so a setup file can never contain binaries older than the last build. The
+version comes from `project(... VERSION ...)` in `CMakeLists.txt` unless `-Version`
+overrides it. It needs no administrator rights by default, puts the VST3 in the
+per-user VST3 folder that most hosts scan, and offers a task that also copies it
+into `Documents\VST3` for Ableton's custom folder. See `installer\Groovebox.iss` for
+every path it touches.
+
+To install by hand instead: build the plugin first (above), then copy the whole
+`Groovebox.vst3` **folder** (not just the inner binary) from `launch/` into your
+VST3 folder and rescan in your DAW.
 
 Which folder depends on your DAW:
 
