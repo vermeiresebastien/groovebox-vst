@@ -10,28 +10,94 @@ namespace
     {
         return juce::Font (juce::FontOptions (12.0f));
     }
+
+    /** Where 0 dBFS falls on the meter's scale, so the fill goes hot from there. */
+    constexpr float unityFraction = (0.0f - MasterMeter::floorDb)
+                                    / (MasterMeter::ceilingDb - MasterMeter::floorDb);
 }
 
-TransportBar::TransportBar (GrooveboxProcessor& processorToUse)
+//==============================================================================
+MasterMeter::MasterMeter (GrooveboxProcessor& processorToUse)
     : processor (processorToUse)
+{
+    setTooltip ("Master output level. Click to clear the clip indicator.");
+    startTimerHz (30);
+}
+
+MasterMeter::~MasterMeter()
+{
+    stopTimer();
+}
+
+void MasterMeter::paint (juce::Graphics& g)
+{
+    const auto area = getLocalBounds().toFloat();
+    const auto gap = 3.0f;
+    const auto barHeight = (area.getHeight() - gap) * 0.5f;
+
+    for (int channel = 0; channel < MasterBus::numMeterChannels; ++channel)
+    {
+        auto bar = area.withHeight (barHeight)
+                       .withY (area.getY() + (float) channel * (barHeight + gap));
+
+        g.setColour (Colours::cellOff);
+        g.fillRect (bar);
+
+        const auto peak = processor.getMasterPeak (channel);
+        const auto db = juce::Decibels::gainToDecibels (peak, floorDb);
+        const auto fraction = juce::jlimit (0.0f, 1.0f, (db - floorDb) / (ceilingDb - floorDb));
+
+        auto inner = bar.reduced (1.0f);
+
+        if (fraction > 0.0f)
+        {
+            const auto fill = fraction >= 1.0f            ? Colours::meterOver
+                              : fraction >= unityFraction ? Colours::meterHot
+                                                          : Colours::meterSafe;
+
+            g.setColour (fill);
+            g.fillRect (inner.withWidth (inner.getWidth() * fraction));
+        }
+
+        // The latch is drawn over the fill rather than instead of it, so a channel
+        // that clipped still shows how loud the rest of the block was.
+        if (processor.isMasterClipping (channel))
+        {
+            g.setColour (Colours::meterOver);
+            g.fillRect (inner.removeFromRight (5.0f));
+        }
+
+        g.setColour (Colours::chipBorder);
+        g.drawRect (bar, 1.0f);
+    }
+}
+
+void MasterMeter::mouseDown (const juce::MouseEvent& event)
+{
+    juce::ignoreUnused (event);
+
+    processor.clearMasterClipLatch();
+    repaint();
+}
+
+void MasterMeter::timerCallback()
+{
+    repaint();
+}
+
+//==============================================================================
+TransportBar::TransportBar (GrooveboxProcessor& processorToUse)
+    : processor (processorToUse),
+      masterMeter (processorToUse)
 {
     addAndMakeVisible (playButton);
 
-    // Caption for the plugin build: the host owns transport there. The note range
-    // tells a player which notes the channels answer to.
+    // Caption for the plugin build: the host owns transport there.
     hostCaption.setText ("Host transport", juce::dontSendNotification);
     hostCaption.setJustificationType (juce::Justification::centred);
     hostCaption.setColour (juce::Label::textColourId, Colours::muted);
     hostCaption.setFont (captionFont());
     addAndMakeVisible (hostCaption);
-
-    midiHintLabel.setJustificationType (juce::Justification::centredLeft);
-    midiHintLabel.setColour (juce::Label::textColourId, Colours::muted);
-    midiHintLabel.setFont (captionFont());
-    midiHintLabel.setTooltip ("Incoming notes play the channels: the first channel answers C1, "
-                              "and the rest follow upwards.");
-    midiHintLabel.setInterceptsMouseClicks (false, false);
-    addAndMakeVisible (midiHintLabel);
 
     tempoDownButton.setTooltip ("Decrease tempo by 1 BPM");
     tempoUpButton.setTooltip ("Increase tempo by 1 BPM");
@@ -82,6 +148,23 @@ TransportBar::TransportBar (GrooveboxProcessor& processorToUse)
     resetVelocitiesButton.setTooltip ("Put every step back to full velocity");
     addAndMakeVisible (resetVelocitiesButton);
 
+    // The trim is in dB, which is already the scale the ear works in, so it needs
+    // no skew: half the travel is half the range. Double-click returns it to the
+    // default, which is the level the hidden 0.8 used to give every voice.
+    masterSlider.setSliderStyle (juce::Slider::LinearHorizontal);
+    masterSlider.setTextBoxStyle (juce::Slider::NoTextBox, false, 0, 0);
+    masterSlider.setRange (Layout::minMasterGainDb, Layout::maxMasterGainDb, 0.1);
+    masterSlider.setDoubleClickReturnValue (true, Layout::defaultMasterGainDb);
+    masterSlider.setTooltip ("Master output trim");
+    addAndMakeVisible (masterSlider);
+
+    masterValueLabel.setJustificationType (juce::Justification::centredLeft);
+    masterValueLabel.setColour (juce::Label::textColourId, Colours::text);
+    masterValueLabel.setFont (captionFont());
+    addAndMakeVisible (masterValueLabel);
+
+    addAndMakeVisible (masterMeter);
+
     // Values first, callbacks afterwards: refresh() therefore cannot trigger a
     // write back into the processor while the bar is being built.
     refresh();
@@ -111,6 +194,13 @@ TransportBar::TransportBar (GrooveboxProcessor& processorToUse)
     swingSlider.onValueChange = [this]
     {
         processor.setSwing ((float) swingSlider.getValue());
+    };
+
+    masterSlider.onValueChange = [this]
+    {
+        processor.setMasterGainDb ((float) masterSlider.getValue());
+        masterValueLabel.setText (GrooveboxProcessor::formatMasterGain (processor.getMasterGainDb()),
+                                  juce::dontSendNotification);
     };
 
     // Host tempo and transport can change at any time, so follow them.
@@ -146,18 +236,27 @@ void TransportBar::refresh()
     swingEighthButton.setToggleState (grid == 4, juce::dontSendNotification);
     swingSixteenthButton.setToggleState (grid == 2, juce::dontSendNotification);
 
-    // Name the note range the channels answer to, using this build's mapping.
-    const auto first = GrooveboxProcessor::getMidiNoteNameForChannel (0);
-    const auto last = GrooveboxProcessor::getMidiNoteNameForChannel (Layout::numChannels - 1);
-
-    midiHintLabel.setText ("MIDI notes " + first + "-" + last + " play the channels",
-                           juce::dontSendNotification);
+    masterSlider.setValue ((double) processor.getMasterGainDb(), juce::dontSendNotification);
+    masterValueLabel.setText (GrooveboxProcessor::formatMasterGain (processor.getMasterGainDb()),
+                              juce::dontSendNotification);
 }
 
 void TransportBar::resized()
 {
     auto area = getLocalBounds().reduced (8, 6);
     area.removeFromBottom (2); // leave room for the separator rule
+
+    // The master section comes off the right first, so it keeps its width however
+    // narrow the window gets and the tools to its left are what give way.
+    auto masterArea = area.removeFromRight (212);
+    masterCaptionArea = masterArea.removeFromTop (12); // drawn in paint()
+    masterArea.removeFromTop (2);
+    masterSlider.setBounds (masterArea.removeFromLeft (110).withSizeKeepingCentre (110, 22));
+    masterArea.removeFromLeft (6);
+    masterValueLabel.setBounds (masterArea.removeFromLeft (52).withSizeKeepingCentre (52, 18));
+    masterArea.removeFromLeft (6);
+    masterMeter.setBounds (masterArea.removeFromLeft (38).withSizeKeepingCentre (38, 22));
+    area.removeFromRight (10);
 
     playButton.setBounds (area.removeFromLeft (76).reduced (0, 2));
     area.removeFromLeft (6);
@@ -191,13 +290,6 @@ void TransportBar::resized()
     velocityButton.setBounds (area.removeFromLeft (76).withSizeKeepingCentre (76, 24));
     area.removeFromLeft (4);
     resetVelocitiesButton.setBounds (area.removeFromLeft (52).withSizeKeepingCentre (52, 22));
-    area.removeFromLeft (10);
-
-    // Whatever horizontal space is left names the incoming-note mapping.
-    if (area.getWidth() > 150)
-        midiHintLabel.setBounds (area.withSizeKeepingCentre (area.getWidth(), 18));
-    else
-        midiHintLabel.setBounds ({});
 }
 
 //==============================================================================
@@ -205,6 +297,7 @@ void TransportBar::paint (juce::Graphics& g)
 {
     paintCaption (g, "Tempo", tempoCaptionArea);
     paintCaption (g, "Swing", swingCaptionArea);
+    paintCaption (g, "Master", masterCaptionArea);
 
     // Subtle rule along the bottom edge.
     g.setColour (Colours::rule);
@@ -266,6 +359,7 @@ void TransportBar::handleVelocityClicked()
 
 void TransportBar::handleResetVelocitiesClicked()
 {
+    processor.beginTransaction ("Reset velocities");
     processor.resetVelocities();
 
     if (processor.onStateChanged != nullptr)

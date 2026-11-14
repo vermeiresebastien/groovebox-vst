@@ -46,7 +46,15 @@ void EnvelopeControls::setValue (EnvelopeStage stage, float value)
 {
     if (auto* control = controlFor (stage))
     {
-        control->value = juce::jlimit (0.0f, 1.0f, value);
+        const auto clamped = juce::jlimit (0.0f, 1.0f, value);
+
+        // Repaint only on an actual change: the channel strip re-reads these every
+        // timer tick so the panel can follow host automation, and repainting four
+        // rows twelve times over each tick when nothing moved is wasted work.
+        if (std::abs (clamped - control->value) < 1.0e-4f)
+            return;
+
+        control->value = clamped;
         repaint();
     }
 }

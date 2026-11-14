@@ -403,9 +403,14 @@ void StepGridComponent::mouseDown (const juce::MouseEvent& e)
         isDraggingVelocity = true;
         velocityHover = cell;
 
+        processor.beginTransaction ("Edit step velocity");
         setVelocityFromPointer (cell.channel, cell.step, e.getPosition());
         return;
     }
+
+    // One transaction for the whole gesture, opened here rather than per cell: a
+    // drag across a row is a single edit and should undo as one.
+    processor.beginTransaction ("Paint steps");
 
     // The clicked cell is the anchor: toggling it decides what the rest of the
     // drag paints.

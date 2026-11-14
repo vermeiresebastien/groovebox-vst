@@ -427,10 +427,140 @@ int main()
             break;
         }
 
-        checkFadersIn (*transportBar, "transport", [&processor] (juce::Slider&)
+        // The bar owns two horizontal faders — swing and the master trim — and
+        // each has to be checked against its own parameter. They are told apart by
+        // their range: swing runs 0..1, the trim runs in dB.
+        for (int i = 0; i < transportBar->getNumChildComponents(); ++i)
         {
-            return (double) processor.getSwing();
-        });
+            auto* slider = dynamic_cast<juce::Slider*> (transportBar->getChildComponent (i));
+
+            if (slider == nullptr || ! slider->isVisible()
+                || slider->getSliderStyle() != juce::Slider::LinearHorizontal)
+                continue;
+
+            if (slider->getMaximum() <= 1.01)
+                checkFader (*slider, "transport swing",
+                            [&processor] { return (double) processor.getSwing(); });
+            else
+                checkFader (*slider, "transport master",
+                            [&processor] { return (double) processor.getMasterGainDb(); });
+        }
+
+        // Those drags leave both parameters at the top of their range, and the
+        // audio checks below measure levels, so put them back first.
+        processor.setSwing (0.0f);
+        processor.setMasterGainDb (Layout::defaultMasterGainDb);
+    }
+
+    //======================================================================
+    // The reverse of the drag test above: a value a host writes straight into the
+    // parameter, with the panel never touched, has to be reflected back onto the
+    // controls. A drag cannot prove this — a drag moves the control first and the
+    // processor second, whereas automation moves the processor and leaves the panel
+    // to catch up. The strip does that catch-up in syncAutomatableControls(), which
+    // its timer runs every tick; a headless build cannot pump the OS timer, so the
+    // test invokes the same catch-up through refresh(), which calls exactly that
+    // method. It covers the four control kinds separately because a slider
+    // attachment — the obvious tool — cannot bind the mute toggle, the envelope's
+    // custom drag rows, or the pitch label; those are the ones this fix is for.
+    std::printf ("\n-- the panel catches up to a host-written parameter --\n");
+
+    if (anyStrip != nullptr)
+    {
+        auto& apvts = processor.getValueTreeState();
+
+        juce::Slider* levelSlider = nullptr;
+        juce::Button* muteButton = nullptr;
+        juce::Label* pitchLabel = nullptr;
+        EnvelopeControls* envelope = nullptr;
+
+        for (int i = 0; i < anyStrip->getNumChildComponents(); ++i)
+        {
+            auto* child = anyStrip->getChildComponent (i);
+
+            if (auto* s = dynamic_cast<juce::Slider*> (child);
+                s != nullptr && s->getSliderStyle() == juce::Slider::LinearHorizontal)
+                levelSlider = s;
+            else if (auto* b = dynamic_cast<juce::Button*> (child);
+                     b != nullptr && b->getButtonText() == "Mute")
+                muteButton = b;
+            else if (auto* l = dynamic_cast<juce::Label*> (child);
+                     l != nullptr && l->getTooltip().startsWith ("Pitch offset"))
+                pitchLabel = l;
+            else if (auto* e = dynamic_cast<EnvelopeControls*> (child))
+                envelope = e;
+        }
+
+        ++checked;
+
+        if (levelSlider == nullptr || muteButton == nullptr || pitchLabel == nullptr || envelope == nullptr)
+        {
+            fail ("the strip is missing a control the automation check needs");
+        }
+        else
+        {
+            // Each case: write the parameter the way a host does — normalised, into
+            // the parameter, past every setter — catch the panel up, and confirm the
+            // control now shows what the host asked for.
+            const auto automate = [&] (juce::StringRef id, float value)
+            {
+                if (auto* p = apvts.getParameter (id))
+                    p->setValueNotifyingHost (p->convertTo0to1 (value));
+            };
+
+            const struct { juce::String id; float value; const char* what; } cases[]
+            {
+                { Params::levelId (0),   0.37f, "level" },
+                { Params::pitchId (0),   3.0f,  "pitch" },
+                { Params::attackId (0),  0.62f, "attack" },
+                { Params::muteId (0),    1.0f,  "mute" },
+            };
+
+            for (const auto& c : cases)
+            {
+                automate (c.id, c.value);
+                anyStrip->refresh();
+
+                ++checked;
+                const juce::String kind = c.what;
+                bool ok = false;
+                juce::String detail;
+
+                if (kind == "level")
+                {
+                    ok = std::abs (levelSlider->getValue() - (double) c.value) < 0.01;
+                    detail = juce::String (levelSlider->getValue(), 3);
+                }
+                else if (kind == "pitch")
+                {
+                    ok = pitchLabel->getText() == "+3";
+                    detail = pitchLabel->getText();
+                }
+                else if (kind == "attack")
+                {
+                    const auto a = envelope->getValue (EnvelopeStage::attack);
+                    ok = std::abs (a - c.value) < 0.01f;
+                    detail = juce::String (a, 3);
+                }
+                else // mute
+                {
+                    ok = muteButton->getToggleState();
+                    detail = ok ? "on" : "off";
+                }
+
+                if (ok)
+                    pass (juce::String (c.what) + " control follows a host-written value (" + detail + ")");
+                else
+                    fail (juce::String (c.what) + " control did not follow host automation (showing " + detail + ")");
+            }
+
+            // Undo the automation so the audio checks below start from sane values.
+            processor.setChannelLevel (0, 1.0f);
+            processor.setChannelPitch (0, 0);
+            processor.setChannelMuted (0, false);
+            processor.resetChannelEnvelope (0);
+            anyStrip->refresh();
+        }
     }
 
     //======================================================================

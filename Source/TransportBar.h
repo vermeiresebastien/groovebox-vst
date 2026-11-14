@@ -7,7 +7,36 @@ namespace gb
 {
 
 /**
-    The bar above the grid: play/stop, tempo, swing and clear pattern.
+    The master output meter: one bar per output channel, plus a clip indicator.
+
+    It has its own timer because the transport bar's 200 ms refresh is far too
+    slow to catch a drum transient; the peak itself is held on the audio side, so
+    all this does is read it and repaint. Clicking clears the clip latch, which
+    is the only way the latch goes out.
+*/
+class MasterMeter : public juce::Component,
+                    public juce::SettableTooltipClient,
+                    private juce::Timer
+{
+public:
+    explicit MasterMeter (GrooveboxProcessor& processorToUse);
+    ~MasterMeter() override;
+
+    /** Bottom and top of the bar's scale, in dBFS. */
+    static constexpr float floorDb   = -42.0f;
+    static constexpr float ceilingDb = Layout::maxMasterGainDb;
+
+    void paint (juce::Graphics& g) override;
+    void mouseDown (const juce::MouseEvent& event) override;
+
+private:
+    void timerCallback() override;
+
+    GrooveboxProcessor& processor;
+};
+
+/**
+    The bar above the grid: play/stop, tempo, swing, pattern tools and the master.
 
     In a plugin build the host owns transport and tempo, so the play button and
     the tempo steppers are disabled and a "Host transport" caption is shown
@@ -47,7 +76,6 @@ private:
 
     juce::TextButton playButton { "Play" };
     juce::Label hostCaption;
-    juce::Label midiHintLabel;
     juce::TextButton tempoDownButton { "-" };
     juce::Label tempoLabel;
     juce::TextButton tempoUpButton { "+" };
@@ -61,9 +89,15 @@ private:
     juce::TextButton velocityButton { "Velocity" };
     juce::TextButton resetVelocitiesButton { "100%" };
 
+    /** The master trim and its meter, at the right-hand end of the bar. */
+    juce::Slider masterSlider;
+    juce::Label masterValueLabel;
+    MasterMeter masterMeter;
+
     // Caption strips filled in by resized() and drawn by paint().
     juce::Rectangle<int> tempoCaptionArea;
     juce::Rectangle<int> swingCaptionArea;
+    juce::Rectangle<int> masterCaptionArea;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (TransportBar)
 };

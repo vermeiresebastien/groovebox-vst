@@ -17,9 +17,11 @@ sample you drag onto its row, and which also plays from MIDI notes.
 | Swing | 0–100 % on either a 1/8 or 1/16 grid |
 | Tempo | Follows the host project tempo; in the standalone build it has its own transport and tempo |
 | Mix | Per-channel level and mute, plus a "clear row" button |
+| **Master trim & meter** | **A −24 to +6 dB master trim you can see and reach, with a peak meter and a clip latch on the output** |
+| **Automation** | **Levels, pitches, envelopes, mutes, swing, tempo and the master trim are host parameters — automate them, and the panel follows what the host drew** |
 | Row editing | Click a cell to toggle it; drag across cells to paint a run |
 | **Shift a row** | **The ← and → buttons in a channel strip turn that whole row one step earlier or later, and every step's velocity goes with it** |
-| Persistence | Pattern, pitch, levels, mutes, names, colours and sample paths are saved in the session |
+| Persistence | Pattern, pitch, levels, mutes, names, colours and sample paths are saved in the session; a session saved before the parameter migration is read in and its values carried over |
 
 ## Step velocity
 
@@ -88,9 +90,57 @@ plays the kick without any setup. The note range is shown in the top bar.
   sustain and the note off is what ends the sound.
 - Notes outside the mapped range are ignored, and a muted channel ignores its note.
 
+## Mix, headroom and the meter
+
+The voices sum at unity and the master stage trims the result. There is no hidden
+compensation anywhere in the signal path: an earlier build multiplied every voice
+by a fixed 0.8 that no control could reach, so the panel's loudest setting was
+never actually the loudest the engine could produce, and no meter explained the
+missing 2 dB.
+
+**Master Trim** is the slider in the top bar, −24 to +6 dB, defaulting to −2 dB.
+It is where the old hidden 0.8 now lives, made visible: the default leaves
+roughly the same headroom a full kit used to get by itself, but you can move it.
+Gain is smoothed over 20 ms so dragging it cannot zipper, and double-clicking the
+slider returns it to −2 dB.
+
+The meter beside it is one bar per output channel over a scale of −42 to +6 dBFS,
+with the clip indicator marking 0 dBFS. It reads a peak held on the audio side —
+the editor polls a few times a second, far too slowly for a drum transient, so
+the bus keeps the highest value it saw and lets it fall away between blocks.
+Anything reaching 0 dBFS latches the clip indicator, and **the latch is only
+cleared by clicking the meter**. There is no limiter: if a kit is too hot, the fix
+is the trim or the channel levels, not a processor quietly reshaping what you
+mixed.
+
+## Automation
+
+Every continuous control is a proper host parameter, so it can be drawn as
+automation instead of only moved by hand: per-channel level, pitch, A/D/S/R and
+mute (7 parameters × 12 channels), plus master trim, swing, swing grid and
+tempo — 88 in total, grouped per lane so a host lists them sensibly.
+
+The pattern is deliberately **not** in the parameter list. 192 cells as 192
+parameters would swamp a host's automation list, and it is not what anyone
+automates; it stays in the session state. Tempo is in the list for the standalone
+build and for recalling a session, but a hosted plugin follows the host's tempo —
+drawing a ramp on it there does nothing the host has not already decided.
+
+Ranges match the controls that already existed, so the migration changed what a
+host can reach rather than what the panel does. Values saved before the
+migration are read in and carried onto the new parameters on load, so an old
+session comes back at the levels it was left at.
+
+Host-written values reach the panel, not just the audio: the channel strips and
+the top bar re-read the parameters on their timers, so a ramp you draw in the
+host moves the fader, the mute button, the pitch readout and the envelope rows in
+front of you. Every control writes straight through when you move it, so during a
+drag the poll reads back the value already under the pointer and leaves it alone.
+
 ## Layout
 
-- **Top bar** — transport, tempo, swing and grid, and "Clear pattern".
+- **Top bar** — transport, tempo, swing and grid, master trim and meter, and
+  "Clear pattern".
 - **Middle** — the 16 × 12 step grid. Channel 11 is the top row and channel 0 the
   bottom, matching the web app, which reverses its lane list.
 - **Bottom** — one strip per channel: name (double-click to rename), colour
@@ -105,8 +155,8 @@ Requirements: **CMake 3.22+**, **Visual Studio 2022 or newer** with the C++
 workload (or another C++17 compiler), and **git**.
 
 ```powershell
-cmake -S . -B build -G "Visual Studio 18 2026" -A x64
-cmake --build build --config Release --parallel 2
+cmake -S . -B build-new -G "Visual Studio 18 2026" -A x64
+cmake --build build-new --config Release --parallel 2
 ```
 
 `--parallel 2` is not a typo. On this machine MSVC 14.51 fails intermittently
@@ -114,12 +164,6 @@ with "internal compiler error" / `D8040` when too many `cl.exe` processes run at
 once, so the build deliberately does not enable `/MP`; capping MSBuild's own
 parallelism keeps it reliable. If a build does fail that way, just run it again —
 it is not a code error.
-
-This checkout was relocated from `D:\CURSOR LOCAL PROJECTS\Groovebox VST`, so the
-`build\` directory here holds a CMake cache naming a path that no longer exists
-and cannot be built into. The working tree on this machine is `build-new\`: use
-it in place of `build\` in the commands below, or delete the stale `build\` and
-reconfigure into it.
 
 The first configure clones JUCE 8.0.4 into `external/JUCE` (shallow, ~1 minute).
 On this machine git's default schannel backend cannot acquire credentials, so the
@@ -137,9 +181,9 @@ does not match (`cmake --help` lists the available ones).
 
 | Target | Output |
 |---|---|
-| `Groovebox_VST3` | `build/Groovebox_artefacts/Release/VST3/Groovebox.vst3` |
-| `Groovebox_Standalone` | `build/Groovebox_artefacts/Release/Standalone/Groovebox.exe` |
-| `GrooveboxSmokeTest` | `build/GrooveboxSmokeTest_artefacts/Release/GrooveboxSmokeTest.exe` |
+| `Groovebox_VST3` | `build-new/Groovebox_artefacts/Release/VST3/Groovebox.vst3` |
+| `Groovebox_Standalone` | `build-new/Groovebox_artefacts/Release/Standalone/Groovebox.exe` |
+| `GrooveboxSmokeTest` | `build-new/GrooveboxSmokeTest_artefacts/Release/GrooveboxSmokeTest.exe` |
 
 The two shippable artefacts are assembled into **`launch/`** by a dedicated
 target, the same way the other skeer-audio projects do it:
@@ -149,11 +193,11 @@ cmake --build build-new --config Release --parallel 2 --target launch
 ```
 
 That gives you `launch\Groovebox.exe` and `launch\Groovebox.vst3` — the one
-folder to run from and the one folder to install from, whatever `build/` happens
-to look like. It is a target rather than an automatic post-build copy because
-Ableton Live holds the plugin DLL open: a locked bundle should fail the release
-step loudly, not break the build you were trying to test. If the copy fails,
-quit Live and run it again.
+folder to run from and the one folder to install from, whatever the build tree
+happens to look like. It is a target rather than an automatic post-build copy
+because Ableton Live holds the plugin DLL open: a locked bundle should fail the
+release step loudly, not break the build you were trying to test. If the copy
+fails, quit Live and run it again.
 
 ## Installing
 
@@ -227,12 +271,27 @@ It asserts, among other things, that:
 - an empty engine is silent, and a hit fires exactly once;
 - every one of the 16 steps lands within **2 samples** of its grid position at
   120 bpm, regardless of the host block size;
+- the pattern still lands on the grid after **32 bars** at 120 bpm, after 16 bars
+  at 300 bpm with several onsets inside one block, and after 24 bars at 127 bpm on
+  an awkward 333-sample block — one bar could not see a clock that drifts;
 - swing places every step on the onset the web app's formula specifies, on both
   the 1/8 and 1/16 grids;
 - an octave of pitch shortens a sample, mute silences a channel, and a lower
   level is quieter;
+- pitching a sample **up** does not fold its top end back into the audible band:
+  measured on synthetic tones, a component that would alias is left at **−83.1 dB**
+  while one inside the passband, and a tone at unity, both stay within **0.00 dB**
+  of where they started;
 - a level or mute change made **while the sequencer is running** takes effect on
   the hits that follow;
+- samples can be loaded from another thread while the audio thread is rendering,
+  and the render keeps making sound throughout;
+- the master trim is the only place the output is scaled — a unity hit comes out at
+  the sample's own peak, the 0.8 the old build hid is reachable from the trim, and
+  the shipped default is **level-matched** with it (so "louder" is never mistaken
+  for "better" here);
+- the meter holds what the output reached, the clip indicator latches at 0 dBFS,
+  the latch survives silence until you click it, and the peak falls away;
 - a mono sample stays centred;
 - pattern, pitch, names, swing and grid survive a save/load round trip;
 - an incoming note plays its channel with the transport stopped, a note outside
@@ -246,7 +305,11 @@ It asserts, among other things, that:
 - step velocities survive a save and load, including a very quiet step, and an off
   step never comes back as on;
 - shifting a row carries each step's velocity with it, wraps the last step to the
-  first, is a no-op over a whole bar, and leaves every other row alone.
+  first, is a no-op over a whole bar, and leaves every other row alone;
+- a value written into a **parameter** the way a host writes it — normalised,
+  straight through `setValueNotifyingHost`, without touching any of the
+  processor's own setters — reaches the engine and changes the audio, so all 88
+  parameters are genuinely automatable rather than merely listed.
 
 `GrooveboxLayoutTest` builds the real editor and inspects it. A control laid out
 at zero size or outside its parent cannot be clicked, and no audio test can see
@@ -258,28 +321,36 @@ build-new\GrooveboxLayoutTest_artefacts\Release\GrooveboxLayoutTest.exe
 
 It reports the bounds of every control, flags any with no size or outside their
 parent, and drives the level fader with synthetic mouse events to confirm the
-change actually reaches the processor.
+change actually reaches the processor. It also goes the other way: it writes a
+parameter as a host would and checks that the strip's fader, mute button, pitch
+readout and envelope rows all catch up to it.
 
 Run both after any change to the editor or the engine. Both have already caught
 real bugs: swing that was computed but never applied, a step that fired early
-after a bar wrap, a pitch control laid out at 0 px wide, and faders whose moves
-never reached the processor.
+after a bar wrap, a pitch control laid out at 0 px wide, faders whose moves never
+reached the processor, and a panel that kept showing the old value after the host
+automated it.
 
 ## How it is put together
 
 ```
 Source/
   Common.h              layout constants (16 steps, 12 channels) and the palette
+  Parameters.h          the automatable parameter set: ids, ranges, grouping
   SampleStore.{h,cpp}   sample decoding, and the channel -> sample assignment
+  Resampler.h           the windowed-sinc coefficient table the voices read from
   SequencerEngine.{h,cpp}  the scheduler and the voices (the audio thread)
+  MasterBus.h           the master trim, peak meter and clip latch
   PluginProcessor.{h,cpp}  the AudioProcessor, transport and state persistence
   PluginEditor.{h,cpp}     window layout
   StepGridComponent.{h,cpp}  the grid, and the file drag-and-drop target
   ChannelStrip.{h,cpp}      one channel's controls
-  TransportBar.{h,cpp}      transport, tempo, swing
+  EnvelopeControls.{h,cpp}  the A/D/S/R rows inside a strip
+  TransportBar.{h,cpp}      transport, tempo, swing, master trim and meter
   LookAndFeel.{h,cpp}       the flat dark theme
 Tests/
   SmokeTest.cpp         the headless engine test
+  LayoutTest.cpp        builds the real editor and inspects it
 ```
 
 Notes on the design:
@@ -293,16 +364,41 @@ Notes on the design:
 - **One clock.** The engine tracks `position`, measured in steps from the start
   of the song. Step onsets are expressed in the same unit, so there is no second
   cursor that can drift out of step with the first. Onsets are recomputed from
-  `position` every block, so a rounding error cannot accumulate.
+  `position` every block, so a rounding error cannot accumulate. The head is
+  advanced only by whole rendered sample counts, and an onset is quantised to the
+  sample it falls on with the sub-sample remainder left behind: carrying that
+  remainder forward is what used to leak up to a sample per onset and slide the
+  standalone clock a third of a step over thirty-two bars.
 - **Block splitting.** A block is split at a step onset so a hit starts on its
   exact sample rather than on the host's buffer boundary. With a host, the
   position comes from `AudioPlayHead`; without one it advances by the block
   length, which keeps playback identical in the standalone build.
 - **No locks on the audio thread.** The editor writes atomics that the engine
-  reads. Samples are reference-counted, so replacing a sound while it is still
-  sounding cannot free the buffer underneath the voice playing it.
-- **Sample rate conversion.** A sample whose rate differs from the session's is
-  resampled by the voice's playback increment, so no per-sample work is added.
+  reads. The sample registry is append-only and published through atomic pointers
+  — a sample is never removed, moved or reused once it is live — so the audio
+  thread resolves a channel id to a reference-counted sample without taking any
+  lock, and replacing a sound while it is still sounding cannot free the buffer
+  underneath the voice playing it. (It used to take a spinlock here, which on an
+  audio thread is a priority inversion waiting to happen.) The price is a
+  ceiling of `SampleStore::maxSamples` loaded samples per session, which is
+  reported as an error rather than silently exceeded.
+- **Parameters, not a private state tree.** Continuous controls live in an
+  `AudioProcessorValueTreeState`, which is what makes them reachable from a host.
+  Every setter on the processor funnels through one private helper,
+  `writeParameter()`, so a drag on the panel and a ramp drawn in the host arrive
+  at the engine by the same path and both notify the host back. The engine reads
+  the parameter atomics, never the tree, so the audio thread stays off the message
+  thread.
+- **Sample rate and pitch conversion.** A voice reads its sample through a
+  precomputed windowed-sinc kernel rather than by linear interpolation. Linear
+  interpolation is not a filter: pitch a sample up and everything above the
+  output's Nyquist folds back into the audible band, and at a ratio of exactly
+  two it does not even interpolate — it decimates. The table is built when the
+  engine is constructed, off the audio thread, and a voice picks a cutoff band at
+  note-on so the kernel never changes within a hit.
+- **Peak detection lives on the audio side.** The editor polls a few times a
+  second, too slow for a drum hit, so the master bus holds the peak it has seen
+  and lets it decay between blocks instead of asking the GUI to catch it.
 
 ## Known limitations
 
@@ -311,4 +407,6 @@ Notes on the design:
 - Audio dropped from outside the app is decoded into memory but has no path, so
   it is not restored with the session.
 - One 16-step bar; there is no pattern chaining or song mode yet.
-- No MIDI note input, and no per-channel pan.
+- No per-channel pan, and no group or submix routing.
+- The loaded-sample registry is capped at `SampleStore::maxSamples` per session;
+  past that, a load reports an error instead of growing the list.

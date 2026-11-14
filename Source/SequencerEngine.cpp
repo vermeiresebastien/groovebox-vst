@@ -5,12 +5,6 @@ namespace gb
 
 namespace
 {
-    /** Ramp time applied when a voice is cut short, so stops do not click. */
-    constexpr double releaseSeconds = 0.005;
-
-    /** Ramp time at the start of a voice, which removes hard-edge clicks. */
-    constexpr double attackSeconds = 0.001;
-
     /** How far the off-beat of a swing pair travels at swing = 1. */
     constexpr double swingDepth = 0.25;
 }
@@ -114,7 +108,7 @@ double SequencerEngine::onsetPositionInSteps (int step) const
 //==============================================================================
 // Voices
 
-void SequencerEngine::trigger (int channel, double increment, float velocity, bool fromMidi)
+void SequencerEngine::trigger (int channel, float velocity, bool fromMidi)
 {
     auto sample = samples.retainSampleForChannel (channel);
 
@@ -129,10 +123,19 @@ void SequencerEngine::trigger (int channel, double increment, float velocity, bo
     if (level <= 0.0f)
         return;
 
-    // A little headroom so stacked hits do not clip the master bus outright.
-    // Velocity scales the hit: the grid always plays at full velocity, while a
-    // note from a keyboard or pad carries how hard it was struck.
-    const auto gain = level * 0.8f * juce::jlimit (0.0f, 1.0f, velocity);
+    // The source's own rate against the output's, times the channel's pitch. Both
+    // live here rather than at the call sites so the grid and a played note cannot
+    // drift apart, and so the sample is retained once rather than twice per hit.
+    const auto pitch = state.pitch[(size_t) channel].load();
+    const auto increment = sample->rateRatioFor (currentSampleRate)
+                             * std::pow (2.0, (double) pitch / 12.0);
+
+    // A voice sums at unity: the level the channel fader shows is the level the
+    // voice contributes, and the master trim is the only thing that scales the
+    // result. Velocity scales the hit on top of that — the grid plays whatever
+    // velocity its step carries, and a note from a keyboard or pad carries how
+    // hard it was struck.
+    const auto gain = level * juce::jlimit (0.0f, 1.0f, velocity);
 
     Voice* target = nullptr;
 
@@ -159,7 +162,10 @@ void SequencerEngine::trigger (int channel, double increment, float velocity, bo
     target->channel = channel;
     target->position = 0.0;
     target->increment = increment;
+    target->sincBand = SincKernelTable::bandForRatio (increment);
+    target->integerPlayback = std::abs (increment - 1.0) < 1.0e-12;
     target->gain = gain;
+    target->velocity = juce::jlimit (0.0f, 1.0f, velocity);
     target->age = ++voiceCounter;
     target->active = true;
     target->fromMidi = fromMidi;
@@ -174,8 +180,6 @@ void SequencerEngine::trigger (int channel, double increment, float velocity, bo
         (float) envelopeSeconds (state.release[(size_t) channel].load(), Layout::maxReleaseSeconds));
     target->envelope.noteOn();
 
-    voiceVelocity[(size_t) (target - voices.data())] = velocity;
-
     soundingChannels[(size_t) channel].store (true);
 }
 
@@ -184,12 +188,15 @@ bool SequencerEngine::channelHolds (int channel) const
     return state.sustain[(size_t) channel].load() > 0.0001f;
 }
 
-/** Lets go of every voice on a channel that is still holding. Used by note off. */
+/** Lets go of every voice a note started on a channel. Used by note off. */
 void SequencerEngine::releaseChannel (int channel)
 {
     for (auto& voice : voices)
     {
-        if (voice.active && ! voice.released && voice.channel == channel)
+        // Only the voices a note started. A grid hit on the same lane is the
+        // sequencer's to finish, and a player lifting a key while the pattern runs
+        // should not cut it short.
+        if (voice.active && ! voice.released && voice.fromMidi && voice.channel == channel)
         {
             voice.envelope.noteOff();
             voice.released = true;
@@ -211,7 +218,7 @@ SequencerEngine::VoiceDebug SequencerEngine::getVoiceDebug (int index) const
     info.position = voice.position;
     info.increment = voice.increment;
     info.gain = voice.gain;
-    info.velocity = voiceVelocity[(size_t) index];
+    info.velocity = voice.velocity;
     info.sampleLength = voice.sample != nullptr ? voice.sample->buffer.getNumSamples() : 0;
     info.envelopeValue = voice.envelope.getCurrentValue();
     info.envelopeActive = voice.envelope.isActive();
@@ -241,16 +248,7 @@ void SequencerEngine::triggerChannel (int channel, float velocity)
     if (! juce::isPositiveAndBelow (channel, Layout::numChannels))
         return;
 
-    auto sample = samples.retainSampleForChannel (channel);
-
-    if (sample == nullptr)
-        return;
-
-    const auto rateRatio = sample->rateRatioFor (currentSampleRate);
-    const auto pitch = state.pitch[(size_t) channel].load();
-    const auto pitchRatio = std::pow (2.0, (double) pitch / 12.0);
-
-    trigger (channel, rateRatio * pitchRatio, velocity, true);
+    trigger (channel, velocity, true);
 }
 
 void SequencerEngine::processMidi (const juce::MidiBuffer& midi, int numSamples)
@@ -333,21 +331,10 @@ void SequencerEngine::fireStep (int step)
         if (! state.pattern[(size_t) channel][(size_t) step].load())
             continue;
 
-        if (state.channelMuted[channel].load())
-            continue;
-
-        auto sample = samples.retainSampleForChannel (channel);
-
-        if (sample == nullptr)
-            continue;
-
-        const auto rateRatio = sample->rateRatioFor (currentSampleRate);
-        const auto pitch = state.pitch[(size_t) channel].load();
-        const auto pitchRatio = std::pow (2.0, (double) pitch / 12.0);
-
         // A grid hit carries the velocity stored against its step, so the grid has
-        // the same dynamics a played note does.
-        trigger (channel, rateRatio * pitchRatio, state.velocity[(size_t) channel][(size_t) step].load(), false);
+        // the same dynamics a played note does. Muting and the sample lookup are
+        // `trigger`'s business, not the grid's.
+        trigger (channel, state.velocity[(size_t) channel][(size_t) step].load(), false);
     }
 }
 
@@ -358,11 +345,15 @@ void SequencerEngine::renderVoices (juce::AudioBuffer<float>& buffer, int startS
 
     const auto numOutputChannels = buffer.getNumChannels();
 
-    for (auto& flag : soundingChannels)
-        flag.store (false);
+    // Taken once for the whole call: reaching for a channel pointer inside the
+    // per-sample loop costs more than the arithmetic around it.
+    auto* outLeft = buffer.getWritePointer (0, startSample);
+    auto* outRight = numOutputChannels > 1 ? buffer.getWritePointer (1, startSample) : nullptr;
 
-    int sounding = 0;
-
+    // Deliberately not cleared here. A block is split at every onset, so this runs
+    // several times per block; clearing on each pass would wipe the channels that
+    // sounded in the earlier ones, and the editor's activity indicators would miss
+    // any hit that did not land in the last chunk. `processBlock` clears them once.
     for (auto& voice : voices)
     {
         if (! voice.active || voice.sample == nullptr)
@@ -377,15 +368,17 @@ void SequencerEngine::renderVoices (juce::AudioBuffer<float>& buffer, int startS
             continue;
         }
 
+        // Lit whether or not the voice survives to the end of the chunk: a one-shot
+        // that finishes half way through still made a sound.
+        soundingChannels[(size_t) voice.channel].store (true);
+
         const auto* left = source.getReadPointer (0);
         const auto* right = source.getNumChannels() > 1 ? source.getReadPointer (1) : left;
         const auto sourceLength = source.getNumSamples();
 
         auto samplePosition = voice.position;
-
-        // The hit's velocity travels with the voice, because rendering can be
-        // split across a block when a note arrives part way through it.
-        const auto targetGain = voice.gain * voiceVelocity[(size_t) (&voice - voices.data())];
+        const auto unityRate = voice.integerPlayback;
+        const auto band = voice.sincBand;
 
         // A channel with no sustain is a one-shot: its envelope is let go the
         // moment it reaches the sustain stage, so the release setting shapes the
@@ -410,19 +403,49 @@ void SequencerEngine::renderVoices (juce::AudioBuffer<float>& buffer, int startS
                 voice.released = true;
             }
 
-            const auto gain = targetGain * voice.envelope.getNextSample();
+            const auto gain = voice.gain * voice.envelope.getNextSample();
 
-            const auto index = (int) samplePosition;
-            const auto fraction = (float) (samplePosition - (double) index);
-            const auto nextIndex = juce::jmin (index + 1, sourceLength - 1);
+            float leftSample = 0.0f;
+            float rightSample = 0.0f;
 
-            const auto leftSample  = left[index]  + fraction * (left[nextIndex]  - left[index]);
-            const auto rightSample = right[index] + fraction * (right[nextIndex] - right[index]);
+            if (unityRate)
+            {
+                const auto index = (int) samplePosition;
+                leftSample  = left[index];
+                rightSample = right[index];
+            }
+            else
+            {
+                const auto floorPosition = std::floor (samplePosition);
+                const auto fraction = samplePosition - floorPosition;
 
-            buffer.getWritePointer (0, startSample + i)[0] += leftSample * gain;
+                alignas (16) float weights[SincKernelTable::taps];
+                kernelTable.getWeights (band, fraction, weights);
 
-            if (numOutputChannels > 1)
-                buffer.getWritePointer (1, startSample + i)[0] += rightSample * gain;
+                // Tap 11 is the source sample just below the read position, so the
+                // kernel is centred on it and adds no delay of its own. Taps that
+                // fall off either end of the source are skipped rather than padded,
+                // which costs a little level over the first and last few samples of
+                // a hit and nothing anywhere else.
+                const auto firstIndex = (int) floorPosition - (SincKernelTable::halfWidth - 1);
+
+                for (int tap = 0; tap < SincKernelTable::taps; ++tap)
+                {
+                    const auto index = firstIndex + tap;
+
+                    if (index < 0 || index >= sourceLength)
+                        continue;
+
+                    const auto weight = weights[tap];
+                    leftSample  += left[index]  * weight;
+                    rightSample += right[index] * weight;
+                }
+            }
+
+            outLeft[i] += leftSample * gain;
+
+            if (outRight != nullptr)
+                outRight[i] += rightSample * gain;
 
             samplePosition += voice.increment;
 
@@ -437,15 +460,17 @@ void SequencerEngine::renderVoices (juce::AudioBuffer<float>& buffer, int startS
         }
 
         voice.position = samplePosition;
-
-        if (voice.active)
-        {
-            soundingChannels[(size_t) voice.channel].store (true);
-            ++sounding;
-        }
     }
 
-    activeVoices = sounding;
+    // Recounted from the voices rather than tallied during the pass, so the number
+    // is right however many times this block was split.
+    int stillActive = 0;
+
+    for (auto& voice : voices)
+        if (voice.active)
+            ++stillActive;
+
+    activeVoices = stillActive;
 }
 
 //==============================================================================
@@ -463,6 +488,11 @@ void SequencerEngine::processBlock (juce::AudioBuffer<float>& buffer,
     // Remembered so a note arriving part way through the block can be rendered
     // from its own sample onward.
     currentBlock = &buffer;
+
+    // Once for the whole block, so a channel that sounds in any chunk of it stays
+    // reported as sounding until the next block begins.
+    for (auto& flag : soundingChannels)
+        flag.store (false);
 
     // Tempo comes from the host when it has one, from the editor otherwise.
     const auto hostBpm = positionInfo.getBpm();
@@ -539,54 +569,49 @@ void SequencerEngine::processBlock (juce::AudioBuffer<float>& buffer,
     // Fire the step whose swung onset this block has reached, splitting the block
     // at that onset so the hit starts on the exact sample.
     //
-    // `position` is the only clock and onsets are expressed in the same steps, so
-    // no second cursor can drift. At most one step fires per block, and a step
-    // can never fire twice.
+    // The head advances by nothing but whole rendered sample counts. An onset is
+    // quantised to the sample it falls on and the sub-sample remainder is left
+    // behind rather than folded into the head, because a remainder carried forward
+    // is a remainder that accumulates: an earlier version added the ideal onset
+    // distance and then subtracted the samples rendered so far, which leaked up to
+    // one sample per onset and drifted a third of a step over thirty-two bars.
+    //
+    // At most one bar of onsets can fall inside a single block, which is what the
+    // guard allows for.
     //----------------------------------------------------------------------
-    const auto blockSamples = (double) numSamples;
     int rendered = 0;
 
-    for (int guard = 0; guard < 4 && rendered < numSamples; ++guard)
+    for (int guard = 0; guard < Layout::numSteps + 1 && rendered < numSamples; ++guard)
     {
         const auto distance = distanceToNextOnsetInSteps (position);
+        const auto samplesToOnset = (int) std::floor (distance * samplesPerStep);
+        const auto samplesLeft = numSamples - rendered;
 
         // The onset has to land strictly inside what is left of this block.
-        const auto remainingSteps = (blockSamples - (double) rendered) / samplesPerStep;
-
-        if (distance >= remainingSteps)
+        if (samplesToOnset >= samplesLeft)
             break;
+
+        if (samplesToOnset > 0)
+        {
+            renderVoices (buffer, rendered, samplesToOnset);
+            rendered += samplesToOnset;
+            position += (double) samplesToOnset / samplesPerStep;
+        }
 
         const auto step = onsetStep >= 0 ? onsetStep : 0;
 
-        // Everything before the onset belongs to the previous step.
-        const auto upToOnset = (int) std::floor (distance * samplesPerStep);
-
-        if (upToOnset > 0)
-        {
-            const auto chunk = juce::jlimit (1, numSamples - rendered, upToOnset);
-            renderVoices (buffer, rendered, chunk);
-            rendered += chunk;
-        }
-
-        // Move the head exactly onto the onset, then start the step there.
-        position += distance;
         onsetStep = (step + 1) % Layout::numSteps;
         currentStep.store (step);
         fireStep (step);
-
-        // The advance at the end of the loop moves the head over these samples,
-        // so the distance to the following onset stays measured from this onset.
-        if (rendered > 0)
-            position -= (double) rendered / samplesPerStep;
     }
 
-    // Whatever is left of the block (including a block with nothing due).
+    // Whatever is left of the block, including a block with nothing due in it.
     if (rendered < numSamples)
-        renderVoices (buffer, rendered, numSamples - rendered);
-
-    // Advance the head across the whole block. Onsets are recomputed from it
-    // every block, so a rounding error can never accumulate into drift.
-    position += blockSamples / samplesPerStep;
+    {
+        const auto tail = numSamples - rendered;
+        renderVoices (buffer, rendered, tail);
+        position += (double) tail / samplesPerStep;
+    }
 }
 
 } // namespace gb

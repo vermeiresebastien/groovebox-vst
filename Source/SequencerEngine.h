@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Common.h"
+#include "Resampler.h"
 #include "SampleStore.h"
 
 namespace gb
@@ -316,6 +317,29 @@ private:
         double position = 0.0;
         double increment = 1.0;
         float gain = 1.0f;
+
+        /**
+            Cutoff band this hit reads its source with, chosen once at note-on.
+
+            Chosen once rather than per sample so the filter cannot change while a
+            hit is sounding, which would be audible as the pitch envelope moved.
+        */
+        int sincBand = SincKernelTable::cutoffBands - 1;
+
+        /**
+            True when the ratio is exactly one, so the read lands on whole source
+            samples and needs no kernel at all.
+
+            A ratio of exactly two also lands on whole samples, and reading every
+            second one directly is the very thing the kernel exists to prevent: it
+            folds everything above the new Nyquist straight back into the output.
+        */
+        bool integerPlayback = true;
+
+        /** How hard the hit was struck, 0..1. Already folded into `gain`; kept
+            separately so a diagnostic can report what the voice was played with. */
+        float velocity = 1.0f;
+
         int age = 0;
 
         /** The hit's amplitude envelope, stepped per sample. */
@@ -337,7 +361,11 @@ private:
     };
 
     void renderVoices (juce::AudioBuffer<float>& buffer, int startSample, int numSamples);
-    void trigger (int channel, double increment, float velocity, bool fromMidi);
+
+    /** Starts one hit, working out its playback ratio from the channel's own
+        sample rate and pitch. Muted, empty and silent channels simply do not start
+        a voice, so callers do not have to check first. */
+    void trigger (int channel, float velocity, bool fromMidi);
     void stopAllVoices();
 
     /** True when a voice's channel currently has sustain, so it holds rather than
@@ -367,21 +395,20 @@ private:
     SampleStore& samples;
     SequencerState& state;
 
+    /**
+        Interpolation coefficients for pitched playback.
+
+        A member rather than a shared or lazily built table because it is read from
+        the audio thread and built once, off it, when the engine is constructed.
+    */
+    SincKernelTable kernelTable;
+
     double currentSampleRate = 44100.0;
 
     std::array<Voice, (size_t) Layout::maxVoices> voices;
     std::array<std::atomic<bool>, (size_t) Layout::numChannels> soundingChannels {};
     int activeVoices = 0;
     int voiceCounter = 0;
-
-    /**
-        Velocity of the hit each voice is playing.
-
-        Kept per voice rather than applied once, so rendering a voice mid-block —
-        which happens when a note arrives part way through — keeps the velocity it
-        was struck with.
-    */
-    std::array<float, (size_t) Layout::maxVoices> voiceVelocity {};
 
     /**
         The buffer being filled by the current `processBlock`.

@@ -87,7 +87,15 @@ void GrooveboxEditor::paint (juce::Graphics& g)
 
     g.setColour (Colours::muted);
     g.setFont (juce::Font (juce::FontOptions (12.0f)));
-    g.drawText ("Drop a WAV or AIFF on any channel row to load it",
+
+    // The two things a new session needs to say: how to get a sound in, and what
+    // plays it. The note range used to sit in the transport bar, which ran out of
+    // room once the master section moved in.
+    const auto firstNote = GrooveboxProcessor::getMidiNoteNameForChannel (0);
+    const auto lastNote = GrooveboxProcessor::getMidiNoteNameForChannel (Layout::numChannels - 1);
+
+    g.drawText ("Drop a WAV or AIFF on any channel row to load it   |   MIDI notes "
+                  + firstNote + "-" + lastNote + " play the channels",
                 margin, titleHeight - 2, getWidth() - margin * 2, 16,
                 juce::Justification::centredRight);
 }

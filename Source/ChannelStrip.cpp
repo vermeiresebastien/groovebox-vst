@@ -156,6 +156,13 @@ void ChannelStrip::refresh()
     // value-change callbacks that write back to the processor. Skipping the write
     // during a drag instead (as an earlier version did) meant a fader move never
     // reached the processor at all.
+    syncAutomatableControls();
+
+    repaint();
+}
+
+void ChannelStrip::syncAutomatableControls()
+{
     levelSlider.setValue ((double) processor.getChannelLevel (channel), juce::dontSendNotification);
     muteButton.setToggleState (processor.isChannelMuted (channel), juce::dontSendNotification);
 
@@ -167,8 +174,6 @@ void ChannelStrip::refresh()
     envelope.setValue (EnvelopeStage::decay,   processor.getChannelDecay (channel));
     envelope.setValue (EnvelopeStage::sustain, processor.getChannelSustain (channel));
     envelope.setValue (EnvelopeStage::release, processor.getChannelRelease (channel));
-
-    repaint();
 }
 
 void ChannelStrip::refreshName()
@@ -306,6 +311,12 @@ void ChannelStrip::paintCaption (juce::Graphics& g, const juce::String& text, ju
 //==============================================================================
 void ChannelStrip::timerCallback()
 {
+    // Follow host automation: a parameter can move without the panel being
+    // touched, and this is the only thing that re-reads it. Each control writes
+    // straight through when the user moves it, so during a drag this reads back
+    // the value under the pointer and leaves it alone.
+    syncAutomatableControls();
+
     const auto nowSounding = processor.isChannelSounding (channel);
 
     if (nowSounding != isSounding)

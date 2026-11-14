@@ -135,7 +135,7 @@ target_link_libraries(Groovebox PRIVATE
 # launch/
 #
 # The one folder the binaries are run from, matching the other skeer-audio
-# projects. Hunting through build\Groovebox_artefacts\Release\... is how the
+# projects. Hunting through build-new\Groovebox_artefacts\Release\... is how the
 # wrong build ends up being judged, so a target assembles the standalone and the
 # bundle here. It is a target rather than a POST_BUILD step on purpose: Ableton
 # Live holds the plugin DLL open, and failing the whole build over a copy that

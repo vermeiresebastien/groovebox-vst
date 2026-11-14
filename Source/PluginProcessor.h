@@ -1,6 +1,8 @@
 #pragma once
 
 #include "Common.h"
+#include "MasterBus.h"
+#include "Parameters.h"
 #include "SampleStore.h"
 #include "SequencerEngine.h"
 
@@ -26,7 +28,8 @@ class GrooveboxEditor;
     exposes the atomics the editor writes directly, and keeps a ValueTree copy
     in sync so sessions and presets persist.
 */
-class GrooveboxProcessor : public juce::AudioProcessor
+class GrooveboxProcessor : public juce::AudioProcessor,
+                           private juce::AudioProcessorValueTreeState::Listener
 {
 public:
     GrooveboxProcessor();
@@ -50,7 +53,9 @@ public:
     bool acceptsMidi() const override { return true; }
     bool producesMidi() const override { return false; }
     bool isMidiEffect() const override { return false; }
-    double getTailLengthSeconds() const override { return 2.0; }
+    /** A channel can be given the longest release in `Layout`, and a host that
+        stops rendering before that has run out will cut the tail off. */
+    double getTailLengthSeconds() const override { return Layout::maxReleaseSeconds; }
 
     int getNumPrograms() override { return 1; }
     int getCurrentProgram() override { return 0; }
@@ -210,6 +215,28 @@ public:
     void setManualTempo (double bpm);
 
     //==========================================================================
+    // Master
+    //
+    // Voices sum at unity, so this trim is the only place the output level is
+    // decided. It used to be a fixed 0.8 inside every voice, which no control
+    // could reach and no meter could explain.
+    //==========================================================================
+
+    float getMasterGainDb() const noexcept { return master.getGainDb(); }
+    void setMasterGainDb (float db);
+
+    /** Held peak of one output channel, linear, for the editor's meter. */
+    float getMasterPeak (int channel) const noexcept { return master.getPeak (channel); }
+
+    /** True once the output has reached 0 dBFS, until the latch is cleared. */
+    bool isMasterClipping (int channel) const noexcept { return master.isClipping (channel); }
+
+    void clearMasterClipLatch() noexcept { master.clearClipLatch(); }
+
+    /** "-2.0 dB", "+1.5 dB" — how the trim reads on the panel. */
+    static juce::String formatMasterGain (float db);
+
+    //==========================================================================
     // Persistence helpers used by the editor
     //==========================================================================
 
@@ -221,21 +248,62 @@ public:
 
     SampleStore& getSampleStore() noexcept { return samples; }
 
+    /** The parameter state, so the editor can attach controls to it and a host's
+        automation reaches the same values the panel writes. */
+    juce::AudioProcessorValueTreeState& getValueTreeState() noexcept { return apvts; }
+
 private:
-    void rebuildValueTree();
-    void pushChannelToTree (int channel);
-    void pushPatternToTree();
-    void applyTree (const juce::ValueTree& tree);
+    /** Writes one parameter into the atomics the audio thread reads.
+
+        Called by the parameter state whenever a value moves, whichever way it
+        moved: a host automating it, the panel writing it, or a preset replacing
+        the whole tree. It can therefore arrive on the audio thread, so it only
+        ever stores atomics.
+    */
+    void parameterChanged (const juce::String& parameterID, float newValue) override;
+
+    /** Copies every parameter into the state, for the initial sync and for
+        anything that replaced the tree without going through the listener. */
+    void syncStateFromParameters();
+
+    /** Writes one denormalised value into a parameter and tells the host.
+
+        The panel's route in, so a drag here and a drawn automation ramp arrive at
+        the engine by the same path. JUCE 8 dropped the parameter state's own
+        notifying setter, so this goes through the parameter directly.
+    */
+    void writeParameter (juce::StringRef parameterID, float denormalisedValue);
+
+    /** Lane name, colour and sample path — the parts of a lane that are not
+        parameters, stored as children of the parameter state's tree. */
+    void pushLaneToState (int channel);
+
+    void pushPatternToState();
+
+    /** Reads the pattern and the lane metadata back out of a loaded tree. */
+    void applyMetadata (const juce::ValueTree& tree);
+
+    /** Turns a session saved before parameters existed into the current shape. */
+    static juce::ValueTree migrateLegacyState (const juce::ValueTree& tree);
 
     SampleStore samples;
     SequencerState sequencerState;
     SequencerEngine engine;
+    MasterBus master;
 
-    juce::ValueTree stateTree { "GROOVEBOX" };
     juce::UndoManager undoManager;
+
+    /** Declared after `undoManager` so it is constructed after it, and after
+        `sequencerState` so its listener can write into it. */
+    juce::AudioProcessorValueTreeState apvts;
 
     std::atomic<double> displayedTempo { 120.0 };
     double lastKnownSampleRate = 44100.0;
+
+    /** What the host last asked for, so a transport reset re-prepares the engine
+        at the size it will actually be given. */
+    int lastKnownBlockSize = 512;
+
     bool isStandalone = false;
     bool prepared = false;
 

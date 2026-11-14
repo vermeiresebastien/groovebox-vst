@@ -38,6 +38,16 @@ public:
 private:
     void timerCallback() override;
 
+    /** Re-reads the controls a host can automate — level, mute, pitch and the
+        envelope — straight out of the processor.
+
+        The strip's timer calls this so the panel follows host automation, which
+        moves the parameters without the panel being touched. It leaves the name,
+        colour and sample alone: those are not parameters, and re-reading the name
+        every tick would clobber a rename in progress.
+    */
+    void syncAutomatableControls();
+
     void handleNameChanged();
     void handleColourClicked();
     void handleSoundClicked();

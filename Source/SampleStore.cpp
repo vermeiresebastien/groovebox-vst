@@ -20,6 +20,8 @@ namespace
 
 SampleStore::SampleStore()
 {
+    formats.registerBasicFormats();
+
     for (int i = 0; i < Layout::numChannels; ++i)
     {
         channels[(size_t) i].name = defaultChannelName (i);
@@ -41,9 +43,6 @@ int SampleStore::addFile (const juce::File& file, juce::String& errorOut)
         errorOut = "File not found";
         return 0;
     }
-
-    juce::AudioFormatManager formats;
-    formats.registerBasicFormats();
 
     std::unique_ptr<juce::AudioFormatReader> reader (formats.createReaderFor (file));
 
@@ -70,7 +69,12 @@ int SampleStore::addFile (const juce::File& file, juce::String& errorOut)
     sample->buffer.setSize (numChannels, numSamples);
     reader->read (&sample->buffer, 0, numSamples, 0, true, numChannels > 1);
 
-    return addSample (sample);
+    const auto id = addSample (sample);
+
+    if (id == 0)
+        errorOut = "This session has already loaded " + juce::String (maxSamples) + " samples";
+
+    return id;
 }
 
 int SampleStore::addFromMemory (const void* data, size_t numBytes, const juce::String& nameHint, juce::String& errorOut)
@@ -80,9 +84,6 @@ int SampleStore::addFromMemory (const void* data, size_t numBytes, const juce::S
         errorOut = "Dropped item contained no audio data";
         return 0;
     }
-
-    juce::AudioFormatManager formats;
-    formats.registerBasicFormats();
 
     // The manager's stream overload takes a unique_ptr and hands ownership to the
     // reader, so the stream lives exactly as long as the reader does.
@@ -111,16 +112,43 @@ int SampleStore::addFromMemory (const void* data, size_t numBytes, const juce::S
     sample->buffer.setSize (numChannels, numSamples);
     reader->read (&sample->buffer, 0, numSamples, 0, true, numChannels > 1);
 
-    return addSample (sample);
+    const auto id = addSample (sample);
+
+    if (id == 0)
+        errorOut = "This session has already loaded " + juce::String (maxSamples) + " samples";
+
+    return id;
 }
 
 int SampleStore::addSample (Sample::Ptr sample)
 {
-    const juce::SpinLock::ScopedLockType lock (registryLock);
+    if (sample == nullptr)
+        return 0;
 
-    const auto id = nextSampleId++;
-    registry[id] = sample;
+    if (nextSampleId > maxSamples)
+        return 0; // the registry is full; the caller turns this into an error
+
+    const auto id = nextSampleId;
+
+    // The owning reference goes in first. From the moment the slot is published
+    // the audio thread may retain the sample, and it can only do that safely
+    // because something here holds it for the rest of the session.
+    owned.push_back (sample);
+
+    // Release, so a reader that acquires this pointer also sees the decoded
+    // buffer, the name and the sample rate that were written before it.
+    slots[(size_t) (id - 1)].store (sample.get(), std::memory_order_release);
+
+    ++nextSampleId;
     return id;
+}
+
+Sample* SampleStore::slotFor (int sampleId) const
+{
+    if (! juce::isPositiveAndBelow (sampleId - 1, maxSamples))
+        return nullptr;
+
+    return slots[(size_t) (sampleId - 1)].load (std::memory_order_acquire);
 }
 
 //==============================================================================
@@ -131,7 +159,9 @@ void SampleStore::setChannelSample (int channel, int sampleId)
     if (! juce::isPositiveAndBelow (channel, Layout::numChannels))
         return;
 
-    channels[(size_t) channel].sampleId.store (sampleId);
+    // Release, paired with the acquire on the id in retainSampleForChannel: a
+    // thread that sees the new id is guaranteed to see the slot it names.
+    channels[(size_t) channel].sampleId.store (sampleId, std::memory_order_release);
 }
 
 void SampleStore::clearChannel (int channel)
@@ -141,13 +171,10 @@ void SampleStore::clearChannel (int channel)
 
 Sample::Ptr SampleStore::getSample (int sampleId) const
 {
-    if (sampleId <= 0)
-        return nullptr;
-
-    const juce::SpinLock::ScopedLockType lock (registryLock);
-
-    const auto it = registry.find (sampleId);
-    return it != registry.end() ? it->second : nullptr;
+    // Wrapping the raw pointer bumps the refcount, which cannot race with a free:
+    // `owned` holds a reference to every published sample for the life of the
+    // store, so the count can never reach zero underneath this call.
+    return Sample::Ptr (slotFor (sampleId));
 }
 
 juce::String SampleStore::getSampleName (int sampleId) const
@@ -164,12 +191,12 @@ juce::String SampleStore::getSamplePath (int sampleId) const
 
 juce::Array<int> SampleStore::getSampleIds() const
 {
-    const juce::SpinLock::ScopedLockType lock (registryLock);
-
     juce::Array<int> ids;
 
-    for (const auto& entry : registry)
-        ids.add (entry.first);
+    // Ids are handed out in order and never reused, so the slots up to the next id
+    // are exactly the loaded samples, oldest first.
+    for (int id = 1; id < nextSampleId; ++id)
+        ids.add (id);
 
     return ids;
 }
@@ -182,7 +209,7 @@ Sample::Ptr SampleStore::retainSampleForChannel (int channel) const
     if (! juce::isPositiveAndBelow (channel, Layout::numChannels))
         return nullptr;
 
-    return getSample (channels[(size_t) channel].sampleId.load());
+    return getSample (channels[(size_t) channel].sampleId.load (std::memory_order_acquire));
 }
 
 int SampleStore::getChannelSampleId (int channel) const

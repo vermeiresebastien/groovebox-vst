@@ -3,7 +3,8 @@
 #include <JuceHeader.h>
 #include <algorithm>
 #include <array>
-#include <map>
+#include <atomic>
+#include <vector>
 
 namespace gb
 {
@@ -42,6 +43,22 @@ namespace Layout
     inline constexpr float defaultDecay   = 0.25f;  // ~0.21 s
     inline constexpr float defaultSustain = 0.0f;   // one-shot
     inline constexpr float defaultRelease = 0.15f;  // ~0.14 s
+
+    /**
+        Master trim range, in dB, and where it starts.
+
+        Voices sum at unity, so this is the only place the output is scaled, and
+        the default replaces the 0.8 (-1.94 dB) that used to be buried inside
+        every voice. Rounded to -2 dB it sits 0.06 dB from that, which is well
+        under an audible difference, so a session saved before the trim existed
+        comes back at the level it was written at instead of 2 dB louder.
+
+        +6 dB at the top is deliberately reachable: it is the point where the clip
+        indicator earns its place, and a trim that could not clip could not warn.
+    */
+    inline constexpr float minMasterGainDb     = -24.0f;
+    inline constexpr float maxMasterGainDb     = 6.0f;
+    inline constexpr float defaultMasterGainDb = -2.0f;
 }
 
 /** Palette lifted from the Earworm Studio drum page. */
@@ -62,6 +79,11 @@ namespace Colours
     inline const juce::Colour cellOff    { 0x1affffff };
     inline const juce::Colour chip       { 0x14ffffff };
     inline const juce::Colour chipBorder { 0x66ffffff };
+
+    /** Meter fill, by how close the level is to 0 dBFS: safe, hot, over. */
+    inline const juce::Colour meterSafe  { 0xff99ff71 };
+    inline const juce::Colour meterHot   { 0xffffe066 };
+    inline const juce::Colour meterOver  { 0xffff5a5a };
 }
 
 } // namespace gb
