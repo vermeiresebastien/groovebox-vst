@@ -69,6 +69,15 @@ public:
     /** Channel whose row contains `y`, or -1 when y is outside every row. */
     int channelAtY (int y) const;
 
+    /** The rectangle of one cell, in this component's own coordinates.
+
+        Public because a test that aims at a cell has to aim at the real one. The
+        layout test used to redo the arithmetic — the border inset, the row gap, the
+        reverse row order — and a 17 px change to the strip height put its point in
+        the gap under the last row, where a drag does nothing at all.
+    */
+    juce::Rectangle<int> getCellBounds (int channel, int step) const;
+
 private:
     /** A cell address; a channel of -1 means "no cell" (e.g. in the label column). */
     struct Cell
@@ -94,7 +103,6 @@ private:
     juce::Rectangle<int> getRowBounds (int channel) const;      // the 16 cells of one channel
     juce::Rectangle<int> getLabelBounds (int channel) const;    // name / activity area
     juce::Rectangle<int> getFullRowBounds (int channel) const;  // label + cells, for the drop highlight
-    juce::Rectangle<int> getCellBounds (int channel, int step) const;
 
     /** Sets the highlighted drop row, repainting only when it actually changed. */
     void setDragHoverChannel (int channel);

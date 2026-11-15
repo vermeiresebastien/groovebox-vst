@@ -7,16 +7,19 @@ namespace gb
 namespace
 {
     constexpr int editorWidth = 1240;
-    constexpr int editorHeight = 830;
+    constexpr int editorHeight = 844;
 
     constexpr int margin = 18;
     constexpr int titleHeight = 34;
     constexpr int transportHeight = 60;
     constexpr int gridHeight = 400;
     // Tall enough for every control in a channel strip: the sound and clear
-    // buttons, the pitch row, the level fader, the four ADSR rows and mute. A
-    // shorter strip still lays out, but the bottom control gets clipped.
-    constexpr int stripHeight = 254;
+    // buttons, the pitch row and the drop line under it, the level fader, the four
+    // ADSR rows, and the choke box sharing a row with mute. A shorter strip still
+    // lays out, but the bottom control gets clipped. The extra height comes out of
+    // the grid's slack, not out of the window: at the 844 px minimum the grid still
+    // has 405 px, more than the 400 it was designed around.
+    constexpr int stripHeight = 285;
     constexpr int gap = 10;
 }
 
@@ -75,6 +78,63 @@ void GrooveboxEditor::refreshAll()
 
     transportBar.refresh();
     repaint();
+}
+
+bool GrooveboxEditor::keyPressed (const juce::KeyPress& key)
+{
+    /**
+        The keys are matched by hand rather than through an
+        `ApplicationCommandTarget` and a `CommandManager`, because a plugin does not
+        own the host's command manager: registering a second one to answer two
+        shortcuts would put this editor in front of the host's own keys, and the
+        house rule is that a plugin stays out of the host's business.
+
+        `isCommandDown` is the right test on both platforms — it is Cmd on macOS and
+        Ctrl on Windows, where the two flags are the same bit.
+
+        One press takes back one gesture, not one cell, because that is what the
+        pointer did: the grid opens a transaction when the button goes down and
+        closes it when it comes up, so a drag that painted six steps undoes as six.
+    */
+    const auto mods = key.getModifiers();
+
+    if (! mods.isCommandDown())
+        return false;
+
+    // A held Shift makes the character itself uppercase, so both spellings count.
+    switch (key.getKeyCode())
+    {
+        case 'z':
+        case 'Z':
+            if (mods.isShiftDown())
+                return undoOrRedo (false);
+
+            return undoOrRedo (true);
+
+        case 'y':
+        case 'Y':
+            // Windows' redo, and the only meaning Shift has on this one.
+            return undoOrRedo (false);
+
+        default:
+            return false;
+    }
+}
+
+bool GrooveboxEditor::undoOrRedo (bool undo)
+{
+    auto& manager = processor.getUndoManager();
+    const auto didSomething = undo ? manager.undo() : manager.redo();
+
+    // The pattern refreshes itself through `onStateChanged` when the undo moves the
+    // property, but an undo of a parameter change does not: the sliders follow their
+    // attachments, while the strip and bar that display the same values in their own
+    // way have to be told. One refresh covers both, and it is what a user pressing a
+    // key expects to see happen immediately.
+    if (didSomething)
+        refreshAll();
+
+    return didSomething;
 }
 
 void GrooveboxEditor::paint (juce::Graphics& g)

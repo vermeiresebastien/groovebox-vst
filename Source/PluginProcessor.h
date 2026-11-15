@@ -29,7 +29,8 @@ class GrooveboxEditor;
     in sync so sessions and presets persist.
 */
 class GrooveboxProcessor : public juce::AudioProcessor,
-                           private juce::AudioProcessorValueTreeState::Listener
+                           private juce::AudioProcessorValueTreeState::Listener,
+                           private juce::ValueTree::Listener
 {
 public:
     GrooveboxProcessor();
@@ -135,11 +136,31 @@ public:
     void setChannelPitch (int channel, int semitones);
     void nudgeChannelPitch (int channel, int delta);
 
+    /** How far above its own note a hit on this lane starts, in semitones.
+
+        Zero means the hit is at its pitch from its first sample. Anything above
+        it glides down to the note over `Layout::pitchDropSweepSeconds` and stays
+        there, so the tail of the hit — and therefore the tuning of the kit — is
+        what the Pitch control says, never this one. See `Layout::maxPitchDropSemitones`.
+    */
+    int getChannelPitchDrop (int channel) const;
+    void setChannelPitchDrop (int channel, int semitones);
+
     float getChannelLevel (int channel) const;
     void setChannelLevel (int channel, float linearGain);
 
     bool isChannelMuted (int channel) const;
     void setChannelMuted (int channel, bool shouldBeMuted);
+
+    /** Which choke group a lane is in: 0 for none, 1..`Layout::numChokeGroups`.
+
+        A hit on a lane in a group takes a ramp out of every hit already sounding
+        in it, which is what makes a closed hat stop an open one. It is a lane
+        setting on purpose: what two sounds do to each other does not change from
+        one step to the next.
+    */
+    int getChannelChokeGroup (int channel) const;
+    void setChannelChokeGroup (int channel, int group);
 
     //==========================================================================
     // Envelope
@@ -228,6 +249,10 @@ public:
     /** Held peak of one output channel, linear, for the editor's meter. */
     float getMasterPeak (int channel) const noexcept { return master.getPeak (channel); }
 
+    /** Held true (inter-sample) peak of one output channel, linear. Drawn as the
+        tick on the meter; it latches, gates and trims nothing. */
+    float getMasterTruePeak (int channel) const noexcept { return master.getTruePeak (channel); }
+
     /** True once the output has reached 0 dBFS, until the latch is cleared. */
     bool isMasterClipping (int channel) const noexcept { return master.isClipping (channel); }
 
@@ -258,7 +283,10 @@ private:
         Called by the parameter state whenever a value moves, whichever way it
         moved: a host automating it, the panel writing it, or a preset replacing
         the whole tree. It can therefore arrive on the audio thread, so it only
-        ever stores atomics.
+        ever stores atomics — and it finds out which lane and field the id names
+        by looking that up in `Params::laneTargets()`, because reading the id by
+        cutting it into pieces would allocate, which is what the static guard in
+        Tests/RtPathGuard.ps1 exists to keep true.
     */
     void parameterChanged (const juce::String& parameterID, float newValue) override;
 
@@ -280,6 +308,18 @@ private:
 
     void pushPatternToState();
 
+    /** Reads the pattern property back into the atomics the engine plays.
+
+        This is the whole of what an undo has to do to be real. The grid writes the
+        atomics and pushes a copy of them into the state, so the string is the
+        record; the audio thread never reads the string, so a restored string is
+        only a picture of the pattern until something puts it back where the sound
+        comes from.
+    */
+    void applyPatternFromState();
+
+    void valueTreePropertyChanged (juce::ValueTree& tree, const juce::Identifier& property) override;
+
     /** Reads the pattern and the lane metadata back out of a loaded tree. */
     void applyMetadata (const juce::ValueTree& tree);
 
@@ -299,6 +339,13 @@ private:
 
     std::atomic<double> displayedTempo { 120.0 };
     double lastKnownSampleRate = 44100.0;
+
+    /** True only while `pushPatternToState` writes the property.
+        The write comes from the atomics, so reading it back would be a round trip
+        through the same data — and with the undo manager attached to that write, a
+        round trip that also fires the panel would make a single drag repaint itself
+        as many times as it has cells. */
+    bool pushingPatternToState = false;
 
     /** What the host last asked for, so a transport reset re-prepares the engine
         at the size it will actually be given. */

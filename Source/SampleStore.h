@@ -70,6 +70,26 @@ public:
     /** Decodes an audio file and returns the new sample id, or 0 on failure. */
     int addFile (const juce::File& file, juce::String& errorOut);
 
+    /**
+        The id of a sample that was loaded from this exact file before, or 0.
+
+        A session remembers its lanes by path, so a recall hands the same twelve
+        files back every time it happens. `addFile` would decode each one again and
+        take a new slot for it — the registry is append-only — and after a few dozen
+        recalls there would be no slots left for anything the user actually loads.
+        This is the question to ask before decoding: it costs one directory scan of
+        what is already registered and no decoding at all, and a hit means the
+        sample on disk has not changed since the file was read.
+
+        Deliberately not folded into `addFile`. Every caller of that wants a decode
+        and a fresh id — a drag-and-drop of the same file after editing it elsewhere
+        is the case where the old bytes must not come back — and the ceiling test
+        [11b] fills the registry by calling it repeatedly with one file, which is
+        only meaningful while an `addFile` means exactly one slot. Deduplicating
+        belongs to the caller that is replaying saved state, which is `applyMetadata`.
+    */
+    int findSampleForFile (const juce::File& file) const;
+
     /** Decodes raw bytes (used by drag-and-drop from other applications). */
     int addFromMemory (const void* data, size_t numBytes, const juce::String& nameHint, juce::String& errorOut);
 
@@ -118,8 +138,40 @@ private:
         juce::Colour colour { defaultLaneColour };
     };
 
+    /**
+        What identifies a file across two loads of it.
+
+        The path alone is not enough: a sample edited in another program keeps its
+        name and changes its contents, and a recall that answered "already loaded"
+        to that would hand back the old bytes for ever. The size and the modification
+        time are the cheap way to notice, and they are read off the directory entry
+        rather than the file, so checking them costs a stat and no decoding. Two
+        files that are the same length and were written in the same millisecond look
+        the same to this, which is the price of not hashing audio.
+    */
+    struct FileKey
+    {
+        juce::String path;
+        juce::int64 size = -1;
+        juce::int64 modTimeMs = -1;
+
+        /** Same file, unchanged since. Paths are compared without regard to case,
+            because Windows hands back whatever spelling the session happened to
+            save and the same file written two ways is still the same file. */
+        bool matches (const FileKey& other) const
+        {
+            return size == other.size
+                     && modTimeMs == other.modTimeMs
+                     && path.isNotEmpty()
+                     && path.equalsIgnoreCase (other.path);
+        }
+    };
+
+    /** Reads the directory entry that `file` would be registered under. */
+    static FileKey fileKeyFor (const juce::File& file);
+
     /** Publishes the sample and returns its id, or 0 when the registry is full. */
-    int addSample (Sample::Ptr sample);
+    int addSample (Sample::Ptr sample, FileKey origin = {});
 
     /** Raw slot for an id, or nullptr when the id is out of range. */
     Sample* slotFor (int sampleId) const;
@@ -142,6 +194,17 @@ private:
 
     /** The references that keep every published sample alive. Message thread only. */
     std::vector<Sample::Ptr> owned;
+
+    /**
+        Where each of those samples came from, in the same order and with the same
+        indices: both are appended inside `addSample`, so `owned[i]` and `keys[i]`
+        are the same sample and `i + 1` is its id. Samples that arrived as bytes
+        rather than as a file hold an empty key, which matches nothing.
+
+        Message thread only, like `owned` — it is read by the state recall and by
+        the file chooser, never by the audio callback.
+    */
+    std::vector<FileKey> keys;
 
     int nextSampleId = 1;
     int sampleCounter = 0; // used to name imported files

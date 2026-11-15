@@ -13,12 +13,14 @@ sample you drag onto its row, and which also plays from MIDI notes.
 | **Step velocity** | **Every step has its own velocity. Hit *Velocity* in the top bar and drag up or down inside a step to set how hard it hits** |
 | Sample loading | Drag a `.wav` / `.aiff` / `.mp3` / `.flac` / `.ogg` onto any channel **row**, or click the channel's sound button to browse |
 | Per-channel pitch | −36 to +12 semitones, with `-12` / `+12` octave buttons |
+| **Pitch drop** | **0–12 semitones per channel: the hit starts that far above the note and glides down onto it over 30 ms — kick bloom you cannot get from Live's sample page. It is a parameter like the rest, never something the plugin decides for you** |
 | **ADSR per channel** | **Attack, Decay, Sustain and Release for every channel, so a hit can be tightened or turned into a sustained sound** |
+| **Choke groups** | **Three per lane. A hit in a group cuts every other hit in that group short, ramped over 20 ms — put the closed hat in the same group as the open one and it stops it instead of stacking on it** |
 | Swing | 0–100 % on either a 1/8 or 1/16 grid |
 | Tempo | Follows the host project tempo; in the standalone build it has its own transport and tempo |
 | Mix | Per-channel level and mute, plus a "clear row" button |
 | **Master trim & meter** | **A −24 to +6 dB master trim you can see and reach, with a peak meter and a clip latch on the output** |
-| **Automation** | **Levels, pitches, envelopes, mutes, swing, tempo and the master trim are host parameters — automate them, and the panel follows what the host drew** |
+| **Automation** | **Levels, pitches, pitch drops, envelopes, mutes, choke groups, swing, tempo and the master trim are host parameters — automate them, and the panel follows what the host drew** |
 | Row editing | Click a cell to toggle it; drag across cells to paint a run |
 | **Shift a row** | **The ← and → buttons in a channel strip turn that whole row one step earlier or later, and every step's velocity goes with it** |
 | Persistence | Pattern, pitch, levels, mutes, names, colours and sample paths are saved in the session; a session saved before the parameter migration is read in and its values carried over |
@@ -46,6 +48,27 @@ high the pointer is in the row, so the bar follows the pointer.
 - The grid's velocity and a played note's velocity are separate: the grid uses the
   value on the step, while a pad or keyboard uses how hard you hit it.
 
+**Velocity is two laws, not one.** It scales the level, and it also opens the top
+end: a hit is played through a lowpass whose corner rises with how hard it was
+struck, from 900 Hz at the very bottom of the travel to **no filter at all at full
+velocity**. That last part is the point — the loudest thing the machine plays is the
+recording exactly as it is, bit for bit, so the law can only ever change the hits you
+asked it to.
+
+| Velocity | Corner | What it means |
+|---|---|---|
+| 100 % | none | the sample as recorded |
+| 50 % | about 5.8 kHz | played, not turned down |
+| 25 % | about 2.9 kHz | soft: the sizzle is off the top |
+| 6 % | about 1.4 kHz | a muted strike |
+
+A dimmed hit also loses whatever level lived above its corner, so a soft hit comes
+out a little *under* what the gain alone would give — measured on a flat noise burst
+at 1.9 dB of peak at 25 % velocity and 4.0 dB at 6 %, which is the worst case, since
+a sample with a body keeps most of its energy below those corners. The fader, by
+contrast, moves level only: the same quarter of a gain by the fader leaves the tone
+exactly where it was, and both of those are checked by name in the test suite.
+
 ## The envelope
 
 Every channel has its own ADSR, shown as four rows (**A D S R**) under the level
@@ -64,11 +87,20 @@ That is what makes a pad or a keyboard play a sustained sound rather than a blip
 | Control | Range | Notes |
 |---|---|---|
 | Attack | 0 – 2 s | Linear rise; at 0 the hit starts instantly |
-| Decay | 0 – 3 s | Falls from full to the sustain level |
+| Decay | 0 – 3 s | Exponential fall to the sustain level, arriving exactly at it |
 | Sustain | 0 – 100 % | 0 = one-shot; above 0 the note holds until released |
-| Release | 0 – 4 s | How long the tail takes to fade after release |
+| Release | 0 – 4 s | The same curve down to silence, after the note off |
 
-The times are on a squared curve, so the low end of a row's travel is usable —
+Decay and release are one curve, not a straight line. Every fifth of the duration
+you set multiplies what is left of the distance by 0.368 — about 8.6 dB — so a 0.5 s
+decay is halfway down inside its first 70 ms, has a tenth of its level left after
+230 ms, and spends the rest of its time thinning away. A linear ramp cannot do that;
+it closes like a gate. The curve is nevertheless bounded by the number on the row:
+the last sample of the fall is the target itself, so a decay ends at the sustain
+level and a release ends at silence rather than trailing off for ever below hearing.
+
+The settings themselves are on a squared curve, so the low end of a row's travel is
+usable —
 most drum shaping happens in the first few milliseconds, and a linear control
 would put all of that in its first percent. Each row shows its value in
 milliseconds, seconds or percent.
@@ -80,8 +112,10 @@ to B1 for channel 11. That is the range a General MIDI drum map uses for its fir
 twelve pieces, and what most pad controllers send out of the box, so a kick pad
 plays the kick without any setup. The note range is shown in the top bar.
 
-- **Velocity scales the hit**, so a pad or keyboard plays dynamically. The step
-  grid always plays at full velocity.
+- **A played note takes its own velocity**, both in level and in tone, so a pad or
+  keyboard plays dynamically. The step grid takes the velocity written on the step —
+  which is 100 % unless you have edited it, so a sequence can stay flat while you
+  play over it. See *Step velocity* above.
 - **Notes play whether or not the transport is running**, so you can play the kit
   with the sequencer stopped. Grid hits are faded out when the transport stops;
   played notes are not, because they did not come from the transport.
@@ -116,9 +150,10 @@ mixed.
 ## Automation
 
 Every continuous control is a proper host parameter, so it can be drawn as
-automation instead of only moved by hand: per-channel level, pitch, A/D/S/R and
-mute (7 parameters × 12 channels), plus master trim, swing, swing grid and
-tempo — 88 in total, grouped per lane so a host lists them sensibly.
+automation instead of only moved by hand: per-channel level, pitch, pitch drop,
+A/D/S/R, mute and choke group (9 parameters × 12 channels), plus master trim,
+swing, swing grid and tempo — 112 in total, grouped per lane so a host lists them
+sensibly.
 
 The pattern is deliberately **not** in the parameter list. 192 cells as 192
 parameters would swamp a host's automation list, and it is not what anyone
@@ -133,9 +168,10 @@ session comes back at the levels it was left at.
 
 Host-written values reach the panel, not just the audio: the channel strips and
 the top bar re-read the parameters on their timers, so a ramp you draw in the
-host moves the fader, the mute button, the pitch readout and the envelope rows in
-front of you. Every control writes straight through when you move it, so during a
-drag the poll reads back the value already under the pointer and leaves it alone.
+host moves the fader, the mute button, the pitch readout, the envelope rows and
+the choke box in front of you. Every control writes straight through when you
+move it, so during a drag the poll reads back the value already under the pointer
+and leaves it alone.
 
 ## Layout
 
@@ -144,7 +180,7 @@ drag the poll reads back the value already under the pointer and leaves it alone
 - **Middle** — the 16 × 12 step grid. Channel 11 is the top row and channel 0 the
   bottom, matching the web app, which reverses its lane list.
 - **Bottom** — one strip per channel: name (double-click to rename), colour
-  swatch (click to cycle), sound, pitch, level, mute.
+  swatch (click to cycle), sound, pitch, pitch drop, level, mute and choke group.
 
 While a channel is firing its row lights up, and a white column marks the
 playhead.
@@ -214,58 +250,62 @@ That produces **`launch\Groovebox Setup <version>.exe`** — Inno Setup, the sam
 installer the other skeer-audio products ship, reading its payload straight out of
 `launch/` so a setup file can never contain binaries older than the last build. The
 version comes from `project(... VERSION ...)` in `CMakeLists.txt` unless `-Version`
-overrides it. It needs no administrator rights by default, puts the VST3 in the
-per-user VST3 folder that most hosts scan, and offers a task that also copies it into
-`Documents\VST3`. See `installer\Groovebox.iss` for every path it touches.
+overrides it. It writes the VST3 to **exactly one place** —
+`C:\Program Files\Common Files\VST3\` — asks for elevation to do it, and has no option,
+task or conditional that puts a second copy anywhere. See `installer\Groovebox.iss`.
+
+One destination is the rule, not a simplification. A plugin installed twice appears
+twice in the browser, and the two bundles start drifting the moment one of them is
+rebuilt — so a "convenience" copy into a per-user or DAW folder is a defect with a
+friendlier name.
 
 **Quit your DAW before installing.** The installer deliberately does not close running
 applications (`CloseApplications=no`): if the plugin DLL is held open by Live or
 another host, the copy fails with a clear message instead of killing the host and the
 unsaved set inside it. Quit the host, run the setup again.
 
+**The setup prompts for UAC.** `Program Files` is protected, and the alternative —
+installing unprivileged into a folder that happens to be scanned — is what produced the
+duplicate. Elevation is the cheaper cost.
+
 To install by hand instead: build the plugin first (above), then copy the whole
-`Groovebox.vst3` **folder** (not just the inner binary) from `launch/` into your
-VST3 folder and rescan in your DAW.
-
-Which folder your host actually looks at is measurable rather than assumed. Live
-12.3.5 on this machine keeps its scan set in
-`%APPDATA%\Ableton\Live 12 Suite\Preferences\PluginManager\PluginScanDb.ldb`, and the
-folders it had configured were the global one plus a custom VST3 folder:
-
-| DAW | VST3 folder |
-|---|---|
-| Ableton Live | `C:\Program Files\Common Files\VST3\` (its default), plus whatever you set as **Settings → Plug-Ins → VST3 Plug-In Custom Folder** — on this machine that is `%LOCALAPPDATA%\Programs\Common\VST3\` |
-| Most others | `C:\Program Files\Common Files\VST3\`, and they also scan `%LOCALAPPDATA%\Programs\Common\VST3\` without being told to |
-
-`Documents\VST3` is **not** scanned unless you add it as the custom folder yourself —
-Live does not look there just because it exists, which is why the installer's
-`abletonfolder` task is optional and the default per-user destination is the one Live
-already watches.
+`Groovebox.vst3` **folder** (not just the inner binary) into your VST3 folder and rescan
+in your DAW. Keep it to one folder; two copies is the bug this section describes.
 
 ```powershell
-# the per-user folder: writable without administrator rights, scanned by Live here
-$dest = "$env:LOCALAPPDATA\Programs\Common\VST3"
-New-Item -ItemType Directory -Force -Path $dest | Out-Null
+# one copy, in the folder every host scans -- run this shell elevated
+$dest = "$env:ProgramFiles\Common Files\VST3"
 Copy-Item -Recurse -Force launch\Groovebox.vst3 $dest
 ```
 
-`C:\Program Files\Common Files\VST3\` needs administrator rights; use it when several
-accounts on the machine should get the plugin, which is also what Cubase and Nuendo
-expect.
-
-The **standalone** app needs no installation at all — just run
-`launch\Groovebox.exe`.
+The **standalone** app needs no installation of its own beyond the `Groovebox.exe` the
+setup puts next to the plugin — for a quick look, run `launch\Groovebox.exe` straight
+from the build folder.
 
 ### Ableton Live specifics
 
-Live does **not** scan `Documents\VST3` by default. Its scan database showed only
-`C:\Program Files\Common Files\VST3`, so a plugin placed anywhere else is simply
-invisible until you tell Live where to look:
+Live's global VST3 folder is `C:\Program Files\Common Files\VST3`, which is where the
+installer writes, so the only setting you need is the system-folder tick:
 
 1. **Settings → Plug-Ins**
-2. Tick **Use VST3 Plug-In System Folder** (keeps your existing plugins working)
-3. Tick **VST3 Plug-In Custom Folder** and point it at the folder you used
-4. Click **Rescan** — hold `Alt` while clicking to force a full rescan
+2. Tick **Use VST3 Plug-In System Folder**
+3. Click **Rescan** — hold `Alt` while clicking to force a full rescan
+
+If **VST3 Plug-In Custom Folder** is ticked, check what it points at before you rescan,
+because a custom folder is a second place Live will happily find a stale Groovebox. Live
+12.3.5 on this machine records 742 bundles under `C:\Program Files\Common Files\VST3` and 4
+under `%LOCALAPPDATA%\Programs\Common\VST3` — that custom folder is scanned, and it is where
+this installer used to write, so a leftover there rescan as a duplicate entry. `Documents\VST3`
+(also a former destination) appears **0** times in that database: Live does not read it unless
+you point the custom folder at it yourself. The uninstaller removes the copy it made; a folder
+you filled by hand you clean by hand, after checking which binary is current:
+
+```powershell
+Get-FileHash "$env:ProgramFiles\Common Files\VST3\Groovebox.vst3\Contents\x86_64-win\Groovebox.vst3",
+             "$env:LOCALAPPDATA\Programs\Common\VST3\Groovebox.vst3\Contents\x86_64-win\Groovebox.vst3",
+             "$env:USERPROFILE\Documents\VST3\Groovebox.vst3\Contents\x86_64-win\Groovebox.vst3",
+             "launch\Groovebox.vst3\Contents\x86_64-win\Groovebox.vst3" -ErrorAction SilentlyContinue
+```
 
 The plugin appears under **Plug-Ins → VST3 → Earworm → Groovebox** and loads on a
 **MIDI** track (it is an instrument, so it is not listed under Audio Effects).
@@ -312,6 +352,25 @@ It asserts, among other things, that:
   measured on synthetic tones, a component that would alias is left at **−83.1 dB**
   while one inside the passband, and a tone at unity, both stay within **0.00 dB**
   of where they started;
+- a pitched hit is at **its own level from its first sample**: on a source held flat,
+  the eight samples at the top of a hit an octave up read the same number the body of
+  that hit reads, with no step between one sample and the next. The taps that hang off
+  the end of the source used to be skipped, which left that hit starting **7.4 % hot**
+  and arriving at its level over the next four samples — on the part of a drum hit that
+  carries the transient;
+- a **pitch drop** is a glide and not a jump, and it lands on the note it was asked
+  for: measured from zero crossings, twelve semitones of drop starts the hit at 0.761 of
+  the note's own period, the seven cycles across the sweep lengthen monotonically from
+  131.8 to 198.7 samples, and the settled part is at the 200.455-sample period the Pitch
+  control says to within half a sample — at the same level as the same hit with no drop.
+  What the sweep reads extra is what the hit gives up: 263 samples, and the same 263 on
+  a 454 ms and on a 36 ms sample;
+- **the same strike is the same hit whatever block the host asked for**: a dropped hit
+  rendered at 256, 512, 1024 and 2048-sample blocks ends on the same sample at the same
+  integrated level, and at a drop of twelve the tail of it measures 0.995 of the
+  brightness of a lane that only had to interpolate, 0.984 at five. A band pinned at
+  the top of the sweep used to cost that tail 4 dB, which is a tone control wearing a
+  tuning control;
 - a level or mute change made **while the sequencer is running** takes effect on
   the hits that follow;
 - samples can be loaded from another thread while the audio thread is rendering,
@@ -330,6 +389,20 @@ It asserts, among other things, that:
 - the envelopes behave: sustain 0 makes a one-shot while sustain 1 holds, a note
   off releases a held note, and a longer attack, decay or release measures longer
   in the audio;
+- a decay and a release **fall on a curve, not a ramp**: measured in four windows
+  across each fall, every fifth of the duration removes the same share of what is
+  left — 0.368 of the level, to three decimals on all three steps of both falls —
+  where the straight line this replaced measures 0.778, 0.715 and 0.603, and the
+  fall is over when the parameter says it is;
+- no combination of the four envelope controls makes a click: the engine is
+  rendered at **all 81 corner settings** of attack, decay, sustain and release —
+  each at its bottom, middle and top, with the transport stopped part way through
+  to force a release out of a hold — and the sample-to-sample slew of every one
+  stays under the ruler's limit;
+- a harder hit is **brighter**, not only louder: the tone of a hit falls as its
+  velocity does while a fader change leaves the tone exactly where it was, and a
+  hit at full velocity comes out at the sample's own peak and its own balance,
+  bit for bit;
 - the envelope values survive a save/load round trip, and a channel that was never
   touched keeps the defaults;
 - step velocities survive a save and load, including a very quiet step, and an off
@@ -338,7 +411,7 @@ It asserts, among other things, that:
   first, is a no-op over a whole bar, and leaves every other row alone;
 - a value written into a **parameter** the way a host writes it — normalised,
   straight through `setValueNotifyingHost`, without touching any of the
-  processor's own setters — reaches the engine and changes the audio, so all 88
+  processor's own setters — reaches the engine and changes the audio, so all 112
   parameters are genuinely automatable rather than merely listed.
 
 `GrooveboxLayoutTest` builds the real editor and inspects it. A control laid out
@@ -424,8 +497,18 @@ Notes on the design:
   interpolation is not a filter: pitch a sample up and everything above the
   output's Nyquist folds back into the audible band, and at a ratio of exactly
   two it does not even interpolate — it decimates. The table is built when the
-  engine is constructed, off the audio thread, and a voice picks a cutoff band at
-  note-on so the kernel never changes within a hit.
+  engine is constructed, off the audio thread. A voice picks its cutoff band at
+  note-on from the fastest rate the hit is ever going to read at — the top of a
+  pitch drop — and the render loop opens it again as that glide settles: holding
+  it shut for the whole tail cost 3.3 dB of top end at a drop of 12, which makes a
+  tuning control a tone control. Switching bands is not a step in the sound either
+  way, because these kernels are symmetric about the same centre tap, so below the
+  tighter of the two cutoffs they are the same signal. Normalising each band to
+  unity is what keeps a resampled hit at the level it was
+  recorded at, and that promise only holds while every tap has something to read:
+  at either end of the source the engine sums the weights it actually used and
+  divides back by them, so the truncated window keeps the same DC gain instead of
+  starting a pitched hit a little hot.
 - **Peak detection lives on the audio side.** The editor polls a few times a
   second, too slow for a drum hit, so the master bus holds the peak it has seen
   and lets it decay between blocks instead of asking the GUI to catch it.

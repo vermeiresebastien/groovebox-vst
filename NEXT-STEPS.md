@@ -1,0 +1,733 @@
+# Groovebox — next steps
+
+Produced 2026-11-14 from a seven-lane parallel audit of HEAD `460b3bf` (DSP/sound, sequencing/timing,
+UI/DAW workflow, architecture/real-time safety, test & measurement harness, market/portfolio, frontier
+capabilities). Every claim below was re-read in the source at HEAD; three audit findings were rejected
+because they did not survive the check (see A3).
+
+**How to use this:** pick steps by number (e.g. "do 1.1–1.4 and 2.1"). Each step is written to be
+buildable on its own, with a gate that is supposed to fail before the fix. Phases 1 and 2 are done —
+see **G. Run record** at the end for what each step moved and what is still red.
+
+---
+
+## A. Verified state — the 2026-11-14 review backlog is mostly stale
+
+The previous critical review ranked 8 items. Six are already fixed at HEAD. Re-deriving them would have
+wasted a session, so they are closed here with evidence.
+
+| Backlog item | Status at `460b3bf` | Evidence |
+|---|---|---|
+| 1. `SpinLock` on the audio thread in `SampleStore` | **FIXED**, better than the proposed RCU | lock-free `std::array<std::atomic<Sample*>, 512>` with release/acquire pairs — `SampleStore.h:141`, `SampleStore.cpp:140,151`; two-thread stress test `Tests/SmokeTest.cpp:1409-1472` |
+| 2. No master section | **FIXED** | `Source/MasterBus.h:59-134`, trim −24..+6 dB default −2 (`Common.h:59-61`), peak/clip latch; tests at `SmokeTest.cpp:1240-1363` |
+| 3. Linear two-tap resampling | **FIXED** — redrum's kernel is already in | 24-tap / 1024-phase / 16-band windowed sinc, `Resampler.h:27-138`; aliasing test `SmokeTest.cpp:1663-1686` proves ≤ −30 dB octave-up fold-back |
+| 4. Voice stealing hard-cuts, no choke groups | **STILL OPEN** | oldest voice overwritten in place with no fade, `SequencerEngine.cpp:151-159`; same class of click at sample end `:390-395`; no choke concept anywhere |
+| 5. Undo contradicts its comments | **OPEN, and wronger than reported** | transactions now exist (`StepGridComponent.cpp:406,413`, `ChannelStrip.cpp:344-445`, `TransportBar.cpp:345,362`) and JUCE pops a whole drag as one step — but nothing reads the tree back; see B4 |
+| 6. Standalone clock drifts early | **NOT PRESENT** — the review analysed `67cdf4a`, not HEAD | head advances only by rendered whole samples (`SequencerEngine.cpp:598,613`), the floor residual stays in the head and is re-measured each block; onset error is bounded in (−1, 0] samples, non-monotonic. The "511.5 samples early" figure is the *old* code |
+| 6b. "Multi-bar test must be written first" | **ALREADY EXISTS and passes** | `SmokeTest.cpp:1519-1593`: 32 bars @120/256, 16 @300/4096, 24 @127/333, worst onset error ≤ 2 samples |
+| 7. `getTailLengthSeconds()` 2.0 vs 4 s release | **FIXED** | `PluginProcessor.h:58` returns `Layout::maxReleaseSeconds` (4.0, `Common.h:39`) |
+| 7b. note-off releases grid voices | **FIXED** | `releaseChannel` filters `voice.fromMidi` — `SequencerEngine.cpp:199` |
+| 7c. duplicated increment maths | **FIXED** | `fireStep:337` and `triggerChannel:251` both call `trigger()`, ratio computed once at `:130-131` |
+| 7d. `getWritePointer` inside the per-sample loop | **FIXED** | hoisted, `SequencerEngine.cpp:350-351` |
+| 7e. `soundingChannels` cleared per chunk | **FIXED** | cleared once per block at `:493-495`, with the reason commented at `:355-359` |
+| 7f. fresh `AudioFormatManager` per load | **PARTLY** | manager registered once (`SampleStore.cpp:23`), but `ChannelStrip.cpp:104,385` still builds one per strip ×12 for a wildcard string; whole-file decode still inline on the message thread (`SampleStore.cpp:70,113`) |
+| 8. APVTS migration | **DONE** | 88 params (4 global + 12×7), `Parameters.h:63-117`; `writeParameter` at `PluginProcessor.cpp:133` |
+
+### A3. Audit claims I checked and rejected — do not act on these
+
+- *"The host branch re-renders the block twice"* — **true** (see B1), keep.
+- *"`soundingChannels` is stored atomically but read with plain `operator[]`"* — **false**. The read is a
+  proper `.load()` at `SequencerEngine.h:309`. No defect.
+- *"`PresetManager.h/.cpp` exists and lane 2 mis-cited it"* — there is no `PresetManager` in the tree at
+  all; `getNumPrograms()` returns 1 (`PluginProcessor.h:60-63`). The finding (no presets) is real, the file
+  was invented.
+- *"Add a `stateVersion` tag as a standalone task"* — rejected as standalone. Do it inside the first new
+  per-step property (step 4.1), where it actually pays.
+- *"Groovebox clock drift"* — rejected; see row 6 above.
+
+---
+
+## B. The five defects that are real, cheap, and hit you weekly
+
+These are not polish. Each one is something a Live session already trips over, and none of them are
+visible to the current test suite because the suite never installs a play head and never feeds MIDI into
+a running sequencer.
+
+**B1 — Any note played over a running pattern doubles that block.**
+`processBlock` renders the whole block through the engine (`PluginProcessor.cpp:183`), then calls
+`engine.processMidi` (`:187`), which **re-renders `[0, numSamples)` again** so the new note lands in the
+right place (`SequencerEngine.cpp:296-320`). `renderVoices` accumulates (`outLeft[i] += …`, `:449-452`)
+and advances `voice.position` (`:462`). Net effect for every voice already sounding in that block: its
+samples are summed a **second time** (a level jump of up to +6 dB for one block) and its read position
+advances at **2× block length** (a skip/glitch in the middle of the hit). Note-off events trigger the same
+path. It is invisible to the tests because `processMidi` ignores non-note events (`:279`) and checks
+`[8]`/`[9]` render with the transport stopped and the grid cleared.
+*Audible as: a kick that jumps in level and stutters the moment you play a pad note over the pattern.*
+
+**B2 — A mid-bar stop/resume or a punch-in puts the groove permanently out of phase with the bar.**
+When the host is stopped, the engine sets `position` from PPQ and disarms (`SequencerEngine.cpp:525-532`),
+but on resume `onsetStep` is never re-derived from the position. `distanceToNextOnsetInSteps` then returns
+`barStart + onset(0) − head` **clamped at zero** (`:85-95`), so step 0 fires instantly wherever the playhead
+sits — mid-bar — and the whole pattern runs permanently `head % 16` steps early relative to the grid. A
+seek while playing hits the `candidate < position → +16` branch (`:97-106`) and can drop up to a bar of
+onsets. The comment at `:527-530` promises "pick the position back up when it resumes"; the code does not.
+*Audible as: after punching in or stopping/starting, the drums never line up with the rest of the set.*
+Zero coverage today: `setPlayHead` / `PositionInfo` / `AudioPlayHead` appear **nowhere** in `Tests/`.
+
+**B3 — The kit goes silent after enough recalls, and RAM creeps until it does.**
+`applyMetadata` calls `samples.addFile()` for all 12 lanes on **every** `setStateInformation`
+(`PluginProcessor.cpp:823-838`) with no path dedupe, and the registry is append-only — an id is
+"never removed, never moved, never reused" (`SampleStore.h:49`) up to `maxSamples = 512`
+(`SampleStore.h:62`), after which `addSample` returns 0 forever (`SampleStore.cpp:123-131`). Live calls
+state-set on set load, preset recall, track duplicate and its own device undo: ~12 ids a pop, so after
+roughly **43** of those, every sample load in that instance fails and 12 decoded buffers of RAM were
+wasted each time. No test catches it — all four round-trip tests build a fresh processor
+(`SmokeTest.cpp:633,675,1146,1380`).
+
+**B4 — Undo is cosmetic and self-erasing.**
+Edits push the encoded 395-char pattern string into the tree with the undo manager
+(`PluginProcessor.cpp:693`), and transactions exist, so Ctrl+Z would restore the *string* — but
+`GrooveboxProcessor` is only an APVTS listener, never a `ValueTree::Listener` (no such listener exists
+anywhere in `Source/`), so the engine atomics are untouched; the next edit or save re-encodes the live
+atomics over the undone string. Also `getUndoManager()` (`PluginProcessor.h:244`) has **no callers**: there
+is no `KeyPressMapping` / `ApplicationCommandTarget` in the repo, so undo cannot be invoked at all. A
+mis-drag that paints a run across a row (`StepGridComponent.cpp:413-426`) is unrecoverable, and "Clear
+pattern" (`TransportBar.cpp:345`) / "Clear row" (`ChannelStrip.cpp:424`) fire with no confirmation.
+
+**B5 — A host-automated parameter allocates on the audio thread, and the header says it cannot.**
+`parameterChanged` parses the id with two `juce::String::substring` calls (`PluginProcessor.cpp:92,97`).
+Its own doc comment states *"It can therefore arrive on the audio thread, so it only ever stores atomics"*
+(`PluginProcessor.h:256-261`) — JUCE notifies listeners synchronously from the parameter write, so a
+Live automation ramp runs exactly that code inside `processBlock`, allocating twice per parameter per
+block across up to 88 lanes. Low severity, but it is a stated invariant that is false.
+
+Two more, small but real: **B6** `swingGrid` is an int 2–4 that the engine honours
+(`SequencerEngine.cpp:60`) while the UI only ever writes 2 or 4 and, at grid 3, lights **neither** button
+(`TransportBar.cpp:235-237`); **B7** `previewChannel` (`PluginProcessor.cpp:884`) and
+`SampleStore::getSampleIds()` (`SampleStore.h:88`) have **no UI callers** — auditioning and pointing a lane
+at an already-loaded sample are both unreachable, and `previewChannel` calls `triggerChannel` from the
+message thread, so wiring it up naively would race.
+
+---
+
+## C. Avenue map — everything found, scored
+
+Effort in dev-hours at your pace. "Risk" means risk of breaking something that works today, chiefly the
+sample-exact clock invariant that test `[12]` protects.
+
+| # | Avenue | Impact on the thing you can hear / ship | Effort | Risk | Unblocks |
+|---|---|---|---|---|---|
+| **P0** | Host-playhead + MIDI-in test rig (fake `AudioPlayHead`, sparse patterns, tempo ramp) | makes B1/B2/B3 provable instead of argued; every later timing step depends on it | 6-8 h | low | B1, B2 |
+| **P0** | Fix double-render (single split loop owning all block regions) | kills a +6 dB one-block jump and a mid-hit stutter | 6-10 h | med — touches the render order | — |
+| **P0** | Re-derive `onsetStep` from host position on takeover/seek | the groove stays on the grid through punch-ins and seeks | 4-6 h | med — clock invariant | pattern chaining |
+| **P0** | Dedupe sample loads by path+size+mtime | ends the ~43-recall silence and the RAM creep | 2-3 h | low | kits (C-UX3) |
+| **P0** | Make undo real (`ValueTree::Listener` + keys + confirm on destructive) | removes "one wrong drag cost me 20 min" | 4-6 h | low-med (re-entrancy) | every future pattern feature becomes undoable |
+| **P0** | Index-table parameter dispatch (no `substring`) | false invariant made true; no RT allocation | 1-2 h | low | RT tripwire test |
+| **C1** | Click-safe terminations: steal fade, end-of-sample fade | no tick on fast 16ths; audible on every hat/ride | 6-10 h | low | choke groups |
+| **C2** | Choke groups (3), reusing `releaseChannel` (`:192-205`) | hats and perc cut each other like hardware; market says this is table stakes and you lack it | 3-4 h on top of C1 | low | — |
+| **C3** | Envelope truth (exponential decay/release, the header already claims it, `SequencerEngine.h:31-33`) + velocity→brightness law | soft hits sound soft instead of merely quiet; tails stop sounding synthetic | 3-4 h | low | — |
+| **C4** | Per-hit pitch drop (varispeed ramp on `increment`, set once at `:130`) | 808-style kick bloom that Live's sample page cannot do; nothing else in the family does it | 4 h | low | — |
+| **C5** | Kernel edge renormalisation + hoist `getWeights` (constant per voice) | recovers a little level over the first ~12 source samples — exactly where a kick transient lives; less CPU | 4-6 h | low | — |
+| **F1** | Per-step payload **v2**: 1 byte per step, v1 still readable | the enabler: probability/ratchet/choke/humanize have **no bits** today (velocity is 1/100-quantised inside the 395-char string, `PluginProcessor.cpp:673-693`) | 6-8 h | med — must teach `shiftChannelRow` (`:334-361`, currently copies pattern+velocity only) | F2, F3, F4 |
+| **F2** | Seeded per-step probability + one "mutate" dial | loops stop feeling programmed; deterministic per bar so A/B stays reproducible | 4 h | low | — |
+| **F3** | Humanize (microtiming + velocity jitter) | the difference between a beatbox and a drummer | 3 h on F1 | med — an offset can put an onset behind the head (`:105`) | — |
+| **F4** | Sub-step onset keystone → ratchet/rolls | fills without leaving the plugin | 6-8 h | med-high — rewrites the split loop | F3, chaining |
+| **F5** | 4-slot pattern bank + auto-evolve over N bars | the sequencer becomes a song sketch | 6 h | low | — |
+| **U1** | First sound on open: 12 **synthesised** default lanes (no shipped files) | right now the plugin opens silent with an empty grid | 8-12 h | med — level honesty, installer payload | — |
+| **U2** | Kit workflow: multi-file drop fills lanes (`StepGridComponent.cpp:541` uses `files[0]` and fails silently `:543`), lane menu from `getSampleIds()`, remembered folder, audition on click (B7) | 12 file dialogs → one gesture | 12-20 h | low | U3 |
+| **U3** | Live programs/kits (`getNumPrograms()==1`) = a free preset browser in Live's browser | makes the thing shareable and recallable | 16-24 h, partly blocked by path-only refs | med | — |
+| **U4** | Pattern → MIDI clip export by drag (`juce::MidiFile` already linked; `skulpt/Source/SequenceView.cpp:507` is the precedent) | gets your groove into the arranger | 4-8 h | low | — |
+| **U5** | Editor floor fits a 1366×768 laptop (830 px min, `PluginEditor.cpp:9-10`), all-12-strip layout test | `Tests/LayoutTest.cpp:301` checks **one** size and **the first strip only**; the `tight` branch (`ChannelStrip.cpp:197-209`) is never executed | 4-6 h | low | — |
+| **V1** | `verify.ps1`: build → both test exes with `$LASTEXITCODE` checked → SHA-256 manifest of `launch/` vs artefacts | today `installer/build-installer.ps1:92-105` only `Test-Path`s 5 files; nothing hashes anything | 3-4 h | low | — |
+| **V2** | RT tripwire (counting allocator armed inside `processBlock`) + click metric (max \|x[n]−x[n−1]\|) + level-matched A/B render rig | makes "sounds better" falsifiable, which is your rule | 12-16 h | med — JUCE 8.0.4 has **no** `OfflineRenderer`, BS.1770 LUFS would be hand-rolled | everything audio |
+| **M1** | Positioning: free BYO-sample in-plugin sequencer is genuinely unoccupied (Triaz Player can't load custom samples; TerminalVST is one sound per instance; Hydrogen isn't a plugin; Battery/Maschine sequence nothing in-plugin) | decide what the next 20 hours are *for* | 2 h decision | n/a | — |
+| **M2** | Portfolio collision: the duplicate risk is **`drumgen`/SliceForge (16 pads × 32 steps, 8 banks)**, not `redrum` (a 128-pad player with no sequencer) | avoid building the same product twice | 1 h decision | n/a | — |
+| **M3** | Distribution: signing no longer buys SmartScreen trust (reputation is earned, ~$99/yr for an OV cert); a KVR page + a 90-second beat is the actual channel | shipping, not coding | S | n/a | — |
+
+---
+
+## D. The decision: four avenues worth your next sessions
+
+Everything else in the map is either already done, a sound-design lane you said is not where effort
+belongs yet, or a toy. Ranked by audible value per hour and by what stops being possible if skipped.
+
+**1. Make it honest under a real host (P0 lane: rig → B1 → B2 → B3 → B4 → B5).**
+This is the whole product's promise — a grid-locked, automation-friendly drum machine inside Live — and
+today it double-sums the block whenever you play a note, falls out of phase after a punch-in, and can go
+silent after ~43 recalls. All six fixes together are roughly a day and a half and none of them change a
+single sound. It is also the only tier where the current tests are *blind*, so it is where a new test
+buys the most protection.
+
+**2. Make hits stop clicking and start choking (C1 + C2 + C5).**
+The oldest defect on the list (voice stealing with no fade, `SequencerEngine.cpp:151-159`) is still open,
+sample-end cuts click the same way, and choke groups are the one feature the paid competition assumes and
+you do not have. Redrum already solved all three shapes — `DrumEngine.cpp:304-339`, `DrumVoice.cpp:465-492`
+— so this is a port with a known answer, not an invention. Judge it with the level-matched protocol in E3.
+
+**3. Make the loop breathe (F1 → F2, then F3/C4).**
+Per-step probability and a mutate dial are 4 hours on top of a versioned byte-per-step payload, they
+change what comes out of the box on every listen, and because the RNG is seeded by bar index the A/B is
+reproducible and level-matched — it survives your measuring rule instead of dodging it. This is the first
+*feature* tier, and it must be preceded by F1, since the current pattern encoding physically has no bits
+for it.
+
+**4. Make the first two minutes work (U1 → U2 → U3, with U4 cheap).**
+The plugin opens silent with an empty grid, a sample is one file dialog per lane, `files[0]` throws away
+the rest of a dropped kit, drop failures are silent, and there are no programs. This is the lane that
+decides whether anyone else can use it — but it sits on the state paths that tier 1 repairs, so it goes
+fourth, not first. Synthesise the default kit rather than shipping files: it keeps the installer rule
+(payload comes from `launch/`, nothing authored) and avoids the licensing treadmill you cannot fund.
+
+**Deliberately not now:** per-channel pan/filter and an FX rack (a sound-design lane with +24 params and a
+77 px strip to redesign, and the clock/click work is more audible); song mode and per-channel step lengths
+(`Layout::numSteps` is `constexpr` and feeds the atomics and the UI, and one `onsetStep` serves all 12
+lanes — 40-60 h and it puts the invariant test `[12]` at risk); MIDI learn (88 params are already host-
+automatable and Live maps better than an in-plugin list ever will); Ableton Link (the host *is* the clock —
+it would be a second one); bundled sample library; ML/resynthesis (`skulpt` and `pulsekit` own that lane);
+macOS/Linux builds.
+
+---
+
+## E. The plan
+
+### E1 — Phase 1: build the tests that can see the bugs first
+
+Do not fix anything in Phase 2 without its failing test written and observed red in Phase 1. This is your
+own rule: a test that passes on old code proves nothing.
+
+- **1.1** Add a fake `juce::AudioPlayHead` to `Tests/SmokeTest.cpp`: a settable struct (`isPlaying`,
+  `tempo`, `ppqPosition`, `barPosition`, `signature`), installed with `setPlayHead()`, stepped by the test
+  between `processBlock` calls. No message pump, no modal loop — the AGENTS.md constraint holds.
+  *Done when:* it drives the host branch at all — assert the engine sees the position (there is no accessor
+  today, so step 1.1 will surface how that gets reported; a `getCurrentStep()`-style read-only getter on the
+  engine is the honest way).
+- **1.2** **T-DOUBLE**: one lane armed on all 16 steps, sustain open, transport playing via the fake head;
+  a second lane receives a note-on at sample offset 0 in a block. Assert that lane's rendered audio for the
+  block is bit-identical to the same block with an empty MIDI buffer. **Expected red today** (position
+  advances 2× and sums twice). ~2 h.
+- **1.3** **T-PHASE**: with the fake head, stop mid-bar at `head % 16 == 7`, resume playing, and assert the
+  next fired step is the one whose *swung onset* is at or after the head — not step 0. Second case: seek
+  backward while playing and assert no step in the following bar is skipped. **Expected red today.** ~3 h.
+- **1.4** **T-RECALL**: on one instance, `setStateInformation` twice with the same block, assert
+  `getSampleIds().size()` is unchanged and the 12 lane sample ids are identical. **Expected red today.** ~1 h.
+- **1.5** **T-UNDO**: `beginTransaction`; paint a run of steps; `undo()`; assert `isStepOn()` is back to
+  baseline. **Expected red today.** ~1 h.
+- **1.6** **T-RT**: install a counting global allocator, render 20 warm-up blocks, then assert zero
+  allocations during `processBlock` while a parameter is written from another thread (this is what a host
+  automation ramp does). **Expected red today** (two `substring`s). ~3 h.
+- **1.7** **T-CLICK**: metric `max |x[n] − x[n−1]|` at three places — a voice stolen mid-flight, a one-shot
+  reaching `sourceLength-1` at max envelope value, and attack-0 / release-max envelope corners. Baseline the
+  numbers so Phase 3 has something to compare against. ~2 h.
+- **1.8** One `out/` note recording baseline run counts (currently 123 smoke / 63 layout checks, 0 problems)
+  and the new failing check names, so the red state is on the record before any code moves. ~0.5 h.
+
+*Phase 1 total ≈ 13-14 h. Nothing in it changes product behaviour.*
+
+### E2 — Phase 2: correctness (each step gated by its own test from Phase 1)
+
+- **2.1** Make T-RECALL pass: dedupe sample loads by canonical path (+ size/mtime as a cheap freshness check)
+  in `SampleStore`/`applyMetadata`, reusing the existing id. Do **not** add sample removal — that would put
+  `free()` on the audio thread via the refcount at `SequencerEngine.cpp:368,457`. ~2-3 h.
+- **2.2** Make T-RT pass: replace `parameterChanged`'s string parsing with a prebuilt
+  index → {channel, field} table, resolved once when parameters are created (`Parameters.h:80-112`). ~1-2 h.
+- **2.3** Make T-DOUBLE pass: give the block **one** renderer. Collect note events before rendering and add
+  their offsets to the split points in `SequencerEngine::processBlock` (`:596-616`), so a voice is rendered
+  once per region and the MIDI trigger happens at its own split. `processMidi` stops rendering entirely.
+  This is the delicate one: the render order is what keeps the clock sample-exact, so re-run 1.2 *and*
+  existing test `[12]` afterwards. ~6-10 h.
+- **2.4** Make T-PHASE pass: on host takeover and whenever `position` jumps more than one onset, re-arm
+  `onsetStep` by scanning the bar the head is in for the first onset ≥ head, instead of clamping a negative
+  distance to zero (`SequencerEngine.cpp:85-106`). ~4-6 h.
+- **2.5** Make T-UNDO real: `GrooveboxProcessor` becomes a `ValueTree::Listener`, decodes `"pattern"` back
+  into the atomics on change, with a re-entrancy flag so `pushPatternToState` cannot loop. This also makes
+  every later pattern feature undoable for free. ~4-6 h.
+- **2.6** Wire undo/redo keys (`KeyPressMapping` / `ApplicationCommandTarget` — none exists in `Source/`),
+  refresh the panel through the existing `onStateChanged` path, and add a confirm on "Clear pattern"
+  (`TransportBar.cpp:345`) and "Clear row" (`ChannelStrip.cpp:424`). ~3-4 h.
+- **2.7** Fix B6: light the correct swing-grid button for grid 3, or make the UI write only 2/4 and stop the
+  engine honouring 3 — pick one and make the comment and the code agree. ~1 h.
+- **2.8** Re-check the two claims we rejected (`SequencerEngine.h:309` atomic read; no `PresetManager`) —
+  nothing to do, but confirm in the commit message that they were examined. ~0.2 h.
+- **2.9** Green sweep: both test exes, `--parallel 2` build, `launch/` SHA-256 against the artefact tree.
+
+*Phase 2 total ≈ 25-32 h. No sound changes; every step has a named failing-then-passing test.*
+
+### E3 — Phase 3: the sound of a hit (first audio-changing phase, so it needs a protocol)
+
+**Protocol for every step here.** Render the same MIDI/state through the old and the new binary,
+level-matched to within 0.1 dB at the same −2 dB trim, and report which was matched. The gates are: max
+first-difference |Δx| at the steal and at sample end (a click is a broadband step, so the fix must collapse
+it); integrated/peak level, unchanged; and a gated 18 kHz tone across velocity 127 vs 40 for anything that
+touches the velocity law. No step here is allowed to be reported as better because it is louder.
+
+- **3.1** Click-safe terminations: steal into a small tail pool with a 2 ms ramp, fade the last ~6 ms before
+  `sourceLength-1`, keep `voice.position` sane across the hand-off. Shapes to copy, not invent:
+  `redrum/.../DrumEngine.cpp:304-339` (`stealFor`), `redrum/.../DrumVoice.cpp:465-492` (`startRelease`,
+  `copyTailFrom`). Gate: T-CLICK at the steal and end-of-sample. ~6-10 h.
+- **3.2** Choke groups: 3 per lane, `Voice.chokeGroup`, generalise `releaseChannel` (`:192-205`) from
+  channel → group; UI is a small popup on the strip. Gate: a rendered 16th hat pattern with a choke on step
+  4 shows the earlier voice ramped to zero within the fade window, at matched level. ~3-4 h after 3.1.
+- **3.3** Envelope truth: replace the straight-line decay/release (`SequencerEngine.h:91-92,109-110`) with
+  the curve the header already claims (`:31-33`), and give velocity a brightness law as well as a gain law
+  (today it is gain only, `SequencerEngine.cpp:290,138`). Gate: T-CLICK at the corners + the velocity tone
+  test. ~3-4 h. **Do not touch any gain constant to make this sound better — that is the silent-compensation
+  line.**
+- **3.4** Kernel edge renormalisation: taps that fall off either end of the source are skipped, costing level
+  over the first/last ~12 samples of a hit — exactly where a transient lives (`SequencerEngine.cpp:425-445`,
+  the comment admits it). Renormalise by the weights actually used. Hoist `kernelTable.getWeights` out of the
+  per-sample loop where the increment is constant (`:422-423`). Gate: level of the first 12 samples of a
+  pitched-up kick, old vs new, level-matched overall. ~4-6 h.
+- **3.5** Per-hit pitch drop: multiply `increment` (set once at note-on, `:130-131`) by a ramp for the hit —
+  808-style kick bloom, not reachable from Live's sample page. Visible per-lane amount parameter only, never
+  automatic. ~4 h.
+- **3.6** Optional, only if 3.1-3.5 land cleanly: true-peak metering on the master path
+  (`MasterBus.h:112-115` is sample-peak only, so summed kicks can pass the latch and clip in Live). Keep it a
+  report, not a guard: the house rule is no limiter. ~3-4 h.
+
+*Phase 3 total ≈ 20-32 h. Ship nothing from here without the A/B numbers in the commit message.*
+
+### E4 — Phase 4: variation (the first new features, on a payload that can hold them)
+
+- **4.1** Per-step payload **v2**: one byte per step (or a compact parallel property) instead of the 395-char
+  string that currently encodes on/off and 1/100-quantised velocity (`PluginProcessor.cpp:673-693`), with v1
+  still readable, **a `stateVersion` on the root tree** (there is no version today — compatibility rests on
+  `hasProperty("swing")` at `:869` and `row.length() == 16` at `:787`, and rows are silently truncated at
+  `:781`), and `shiftChannelRow` (`:334-361`) taught to carry every per-step field it now moves — today it
+  copies only pattern + velocity and would silently drop the new ones. Gate: old-state → v2 migration
+  round-trip, plus a round-trip test that asserts each field survives a shift. ~6-8 h.
+- **4.2** Seeded per-step probability + a single "mutate" amount. RNG keyed on (bar, step) so offline render
+  equals live playback and A/B stays reproducible. Gate: at probability 1.0 the output is bit-identical to
+  today's; at 0.5 across 64 bars it is deterministic. ~4 h.
+- **4.3** Humanize: microtiming offsets applied inside `stepOnsetInSteps` (`:57-75`) so the ≤1-sample
+  invariant is preserved, plus velocity jitter. Clamp offsets so no onset can land behind the head (that is
+  the `:105` whole-bar skip path) and re-run T-PHASE. ~3-4 h after 4.1.
+- **4.4** 4-slot pattern bank per channel (four pattern strings on the tree, no file browser), with a
+  bar-counter evolve option. ~6 h.
+- **4.5** Sub-step onset keystone → ratchet/rolls. This rewrites the three onset functions into
+  (step, subslot) and is the highest-risk item in the plan because it touches the split loop repaired in 2.3
+  — do it only after Phase 2 is a week old and stable. ~6-8 h. Alternative that avoids the keystone:
+  `Voice.startDelaySamples`, which leaves the clock untouched.
+
+*Phase 4 total ≈ 25-30 h.*
+
+### E5 — Phase 5: the first two minutes (workflow)
+
+- **5.1** Default kit from **synthesis**, not shipped files: 12 named lanes with a plausible kick/snare/hat/…
+  so the plugin makes sound the instant it opens (today the constructor loads nothing,
+  `PluginProcessor.cpp:47-56`). Keep levels at the current trim so nothing is louder by default. Gate:
+  assert a fresh processor produces a non-zero onset per lane with zero file loads. ~8-12 h.
+- **5.2** Kit path: multi-file drop fills consecutive lanes (today `files[0]` only,
+  `StepGridComponent.cpp:541`, and failures are silent at `:543` — the browse path *does* have an error
+  message, `ChannelStrip.cpp:404-411`, so copy that behaviour), remembered last folder, and a lane menu
+  built from `getSampleIds()` so a lane can point at a sample already in the session. ~10-14 h.
+- **5.3** Audition: wire `previewChannel` behind the audio-thread command queue introduced by 2.3, or delete
+  it. Leaving a message-thread `triggerChannel` in the tree is a loaded gun. ~2-4 h.
+- **5.4** Live programs/kits: `getNumPrograms() > 1` with names, i.e. a preset browser in Live's own
+  browser. Partly blocked by path-only sample refs (`:824-837`). ~16-24 h.
+- **5.5** Pattern → MIDI clip export by drag. `juce::MidiFile` is already linked; the drag idiom exists in
+  `skulpt/Source/SequenceView.cpp:507` and `redrum/Source/PluginProcessor.cpp:3502-3545`. ~4-8 h.
+- **5.6** Fit a laptop: editor floor is 1240×830 (`PluginEditor.cpp:9-10`) which does not fit 1366×768 with
+  Live's chrome; extend `LayoutTest` to min **and** max size, **all 12** strips (it checks one size at `:301`
+  and the first strip only at `:322`, so `ChannelStrip.cpp:197-209`'s `tight` branch is never executed), and
+  assert the velocity chip drawn at `cell.getY() − 12` (`StepGridComponent.cpp:376`) is not clipped on the
+  top row. ~4-6 h.
+
+*Phase 5 total ≈ 44-68 h. Longest phase, least urgent; it is for when you want other people to use it.*
+
+### E6 — Phase 6: shipping and housekeeping
+
+- **6.1** `verify.ps1`: build → run both test exes checking `$LASTEXITCODE` directly (no pipes, no trailing
+  `echo`) → SHA-256 manifest of `launch/` vs the artefact tree → file-tree equality → then the installer.
+  Run from PowerShell, never Git Bash. Today `installer/build-installer.ps1:92-105` only `Test-Path`s five
+  files and nothing hashes anything. ~3-4 h.
+- **6.2** Correct `README.md` against HEAD: the "rounding error cannot accumulate" line is now true and worth
+  keeping, but the sample-menu and MIDI-input claims need the same re-audit that caught three false claims
+  last time. ~1-2 h.
+- **6.3** Update `AGENTS.md` with what this audit established, so the next session does not re-derive it:
+  the closed backlog, the "one renderer per block" invariant, the host-phase re-arm rule, the append-only
+  registry + 512 ceiling and why dedupe-not-free is the fix, and that `Tests/` never installed a play head
+  before Phase 1. ~1 h.
+- **6.4** Two decisions to make in writing, not in code: (a) portfolio lane vs `drumgen`/SliceForge, which is
+  where the actual duplication is (16 pads × 32 steps, 8 banks, 29 kits) — `redrum` is a 128-pad player with
+  no sequencer and does not collide; (b) distribution — signing no longer buys SmartScreen trust and costs
+  ~$99/yr, while a KVR product page plus a 90-second beat is the channel that has moved free plugins in 2026.
+  ~1-2 h of thinking, no build.
+- **6.5** Only if 5.x landed: the positioning sentence to put in the README — *"the free VST3 drum sequencer
+  that stays out of your arrangement: drop your own sample on any of 12 rows, paint the pattern, export it as
+  MIDI, automate everything from the host."*
+
+---
+
+## F. What I would do in the next single sitting
+
+Steps **1.1 → 1.6**, then **2.1 → 2.2**, then stop and look. That is ~20 hours, it ends with a test suite
+that can see the host, six new failing-then-passing tests, two real bugs dead, and the double-render fix —
+the one everyone will hear first — with its gate already red and waiting. Phase 3 is the first place a sound
+changes, and it should not start until Phase 2's tests are green.
+
+---
+
+## G. Run record
+
+### Phase 1 — the tests that can see the bugs (done 2026-11-15, red on the old code)
+
+Written first, per the rule at the head of E2: nothing in Phase 2 was allowed to move without its own
+failing check. Baseline was **123 smoke checks / 0 problems**; after Phase 1 it was **154 / 12**, with
+`[1]`–`[15]` untouched at 142 ok, so every new failure was a new window, not a regression. Layout stayed
+**63 / 0** because no Phase 1 step touched the UI. `Tests/RtPathGuard.ps1` reported **2 hits** (the two
+`substring`s in `parameterChanged`).
+
+1.6 (T-RT) could not be gated the way the plan assumed. JUCE's allocation hooks are off in this build
+(`JUCE_ENABLE_ALLOCATION_HOOKS` defaults to 0, `juce_core.h:196`), and even with them on they only cover
+`operator new`/`delete` — `juce::String`'s storage comes from `HeapBlock` → `mallocWrapper`/`std::free`
+(`juce_HeapBlock.h:124,135,145`), so a counting `new` would have counted nothing. It became a static guard
+over the function body plus a dispatch-equivalence check on all 88 ids, and the reasoning is written into
+both files. Full numbers, per defect, are in `out/phase1-baseline.md` (gitignored scratch, not a deliverable).
+
+### Phase 2 — correctness (done 2026-11-15)
+
+**At the close of Phase 2: 157 smoke checks / 2 failures, 74 layout checks / 0 problems,
+`RtPathGuard.ps1` exit 0, `launch/` hash sweep clean.** The two remaining failures were both `[20]`
+T-CLICK, Phase 3's gate, and stayed red on purpose until 3.1 landed.
+
+| Step | What moved | Evidence in the run |
+|---|---|---|
+| 2.1 | `SampleStore::findSampleForFile` + `applyMetadata` asks the registry before decoding | `[18]` green: 45 recalls leave the registry at 12 entries and a *new* sample still loads — the failure it replaced was "refused: This session has already loaded 512 samples" |
+| 2.2 | `Params::laneTargets()` table; `parameterChanged` looks the id up instead of cutting it | guard exit 0 (was 2 hits); `[21]` all 88 ids land on the lane and field they name |
+| 2.3 | one renderer: `renderBlock` splits the block at onsets **and** note offsets; `processMidi` and `currentBlock` gone | `[16]` green — was 256/256 samples differing, peak 0.7943 → 1.2478 (+3.9 dB), voice at sample 512 after one 256-sample block. `[12]` still green, so the sample-exact clock survived |
+| 2.4 | `predictedHead`/`havePrediction`, `firstStepAtOrAfter`, slip tolerance of 4 samples | `[17]` green — measured: resume fires step 15 at 0.60 steps, scrub-back step 3 at 0.05, jump-forward step 10 at 0.05. Was: step 0 on the spot, and step 1 fourteen steps late |
+| 2.5 | processor listens to the state tree; `applyPatternFromState` is the one decoder, guarded against its own push | `[19]` green — undo now reverts the engine, not only the stored string |
+| 2.6 | Ctrl/Cmd+Z, Ctrl/Cmd+Shift+Z, Ctrl+Y on the editor; confirm before `Clear pattern` and `Clear row` | 7 new layout checks, including "with nothing to take back the key is left for the host" and "a bare letter is not swallowed" |
+| 2.7 | `Layout::usableSwingGrid` — the engine and the panel answer a host-written 3 with the 1/8 pair | smoke `[4]` "a grid the bar cannot divide is answered as the pair that does"; layout lights 1/16 at 2, 1/8 at 3 and 4 |
+| 2.8 | both rejections re-verified against the post-Phase-2 tree | the only read of `soundingChannels` is `.load()` at `SequencerEngine.h:317`; no `PresetManager` exists anywhere in the tree and `getNumPrograms()` still returns 1 (`PluginProcessor.h:61`) |
+| 2.9 | `--parallel 2` build of `launch`, then SHA-256 of every file against the artefact tree | `Groovebox.exe A665F0AD…`, bundle binary `B4E09344…` (at `Contents\x86_64-win\Groovebox.vst3`, not the `.dll` path AGENTS.md still quotes — fixed in 6.3) |
+
+Two things deliberately left undone here, both recorded so they are not mistaken for oversights:
+
+- **The note-off release ramp had no check of its own.** It only existed as MIDI, and MIDI is what
+  triggered the double render, so the honest gate had to wait for 2.3 — and a released voice still
+  nothing asserted. It is asserted now, in `[20]`, with the rest of the terminations.
+- **No ns-per-call timing proxy.** A gate that flaps on a noisy machine erodes trust in every other gate.
+
+One procedural note, because it is how the `out/phase2-inprogress/` folder exists: 2.3/2.4 were found
+half-applied in the working tree by another hand (engine header already on the merged API, `.cpp` still on
+`processMidi`), so the tree did not compile and the state was snapshotted before finishing the migration.
+Read `out/phase2-inprogress/FROM.txt` before trusting any file in there.
+
+### Phase 3 — the sound of a hit (in progress)
+
+The bar `[20]` sets, and the number it is measured against: the fixture's own slew is **0.1419**, so the
+limit is **0.2129**, and the reference tone is printed on every run so a limit that drifts out of scale with
+the signal is visible rather than silently passing.
+
+**3.1 — click-safe terminations (done 2026-11-15).** A voice now ends by ramping, whichever way it ends.
+Three ramps, because there were three cuts:
+
+| Where it ended in a step | What does it now | Slew before | after |
+|---|---|---|---|
+| the read ran off the end of the source | the last `endFadeSeconds` (6 ms) taper to zero, in `renderVoice` | **7 of 8** source lengths breached; worst **0.7921** at sample 5033 | **0.1127** at sample 1615 on all 8 — the fixture's own slew at the trim |
+| the pool was full and the oldest voice was overwritten | `handOffToTail`: the stolen hit keeps its position, increment and level in a 16-slot tail pool and fades over `stealFadeSeconds` (2 ms) | **0.4302** at sample 27562, 64/64 voices busy | **0.1127**, still 64/64 busy, so the steal really was forced |
+| the transport stopped, or release was wound to nothing | `Envelope::setParameters` floors a *falling* stage at `Layout::minimumRampSeconds` | **0.7943** at sample 11026 — the whole amplitude in one sample | **0.1127**; a one-shot with decay at nothing reads **0.1125** |
+
+The first two rows came from the same build with the two ramp lengths zeroed in `prepare` — which reproduces
+the old behaviour exactly, since a zero-length window is the cut — and the third from the build that had the
+tail pool but not yet the envelope floor, so all three columns are the same ruler, the same fixture and the
+same −2 dB trim. `out/smoke-31-before.txt` is the first two, `out/smoke-31c.txt` the third, and
+`out/smoke-31d.txt` the run with everything in.
+
+The level side, because a fade fixes a click by taking amplitude away and a quieter machine wearing the same
+pattern would satisfy a slew gate: **the peak is 0.7943 in every case, before and after** — the source at
+the default trim, untouched. `[20]` now asserts that (`the end of a hit is what fades, not the hit`,
+`a steal takes the slot, not the level`) and prints RMS beside it. RMS on the end-of-source renders falls by
+the taper's share of the hit and no more: 0.5013 → 0.4899 on a 4000-sample source (6 ms out of 90 ms) and
+0.5272 → 0.5212 on a 7619-sample one, the deficit shrinking as the hit gets longer. The steal's RMS went
+*up*, 0.3140 → 0.3142, because the two milliseconds the old code threw away are now played.
+
+What this deliberately did not touch: the **attack**. A hit starting from silence cuts nothing the listener
+could hear a sample earlier, and putting a 2 ms ramp on every onset would soften the transient — a change of
+sound nobody asked for. The reason is written at `Layout::minimumRampSeconds`, next to the floor it refuses.
+
+Run now: **162 smoke checks / 0 failures**, **74 layout / 0 problems**, `RtPathGuard.ps1` exit 0. The tail
+pool is a fixed `std::array` and the countdown is one divide per region rather than per sample, so nothing
+here allocated on the audio thread; a stolen voice dropping its `Sample::Ptr` is still not the last
+reference, because the registry owns loaded samples.
+
+**3.2 — choke groups (done 2026-11-15).** A lane is either in no group or in one of three
+(`chNChoke`, 0..3, default 0). When a hit triggers in a group, every *other* voice already sounding in that
+group goes through the same `handOffToTail` the steal uses, over `Layout::chokeFadeSeconds` = 20 ms — so the
+closed hat stops the open one without either of them clicking, and a lane can cut another lane's hit while
+keeping its own.
+
+The gate `[22]` went red before it went green, and it is what found the bug underneath the feature:
+`allParameterIds()` in `Source/PluginProcessor.cpp:10` was a hand-written list of the seven lane ids. The
+choke parameter was therefore built, offered to the host, read back on a state restore and displayed — and
+nothing was listening for it. A write moved the parameter and left the atomics the audio thread reads exactly
+where they were. The run says so directly: *"asked for 3, engine says 0, parameter holds 3"*, nine lanes of
+them, and every one of `[22]`'s audio claims red because the engine had never been told. The list is now
+built from `Params::laneTargets()`, the same table `parameterChanged` dispatches through, so a lane control
+cannot be added to one without the other; `params.add` and the listener registration are now derived from the
+same two lines and there is nothing left to forget.
+
+| What `[22]` measures | Without the choke wired | With it |
+|---|---|---|
+| Held hit's peak after the fade window (step 4 onset + 882 samples + a block) | **0.7943** — still at full level | **0.00000** |
+| Last sample above 1% of the hit, counted from the cut | **66149** (it never stopped) | **873**, against a fade of 882 |
+| Tail of the run where the cutting hit is audible too | **1.5885** — two voices summing | **0.7943** — one: the old one gone, the new one kept |
+| Worst sample-to-sample slew across the choke | 0.1127 | 0.1127 — the same ruler as `[20]`, so the fade is not a cut |
+
+Two of the four claims are guards rather than gates: with nothing being choked, nothing jumps and nothing is
+cut, so the slew and the "unchanged before the cut" checks pass on the broken build too. What makes the pair
+honest is the level evidence. `a choke changes nothing before the hit that causes it` compares the choked and
+unchoked renders **sample for sample, exactly**, for all 22050 samples up to the cut, and
+`and it was still sounding until the cut` fixes the level the choked render then falls from. The scope claim
+— that a group only reaches its own lanes — is the same kind of measurement: the render with the choker in
+group 2 is bit-identical to the ungrouped render across the whole bar.
+
+The cutting hit's own source is digital silence except in the run that needs to hear it, and there it is a
+*different pitch* (1489 Hz against the held hit's 997 Hz): two hits of the same sine, one starting 22050
+samples after the other, are exactly half a cycle apart and cancel — which reads as "the choked voice is gone"
+when nothing was choked at all. That was measured, not assumed; the first version of the check produced a
+0.1127 tail out of a sum of two full-level voices.
+
+The strip needed a row for the box, and there was no spare height to take it from — the layout reported 0 px
+to spare at 254 px — so `stripHeight` went 254 → **271** (`"Choke" caption 11 + gap 6 = 17`), which comes out
+of the grid's slack, not the window: at the 830 px minimum the grid is still 405 px against the 400 it was
+designed around, and the strip now reports 5 px to spare. The box is a 34 px `ComboBox` sharing the last row
+with Mute (40 px), items `0 1 2 3` at ids `1 2 3 4` because JUCE keeps 0 for "no selection"; a combo box
+rather than a popup menu because it shows the value without a click and `setSelectedId` fires synchronously,
+which is what makes both directions testable headless.
+
+Run now: **170 smoke checks / 0 failures**, **78 layout / 0 problems**, `RtPathGuard.ps1` exit 0. The layout
+suite also had a real bug fixed: the velocity drag re-derived the grid's geometry (inset, row gap, reversed
+row order) instead of asking for it, and at the new height its point landed in the gap under the last row,
+where a drag does nothing. It now uses `StepGridComponent::getCellBounds`, made public for exactly that
+reason.
+
+**3.3 — envelope truth (done 2026-11-15).** Two things the code contradicted about itself, and neither was
+a sound preference: the header promised a fall "the way an analogue envelope does" while both falling stages
+travelled in a straight line, and velocity was documented as how hard a hit was *struck* while the engine used
+it as a gain fader and nothing else.
+
+*The falls.* `Envelope::getNextSample` now runs decay and release as one recursion — `value = target +
+(value - target) * k`, `k = exp(-5 / fallSamples)` — in a single shared case, and the last sample of the fall is
+snapped onto the target instead of chasing it. Five time constants across the labelled duration leaves e⁻⁵ =
+0.67% (−43 dB) at the seam, which is the residual bought for keeping the curve bounded by the number the row
+shows. `[9]` measures the shape through four windows a fifth of the fall apart, and both columns of the table
+below are **rendered numbers**: `out/smoke-33-linear.txt` is a build with only the two fall cases put back the
+way they were, everything else from 3.3 still in.
+
+| What `[9]` reads, on a 0.75 s decay to no sustain | Straight line | Curve |
+|---|---|---|
+| Level at a tenth, three, five and seven tenths of the travel | 0.45585, 0.35478, 0.25378, 0.15293 | 0.31642, 0.11640, 0.04282, 0.01575 |
+| …so the share of itself each fifth gives up | 0.778, 0.715, 0.603 | **0.368, 0.368, 0.368** |
+| Widest ratio over narrowest | 1.292 | 1.000 (limit 1.1) |
+| Seven tenths in, as a share of one tenth in | 0.336 | 0.050 (limit 0.15) |
+| Checks red | **6 of 6** — three per fall, decay and release | 0 |
+
+The release reads the same three ratios from its own windows (0.31247, 0.11495, 0.04229, 0.01556), which is the
+point of the shared case: it is one curve with two targets, not a decay that happens to look exponential and a
+release that does not. The band's top edge of 0.47 was put between the two shapes it has to tell apart — 0.368
+and 0.603 — rather than around the one being tested, and the equality limit of 1.1 sits between 1.000 and 1.29
+for the same reason. Writing the record caught two mistakes in the check itself: it printed what a straight
+line "would" measure as 0.778, 0.571, 0.417 (measured: 0.778, 0.715, 0.603) and its comment said the ratios
+*grow* along a straight line (they shrink — the level being divided by keeps falling). Both are the measured
+values now; a gate that misdescribes the thing it distinguishes is not a gate.
+
+*The velocity law.* `trigger` derives a per-voice one-pole from the hit's velocity
+(`brightnessMixFor`, `Layout::softestHitCutoffHz` = 900 Hz) and `renderVoice` runs it on the way to the summing
+bus, ahead of the level — so the top end opens as the hit gets harder, from 900 Hz at the bottom of the travel
+to **no filter at all** at the top. The filter is carried into the tail pool with the position and the increment,
+because a lowpass that reopened from silence on a steal is a step in the output. At velocity ≥ 1 the branch is
+not taken at all: the grid, which defaults every step to full velocity, renders the sample at the bits it was
+recorded at, and every pre-existing peak and slew number in the suite is unchanged for exactly that reason.
+
+| `[23]` render (22050-sample noise burst, so the tone is measurable) | peak | rms | tilt HF/LF | the same render with the law off |
+|---|---|---|---|---|
+| level 1.0, velocity **1.0** | 0.71488 | 0.41327 | 30.51 | 0.71488, 30.51 — identical |
+| level **0.25**, velocity 1.0 — the fader | 0.17872 | 0.10332 | **30.51** | 0.17872, 30.51 |
+| level 1.0, velocity 0.5 | 0.33342 | 0.12893 | 12.22 | 0.35744 (−0.60 dB), 30.51 |
+| level 1.0, velocity 0.25 | 0.14338 | 0.04685 | 6.64 | 0.17872 (−1.91 dB), 30.51 |
+| level 1.0, velocity 0.0625 | 0.02813 | 0.00805 | 3.29 | 0.04468 (−4.06 dB), 30.51 |
+
+The right-hand column is `out/smoke-33-noilaw.txt`: `brightnessMixFor` returning 1.0f for everything, the other
+186 checks untouched, and three going red — the three that ask whether a soft hit is *darker*. Tilt is a power
+ratio, so it cannot be satisfied by a gain change, and row two is the control: the same quarter of level taken
+by the fader leaves the tilt at 30.51, exactly where the source's own balance sits. What the colour law costs
+in level is stated rather than buried — 1.9 dB of peak at a quarter, 4.0 dB at a sixty-sixth, on flat noise,
+which is the worst case a sample can be, since anything with a body keeps most of its energy below those
+corners. No gain constant in the engine moved to make either half of this sound better; that is the
+silent-compensation line and `[20]` proves it, reading the same **worst slew 0.1127 against a limit of 0.2129**
+and the same **loudest hold at 0.7943, the source at the trim** across all 81 corner renders on both envelope
+shapes.
+
+One existing check moved, and only one: `[10] a step's velocity is applied once, not squared` read 0.5000 and
+now reads **0.4807**, because a half-velocity hit loses the top end its transient is made of. The band went
+0.49..0.51 → 0.44..0.52 with the measured number and the reason in the comment — the gain law is still pinned at
+exactly 0.5 where the tone law cannot reach, and `[23]`'s full-velocity rows are what keep that honest.
+`out/smoke-33-before.txt` is the run that caught it: the law landed before the band moved, 170 checks and 1 red.
+
+The README had gone stale in the same two places: the envelope table described the fall as "falls from full to
+the sustain level", and the MIDI section still claimed *the step grid always plays at full velocity*, which
+stopped being true when per-step velocity landed. Both now say what the code does, and the test list names the
+curve, the 81-render corner sweep and the brightness law.
+
+Run now: **189 smoke checks / 0 failures**, **78 layout / 0 problems**, `RtPathGuard.ps1` exit 0. The one-pole
+is four floats per voice and its coefficient is two multiplies from the velocity — the `exp` that makes
+`softestHitMix` happens once in `prepare`, not per trigger and not per sample — so nothing here allocated or
+looped on the audio thread.
+
+**3.4 — kernel edge renormalisation (done 2026-11-15).** The table is normalised so that a constant in comes out
+as the same constant, and that promise holds only while all 24 taps have something to read. Off the start and
+off the end of a source the engine used to skip those taps and leave the result as it stood, so the first and
+last handful of samples of every *pitched* hit were not at the hit's own level — the first handful being the
+transient.
+
+*How it was measured, and what the model got wrong.* A flat DC source is the only fixture that answers this
+without a statistical argument: whatever the phase and whatever the band, a read with all its taps inside must
+return the constant, and a read that does not has an exact debt printed rather than inferred. On a source flat
+at 0.6355 (0.8 through the −2 dB trim) the first four sounding samples of an octave-up hit came out
+**0.6824, 0.6176, 0.6409, 0.6345**. The guess going in — written into the plan and into the first version of
+the engine comment — was that dropping taps subtracts level. It does the opposite on the first sample: the taps
+that hang off the start are mostly **negative sidelobe**, so losing them puts the read 7.4% *above* the level
+the hit sits at everywhere else, and the next three samples are the kernel walking back down through its own
+normalisation (2.8% cold, then converging). On a signal that cannot move, that walk is a **0.0648 step** in one
+sample. `[24]` prints all of it; `out/smoke-34-no-renorm.txt` is the run with the renormalisation branch turned
+off and everything else from the step intact — 5 red, and both of the first two went red only after the check
+was made two-sided. As first written it asked `head < body * 1.02`, which the overshoot passed. A one-sided
+gate on a defect whose sign was guessed is not a gate: the direction was the thing being measured.
+
+*The fix.* In `renderVoice`, the branch that has to test its indices adds up the weights it actually read and
+divides the result back by that sum, which restores unity DC gain for a truncated window. The floor is
+`used > 0.25`: below it the division would amplify whatever remainder was left, and it is unreachable in
+practice because the voice stops the sample the centre tap leaves the source — `samplesToSourceEnd > 0` means
+`floor (position) <= sourceLength - 2`, and the head cannot go negative, so the centre tap is inside on every
+read the engine makes and the partial sum is bounded well above the floor. The interior keeps its own branch
+with **no bounds test at all**, so the fix costs nothing over the body of a hit; and because the read advances
+by a constant, a rate that is a whole number of source samples has a constant phase, so its kernel is looked up
+once for the region instead of 24 lerps per output sample.
+
+| `[24]` on a source flat at 0.6355 | old | renormalised |
+|---|---|---|
+| first eight samples, rate 2.0 (hoisted path) | 0.6824 0.6176 0.6409 0.6345, then 0.6355 | **0.6355 ×8** |
+| first eight samples, rate 1.50 (per-sample path) | 0.6783 0.6131 0.6468 0.6305 0.6372 0.6351 … | **0.6355 ×8** |
+| worst sample-to-sample step, first 40 | 0.064827 (+12), 0.065185 (+7) | **0.000000, 0.000000** |
+| decaying kick at +12: rise after the head | +0.0227 on a hit that only comes down | monotone: 0.7117 0.7075 0.7044 0.7007 … |
+| …the same at +7 | +0.0353 | monotone: 0.7124 0.7093 0.7071 0.7042 … |
+| body rms, every row | 0.6355 | 0.6355 |
+
+The rate-2.0 row is the hoisted kernel and the rate-1.5 row is the per-sample lookup, and both print the same
+0.6355, which is what makes the hoist proven rather than assumed. The two precondition checks — unity body at
+0.6355 and pitched body at 0.6355 — are in `[24]` so that the ratios can only be read as the kernel: if the
+engine had drifted the level anywhere else, the gate would fail on itself instead of quietly measuring the
+test. A second fixture, a decaying kick, is there because a constant cannot show a *wobble*: the old head rose
+again inside the hit, which is the shape a transient must not have, and after the fix the row only ever comes
+down. The tail edge is the same code path, and the end-fade from 3.1 already owns the level there.
+
+What it changed everywhere else: **nothing that prints.** The two runs differ in eleven lines — section `[24]`
+and the final count — and the other 189 checks are byte-identical across the pair, including `[20]`'s 81 corner
+renders (worst slew still 0.1127 against 0.2129, loudest hold still 0.7943) and the alias check in `[13]` and the
+pitch-and-level numbers in `[5]`. That is the level-matched half of this step: an edge fix that moved the body
+would be a new gain law wearing a bug fix.
+
+Run now: **196 smoke checks / 0 failures**, **78 layout / 0 problems**, `RtPathGuard.ps1` exit 0. No allocation
+and no loop the compiler cannot see through was added to the render path: the hoisted weights are a 24-float
+stack array filled before the loop, `scratchWeights` is filled on the stack inside it, and the guard over
+`parameterChanged` is unchanged.
+
+**3.5 — per-hit pitch drop (done 2026-11-15).** A lane can start the hit above the note it is asked to play and
+fall onto it. `Params::pitchDropId` (`chNPitchDrop`, `AudioParameterInt` 0..12, default 0) is the only way in:
+nothing in the engine picks a drop by itself, so the plan's "visible per-lane amount parameter only, never
+automatic" is the whole feature surface rather than a preference about it. The parameter count goes 100 to
+**112 (4 global + 12 x 9)**, and `[21]`'s "all 112 parameters are present" is exactly the check that would have
+caught the classic failure of this kind of step — parameter created, offered to the host, restored on load, and
+nobody listening for it.
+
+Shape: an exponential over a fixed 30 ms reaching five time constants, so the last sweep sample is snapped to the
+nominal rate exactly (`Layout::pitchDropSweepSeconds`, `pitchDropTimeConstants`, `maxPitchDropSemitones`,
+`Common.h:193-195`; `coefficient = exp(-5/1323) = 0.996228` at 44.1 kHz). `voice.increment` keeps its old
+meaning — the settled rate, the note — and the fall lives in two new mutable voice fields, `dropExcess` and
+`dropRemaining`, recursed once per output sample at `SequencerEngine.cpp:858`. The window cost is one more row
+per lane: `ChannelStrip.cpp:249` 205 to 219 px and the editor 830 to **844 px** at 1240 wide. The grid keeps its
+405 (`out/layout-35-final.txt`: component 1 at y=126, h=405), so the window pays the 14 at the bottom. That is
+the debt Phase 5 U5 has to pay back.
+
+*What `[25]` measures.* Periods are counted from zero crossings, so the claim is about pitch and not about a
+waveform shape; the fixture tone is a known 220 Hz, hence a known 200.455-sample period.
+
+| `[25]` row | measured | the glide model predicts |
+|---|---|---|
+| cycle 1..4 period, drop 0 | 200.455 | 200.455 — the note |
+| ...drop 5 | 186.256 early, then 200.455 | 186.3 (+5 = 1.414) |
+| ...drop 12 | 152.521 early, then 200.455 | 153.0 (octave up; 0.761 of the note) |
+| successive cycle lengths, drop 12 | 7 cycles, 131.8 .. 198.7 | 132 154 164 173 186 192 197 |
+| widest step back up | 0.000 | monotone: it only ever goes down |
+| settled rms, none vs twelve | 0.56127 vs 0.56162 | 1.0006 — no level law |
+
+The first version of this section failed two checks on numbers I had *predicted* rather than measured — a 0.75
+ratio, and "more than 8 cycles across the sweep", which cannot happen inside a 1523-sample window. Both were my
+model of the measurement, not of the engine: `meanPeriod (data, onset, 3)` spans crossings 1 to 4, so the window
+starts one cycle into the fall. Re-derived analytically and then from the printed lengths, the bars are now 0.85
+and "at least 6", with a second, separate check that the longest cycle is more than 1.3x the shortest — because
+a gate that only asks "is the early part shorter" is satisfied by a hit that holds one pitch and calls it a
+glide, and two of the first three gates did pass on the broken build (see the A/B table).
+
+*Two claims of mine died over this step, and both changed what ships.*
+
+**The countdown.** `renderVoice` counts down to the end of the source from `((sourceLength - 1) - position) /
+increment`. During a fall the increment moves, so the recomputation at `:868` looks optional; the plan and the
+first engine comment both asserted that skipping it "cuts the hit in half". The A/B came back **byte-identical**
+— and a real defect does not do that. The reason is at `:704`: the countdown is re-derived from the current rate
+at the top of *every* call, so a stale one can only ever survive the block it was computed in. What it really
+costs is therefore bounded by the host's block size, which is a smaller claim and a much more useful one.
+Measured on a fixture short enough for the sweep to matter — a 1600-sample (36 ms) sample struck with a drop of
+12:
+
+| block | stale countdown (`out/smoke-ab1-naive-countdown.txt`) | as shipped |
+|---|---|---|
+| 256 | ends 1313, rms 0.29850 | ends 1313, rms 0.29873 |
+| 512 | ends 1311, rms 0.29814 (0.9988) | ends 1313, rms 0.29873 |
+| 1024 | ends **743**, rms 0.21928 (0.7346) | ends 1313, rms 0.29873 |
+| 2048 | ends **743**, rms 0.21928 (0.7346) | ends 1313, rms 0.29873 |
+
+So the divide is not there to save the hit from being chopped in half. It is there because **the same strike has
+to be the same hit whatever block size the host asked for**: at 1024 the stale version throws away 570 of the
+1576 samples that hit has, and the fixed column is identical to four significant digits down the whole table,
+which identity is the form the gate asserts now. At 256 the stale version is indistinguishable on the end —
+which is why eleven earlier sections of this suite, all run at small blocks, never saw it.
+
+**The band.** The anti-alias cutoff is picked from the fastest rate the read ever gets to, so at a drop of 12 the
+note-on band is the one for ratio 2 (band 5, 0.453 of source Nyquist) rather than the one for ratio 1 (band 14,
+0.944). `SequencerEngine.h` said this band was chosen once per hit "so the filter cannot change while a hit is
+sounding", and holding to that promise costs the whole tail an octave of top end it no longer needs: `[25]`'s
+broadband tilt — a level-independent high/low energy ratio over 2000..7000, so no level matching is involved —
+measured **-4.03 dB at a drop of 12**, and the +1 row separates what an interpolation always costs (-0.73 dB, 24
+taps) from what the pinned band costs (-3.29 dB). A tuning control should not be a tone control. `renderVoice`
+now follows the rate (`band = SincKernelTable::bandForRatio (increment)`, `:878`) and the sweep keeps the band it
+settled on (`voice.sincBand = band`, `:911`). The first tracked run printed the pinned numbers *again*: without
+the write-back the next call walks back in holding the peak-rate cutoff, which is the pinning, so the tracking
+lasts exactly as long as the sweep and not one sample longer. Both halves ship, and the tail is now -0.51 dB at
++12 and -0.55 at +5 — **0.995 and 0.984 of the +1 baseline**, that is down to the kernel's own price with -0.02
+dB left over attributable to the band. The switch is not a step: these kernels are symmetric about the same
+centre tap and normalised to unity DC, so below the tighter of the two cutoffs they are the same signal — which
+is why the same section still measures one uninterrupted glide straight through the change. (The baseline itself
+moved, 26.06 to 27.59: a +1 hit used the band for ratio 1.059 at note-on and settles now on the band for 1.0.)
+
+*What the feature honestly costs.* A fall reads extra source, so the hit ends sooner by exactly the extra it
+consumed: 263 samples, and the same 263 whether the sample is 454 ms (19980 to 19716) or 36 ms (1576 to 1313).
+The whole-hit rms of a dropped short hit is 0.9023 of the undropped one *because it is shorter*, and the check
+that says so prints both numbers, over the settled part, where the ratio is 1.0006. No gain law went in. Per
+sample the sweep pays one multiply, one divide and one `bandForRatio`, for 30 ms; after it settles the voice
+takes the same path it always did. The only pre-existing behaviour that changed at all is that a lane with drop 0
+is now measured to be at its pitch from its first sample — 200.455, unchanged.
+
+| A/B | red checks |
+|---|---|
+| `out/smoke-ab8.txt` — drop accepted but ignored | 3: starts above, amount is the amount, falls a bit |
+| `out/smoke-ab1-naive-countdown.txt` — no per-sample re-derive | 3: block 512 / 1024 / 2048 |
+| `out/smoke-35-colour2.txt` — band pinned at note-on | 1: -4.03 dB of top end at +12 |
+| `out/smoke-35-bandtrack.txt` — tracked in the loop, no write-back | byte-identical to the pinned row |
+| `out/smoke-35-bandtrack2.txt` — both halves, first gates | 2, including "monotone in the parameter", which the tracked tail is not (27.15 at +5, 27.43 at +12) — restated from measurement, not relaxed |
+| `out/smoke-35-final.txt` — as shipped | 0 |
+
+Run now: **212 smoke checks / 0 failures**, **82 layout / 0 problems**, `RtPathGuard.ps1` exit 0. Three floats
+per voice and no allocation: `dropExcess`, `dropRemaining`, and the band the sweep ends on.

@@ -6,22 +6,22 @@ namespace gb
 
 namespace
 {
-    /** Every parameter id, so listeners can be registered and removed in one pass. */
+    /**
+        Every parameter id, so listeners can be registered and removed in one pass.
+
+        The lane half comes out of `Params::laneTargets()` rather than being written
+        out again here. A hand-list of lane ids is how the choke parameter came to be
+        built, offered to the host and read by the engine without anything ever
+        listening for it: the value moved, the atomics never did, and nothing except
+        a test that writes every id could see the difference.
+    */
     juce::StringArray allParameterIds()
     {
         juce::StringArray ids { Params::masterGainId, Params::swingId,
                                 Params::swingGridId, Params::tempoId };
 
-        for (int channel = 0; channel < Layout::numChannels; ++channel)
-        {
-            ids.add (Params::levelId (channel));
-            ids.add (Params::pitchId (channel));
-            ids.add (Params::attackId (channel));
-            ids.add (Params::decayId (channel));
-            ids.add (Params::sustainId (channel));
-            ids.add (Params::releaseId (channel));
-            ids.add (Params::muteId (channel));
-        }
+        for (const auto& target : Params::laneTargets())
+            ids.add (target.id);
 
         return ids;
     }
@@ -37,9 +37,30 @@ GrooveboxProcessor::GrooveboxProcessor()
     for (const auto& id : allParameterIds())
         apvts.addParameterListener (id, this);
 
+    // Resolve the id table here, on the message thread, rather than letting the
+    // first parameter change do it: its static storage is built on whichever call
+    // reaches it first, and this is the only thread that is guaranteed not to be
+    // rendering. While we are here, check the two halves of the arrangement still
+    // agree — every row names a parameter that exists, and the parameter list has
+    // no lane control the table does not know about.
+    const auto& targets = Params::laneTargets();
+
+    for (const auto& target : targets)
+    {
+        jassert (apvts.getParameter (target.id) != nullptr);
+        juce::ignoreUnused (target); // the loop is a jassert, so in a release build it reads nothing
+    }
+
+    jassert (apvts.parameters.size() == 4 + Params::numLaneTargets);
+
     // The parameters were built before anything was listening, so the atomics the
     // audio thread reads still hold their own defaults rather than the parameters'.
     syncStateFromParameters();
+
+    // Watching the state tree is how a restored pattern gets back into the engine.
+    // It goes here rather than in the initialiser list because the tree the state
+    // owns only exists once `apvts` has been built.
+    apvts.state.addListener (this);
 
     // Start with an empty pattern but a sensible eight-piece layout: the web app
     // ships three lanes, so give the user the classic kick/snare/hat plus named
@@ -60,6 +81,8 @@ GrooveboxProcessor::~GrooveboxProcessor()
 {
     // Detached before the parameter state goes, so a late notification cannot find
     // a processor on the way out.
+    apvts.state.removeListener (this);
+
     for (const auto& id : allParameterIds())
         apvts.removeParameterListener (id, this);
 }
@@ -80,29 +103,70 @@ void GrooveboxProcessor::parameterChanged (const juce::String& id, float value)
     if (id == Params::tempoId)      { sequencerState.manualTempo.store (value); return; }
 
     // A lane id is "ch" then digits then the control name, so the digits say which
-    // lane moved and the rest says what moved on it.
-    if (! id.startsWith ("ch"))
+    // lane moved and the rest says what moved on it — but neither half means
+    // anything on its own, and reading them apart means building strings.
+    //
+    // This callback runs on the thread that wrote the parameter, which for a host
+    // automating a ramp is the audio thread, so it must not allocate: taking a
+    // substring of the id would do exactly that, twice per change, in the one place
+    // the header promises it will not. The id therefore gets looked up rather than
+    // parsed. `Params::laneTargets()` is the prebuilt answer, built once from the
+    // same id functions that made the parameters, and comparing two strings is
+    // pointer arithmetic over storage that already exists.
+    //
+    // The scan is over 108 short names, and it is a scan of a table that never
+    // changes rather than a search through a live container, so its cost is a few
+    // hundred byte comparisons in the worst case — against a block of audio that
+    // costs tens of thousands of samples of resampling.
+    for (const auto& target : Params::laneTargets())
+    {
+        if (target.id != id)
+            continue;
+
+        switch (target.control)
+        {
+            case Params::LaneControl::level:
+                sequencerState.level[(size_t) target.channel].store (value);
+                break;
+
+            case Params::LaneControl::pitch:
+                sequencerState.pitch[(size_t) target.channel].store (juce::roundToInt (value));
+                break;
+
+            case Params::LaneControl::pitchDrop:
+                sequencerState.pitchDrop[(size_t) target.channel]
+                    .store (juce::jlimit (Params::pitchDropMin, Params::pitchDropMax,
+                                          juce::roundToInt (value)));
+                break;
+
+            case Params::LaneControl::attack:
+                sequencerState.attack[(size_t) target.channel].store (value);
+                break;
+
+            case Params::LaneControl::decay:
+                sequencerState.decay[(size_t) target.channel].store (value);
+                break;
+
+            case Params::LaneControl::sustain:
+                sequencerState.sustain[(size_t) target.channel].store (value);
+                break;
+
+            case Params::LaneControl::release:
+                sequencerState.release[(size_t) target.channel].store (value);
+                break;
+
+            case Params::LaneControl::mute:
+                sequencerState.channelMuted[target.channel].store (value >= 0.5f);
+                break;
+
+            case Params::LaneControl::choke:
+                sequencerState.chokeGroup[(size_t) target.channel]
+                    .store (juce::jlimit (0, Layout::numChokeGroups, juce::roundToInt (value)));
+                break;
+        }
+
         return;
-
-    auto digits = 2;
-
-    while (digits < id.length() && juce::CharacterFunctions::isDigit (id[digits]))
-        ++digits;
-
-    const auto channel = id.substring (2, digits).getIntValue();
-
-    if (! juce::isPositiveAndBelow (channel, Layout::numChannels))
-        return;
-
-    const auto control = id.substring (digits);
-
-    if      (control == "Level")   sequencerState.level[(size_t) channel].store (value);
-    else if (control == "Pitch")   sequencerState.pitch[(size_t) channel].store (juce::roundToInt (value));
-    else if (control == "Attack")  sequencerState.attack[(size_t) channel].store (value);
-    else if (control == "Decay")   sequencerState.decay[(size_t) channel].store (value);
-    else if (control == "Sustain") sequencerState.sustain[(size_t) channel].store (value);
-    else if (control == "Release") sequencerState.release[(size_t) channel].store (value);
-    else if (control == "Mute")    sequencerState.channelMuted[channel].store (value >= 0.5f);
+    }
 }
 
 void GrooveboxProcessor::syncStateFromParameters()
@@ -122,11 +186,16 @@ void GrooveboxProcessor::syncStateFromParameters()
     {
         sequencerState.level[(size_t) channel].store (valueOf (Params::levelId (channel)));
         sequencerState.pitch[(size_t) channel].store (juce::roundToInt (valueOf (Params::pitchId (channel))));
+        sequencerState.pitchDrop[(size_t) channel].store (
+            juce::jlimit (Params::pitchDropMin, Params::pitchDropMax,
+                          juce::roundToInt (valueOf (Params::pitchDropId (channel)))));
         sequencerState.attack[(size_t) channel].store (valueOf (Params::attackId (channel)));
         sequencerState.decay[(size_t) channel].store (valueOf (Params::decayId (channel)));
         sequencerState.sustain[(size_t) channel].store (valueOf (Params::sustainId (channel)));
         sequencerState.release[(size_t) channel].store (valueOf (Params::releaseId (channel)));
         sequencerState.channelMuted[channel].store (valueOf (Params::muteId (channel)) >= 0.5f);
+        sequencerState.chokeGroup[(size_t) channel].store (
+            juce::jlimit (0, Layout::numChokeGroups, juce::roundToInt (valueOf (Params::chokeId (channel)))));
     }
 }
 
@@ -180,11 +249,15 @@ void GrooveboxProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::M
                             : juce::Optional<juce::AudioPlayHead::PositionInfo>();
 
     const auto havePosition = position.hasValue();
-    engine.processBlock (buffer, havePosition ? *position : juce::AudioPlayHead::PositionInfo(), havePosition);
 
-    // Notes play after the sequencer has had its turn, so both land in the same
-    // buffer and either can be used without the other.
-    engine.processMidi (midiMessages, buffer.getNumSamples());
+    // One call, one pass over the buffer: the engine splits the block at the notes
+    // as well as at the step onsets, so a voice started by a note is rendered
+    // exactly once alongside everything already sounding.
+    engine.processBlock (buffer,
+                         havePosition ? *position : juce::AudioPlayHead::PositionInfo(),
+                         havePosition,
+                         midiMessages);
+
     midiMessages.clear();
 
     // Last, so the trim and the meter see everything that was summed.
@@ -417,6 +490,26 @@ void GrooveboxProcessor::nudgeChannelPitch (int channel, int delta)
     setChannelPitch (channel, getChannelPitch (channel) + delta);
 }
 
+int GrooveboxProcessor::getChannelPitchDrop (int channel) const
+{
+    if (! juce::isPositiveAndBelow (channel, Layout::numChannels))
+        return 0;
+
+    return sequencerState.pitchDrop[(size_t) channel].load();
+}
+
+void GrooveboxProcessor::setChannelPitchDrop (int channel, int semitones)
+{
+    if (! juce::isPositiveAndBelow (channel, Layout::numChannels))
+        return;
+
+    writeParameter (Params::pitchDropId (channel),
+                    (float) juce::jlimit (Params::pitchDropMin, Params::pitchDropMax, semitones));
+
+    if (onStateChanged != nullptr)
+        onStateChanged();
+}
+
 float GrooveboxProcessor::getChannelLevel (int channel) const
 {
     if (! juce::isPositiveAndBelow (channel, Layout::numChannels))
@@ -448,6 +541,23 @@ void GrooveboxProcessor::setChannelMuted (int channel, bool shouldBeMuted)
         return;
 
     writeParameter (Params::muteId (channel), shouldBeMuted ? 1.0f : 0.0f);
+}
+
+int GrooveboxProcessor::getChannelChokeGroup (int channel) const
+{
+    if (! juce::isPositiveAndBelow (channel, Layout::numChannels))
+        return 0;
+
+    return sequencerState.chokeGroup[(size_t) channel].load();
+}
+
+void GrooveboxProcessor::setChannelChokeGroup (int channel, int group)
+{
+    if (! juce::isPositiveAndBelow (channel, Layout::numChannels))
+        return;
+
+    writeParameter (Params::chokeId (channel),
+                    (float) juce::jlimit (0, Layout::numChokeGroups, group));
 }
 
 //==============================================================================
@@ -690,7 +800,90 @@ void GrooveboxProcessor::pushPatternToState()
             encoded += ',';
     }
 
+    // The flag says this write is the atomics going *out*, not a pattern arriving.
+    // Without it the listener below would read it straight back in on every cell of
+    // a drag, and the undo manager would see a change the grid had just made.
+    pushingPatternToState = true;
     apvts.state.setProperty ("pattern", encoded, &undoManager);
+    pushingPatternToState = false;
+}
+
+void GrooveboxProcessor::applyPatternFromState()
+{
+    // Start from nothing, then read whatever the pattern property holds: a row
+    // shorter than the grid leaves the steps it does not reach off, and a session
+    // with no pattern at all is an empty machine rather than a stale one.
+    for (int channel = 0; channel < Layout::numChannels; ++channel)
+    {
+        for (int step = 0; step < Layout::numSteps; ++step)
+        {
+            sequencerState.pattern[(size_t) channel][(size_t) step].store (false);
+            sequencerState.velocity[(size_t) channel][(size_t) step].store (1.0f);
+        }
+    }
+
+    const auto encoded = apvts.state.getProperty ("pattern").toString();
+    const auto rows = juce::StringArray::fromTokens (encoded, ",", "");
+
+    for (int channel = 0; channel < juce::jmin (rows.size(), Layout::numChannels); ++channel)
+    {
+        const auto row = rows[channel].trim();
+
+        // Sessions written before velocities existed hold one character per step,
+        // where 1 meant on. Those steps come back at full velocity.
+        const auto legacy = row.length() == Layout::numSteps;
+
+        for (int step = 0; step < Layout::numSteps; ++step)
+        {
+            if (legacy)
+            {
+                const auto on = step < row.length() && row[step] == '1';
+                sequencerState.pattern[(size_t) channel][(size_t) step].store (on);
+                sequencerState.velocity[(size_t) channel][(size_t) step].store (1.0f);
+                continue;
+            }
+
+            const auto at = step * 2;
+
+            if (at + 1 >= row.length())
+                break;
+
+            const auto level = row.substring (at, at + 2).getIntValue();
+            const auto on = level > 0;
+
+            sequencerState.pattern[(size_t) channel][(size_t) step].store (on);
+            sequencerState.velocity[(size_t) channel][(size_t) step].store (on ? (float) level / 100.0f : 1.0f);
+        }
+    }
+}
+
+void GrooveboxProcessor::valueTreePropertyChanged (juce::ValueTree& tree, const juce::Identifier& property)
+{
+    /**
+        The pattern is the one thing in the state that is not a parameter, which
+        makes it the one thing an undo cannot put back on its own: the undo manager
+        restores the string, and the engine plays the atomics. Watching the property
+        is what closes that gap, and it is what makes every later per-step feature —
+        probability, ratchet, a payload wide enough to hold them — undoable through
+        the same door, because none of them will be a parameter either.
+
+        The parameters need no watching: moving one already calls
+        `parameterChanged`, which is where the atomics for level, pitch and the
+        envelope live.
+    */
+    // Spelled as an Identifier rather than a string literal: `Identifier` converts
+    // to and from `const char*`, so a bare literal on the right of `!=` leaves MSVC
+    // with two equally good ways to make the comparison.
+    if (! tree.hasType ("GROOVEBOX") || property != juce::Identifier ("pattern")
+         || pushingPatternToState)
+        return;
+
+    applyPatternFromState();
+
+    // The grid painted the cell it was asked to and knows nothing about an undo, so
+    // this is the only way the panel finds out the pattern moved under it.
+    if (onStateChanged != nullptr)
+        onStateChanged();
 }
 
 juce::ValueTree GrooveboxProcessor::migrateLegacyState (const juce::ValueTree& legacy)
@@ -765,49 +958,10 @@ void GrooveboxProcessor::applyMetadata (const juce::ValueTree& tree)
 
     // Start from nothing, then read whatever the pattern property holds. The
     // parameters are not read here: replacing the state already pushed them through
-    // the listener and into the atomics.
-    for (int channel = 0; channel < Layout::numChannels; ++channel)
-    {
-        for (int step = 0; step < Layout::numSteps; ++step)
-        {
-            sequencerState.pattern[(size_t) channel][(size_t) step].store (false);
-            sequencerState.velocity[(size_t) channel][(size_t) step].store (1.0f);
-        }
-    }
-
-    const auto encoded = tree.getProperty ("pattern").toString();
-    const auto rows = juce::StringArray::fromTokens (encoded, ",", "");
-
-    for (int channel = 0; channel < juce::jmin (rows.size(), Layout::numChannels); ++channel)
-    {
-        const auto row = rows[channel].trim();
-
-        // Sessions written before velocities existed hold one character per step,
-        // where 1 meant on. Those steps come back at full velocity.
-        const auto legacy = row.length() == Layout::numSteps;
-
-        for (int step = 0; step < Layout::numSteps; ++step)
-        {
-            if (legacy)
-            {
-                const auto on = step < row.length() && row[step] == '1';
-                sequencerState.pattern[(size_t) channel][(size_t) step].store (on);
-                sequencerState.velocity[(size_t) channel][(size_t) step].store (1.0f);
-                continue;
-            }
-
-            const auto at = step * 2;
-
-            if (at + 1 >= row.length())
-                break;
-
-            const auto level = row.substring (at, at + 2).getIntValue();
-            const auto on = level > 0;
-
-            sequencerState.pattern[(size_t) channel][(size_t) step].store (on);
-            sequencerState.velocity[(size_t) channel][(size_t) step].store (on ? (float) level / 100.0f : 1.0f);
-        }
-    }
+    // the listener and into the atomics. The pattern goes through the same reader an
+    // undo uses, so a loaded session and a taken-back edit cannot end up disagreeing
+    // about what a row of digits means.
+    applyPatternFromState();
 
     for (int channel = 0; channel < Layout::numChannels; ++channel)
     {
@@ -829,9 +983,20 @@ void GrooveboxProcessor::applyMetadata (const juce::ValueTree& tree)
 
             if (file.existsAsFile())
             {
+                // Ask the registry first. A recall hands the same twelve paths back
+                // every time, and decoding them again would spend twelve append-only
+                // slots per recall — the kit keeps working, but the ceiling arrives
+                // after forty-odd of them and from then on nothing the user drops on
+                // a lane can be loaded at all. A file that is already registered
+                // under the name, length and modification time it had when it was
+                // read is the same audio, so the id it already has is the answer.
+                //
+                // A file that changed on disk does not match, and is decoded afresh
+                // under a new id, which is what a sample edited elsewhere deserves.
                 juce::String error;
+                const auto already = samples.findSampleForFile (file);
 
-                if (const auto id = samples.addFile (file, error))
+                if (const auto id = already > 0 ? already : samples.addFile (file, error))
                     samples.setChannelSample (channel, id);
             }
         }
@@ -876,6 +1041,13 @@ void GrooveboxProcessor::setStateInformation (const void* data, int sizeInBytes)
     // Replacing the state moves every parameter, and each one calls back into
     // `parameterChanged`, so the atomics the audio thread reads follow on their own.
     apvts.replaceState (tree);
+
+    // `replaceState` hands back a tree that has never heard of this processor: the
+    // listener went with the old one. Re-attach before anything reads the new tree,
+    // or an undo of a pattern loaded from a session would move the string and leave
+    // the sound where it was.
+    apvts.state.addListener (this);
+
     syncStateFromParameters();
 
     applyMetadata (apvts.state);

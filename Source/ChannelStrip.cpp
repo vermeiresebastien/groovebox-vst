@@ -68,10 +68,43 @@ ChannelStrip::ChannelStrip (GrooveboxProcessor& processorToUse, int channelIndex
     levelSlider.setTooltip ("Channel level");
     addAndMakeVisible (levelSlider);
 
+    // The drop is a count of semitones, so the track has thirteen stops and every
+    // one of them is a pixel-and-a-half apart at this width. Double-click puts it
+    // back at none, which is where a lane that is only supposed to be tuned lives.
+    dropSlider.setSliderStyle (juce::Slider::LinearHorizontal);
+    dropSlider.setTextBoxStyle (juce::Slider::NoTextBox, false, 0, 0);
+    dropSlider.setRange (0.0, (double) Params::pitchDropMax, 1.0);
+    dropSlider.setDoubleClickReturnValue (true, 0.0);
+    dropSlider.setTooltip ("Pitch drop: how far above its own note a hit starts, in semitones.\n"
+                           "It falls to the note over 30 ms and stays there, so this shapes the "
+                           "attack without retuning the lane. 0 = the hit is at its pitch from "
+                           "its first sample. Double-click to reset.");
+    addAndMakeVisible (dropSlider);
+
+    dropValueLabel.setJustificationType (juce::Justification::centred);
+    dropValueLabel.setMinimumHorizontalScale (0.7f);
+    dropValueLabel.setColour (juce::Label::textColourId, Colours::text);
+    dropValueLabel.setFont (juce::Font (juce::FontOptions (10.0f)));
+    dropValueLabel.setTooltip (dropSlider.getTooltip());
+    dropValueLabel.setInterceptsMouseClicks (false, false);
+    addAndMakeVisible (dropValueLabel);
+
     muteButton.setClickingTogglesState (true);
     muteButton.setColour (juce::TextButton::buttonOnColourId, juce::Colour (0xffff5a5a));
     muteButton.setTooltip ("Mute this channel");
     addAndMakeVisible (muteButton);
+
+    // One item per group, plus `0` for "not in one". The ids run one higher than
+    // the group because JUCE reserves id 0 for "no selection", and a control that
+    // cannot show its own value is not a control.
+    chokeComboBox.setTooltip ("Choke group: a hit in a group cuts every other hit in that group short.\n"
+                              "0 = this lane is not in a group.");
+    chokeComboBox.addItem ("0", 1);
+
+    for (int group = 1; group <= Layout::numChokeGroups; ++group)
+        chokeComboBox.addItem (juce::String (group), group + 1);
+
+    addAndMakeVisible (chokeComboBox);
 
     envelope.onValueChange = [this] (EnvelopeStage stage, float value)
     {
@@ -120,7 +153,21 @@ ChannelStrip::ChannelStrip (GrooveboxProcessor& processorToUse, int channelIndex
         processor.setChannelLevel (channel, (float) levelSlider.getValue());
     };
 
+    dropSlider.onValueChange = [this]
+    {
+        processor.setChannelPitchDrop (channel, juce::roundToInt (dropSlider.getValue()));
+    };
+
     muteButton.onClick = [this] { processor.setChannelMuted (channel, muteButton.getToggleState()); };
+
+    // JUCE 8's combo box calls this with no argument, so the value is read back
+    // from the box. Zero is its "no selection" id, which means leave it alone —
+    // it is not group -1, and writing that would land on a group nobody chose.
+    chokeComboBox.onChange = [this]
+    {
+        if (const auto newId = chokeComboBox.getSelectedId(); newId > 0)
+            processor.setChannelChokeGroup (channel, newId - 1);
+    };
     clearRowButton.onClick = [this] { handleClearRowClicked(); };
     shiftLeftButton.onClick = [this] { handleShiftRow (-1); };
     shiftRightButton.onClick = [this] { handleShiftRow (1); };
@@ -165,10 +212,18 @@ void ChannelStrip::syncAutomatableControls()
 {
     levelSlider.setValue ((double) processor.getChannelLevel (channel), juce::dontSendNotification);
     muteButton.setToggleState (processor.isChannelMuted (channel), juce::dontSendNotification);
+    chokeComboBox.setSelectedId (processor.getChannelChokeGroup (channel) + 1,
+                                 juce::dontSendNotification);
 
     const auto pitch = processor.getChannelPitch (channel);
     pitchValueLabel.setText (pitch > 0 ? "+" + juce::String (pitch) : juce::String (pitch),
                              juce::dontSendNotification);
+
+    const auto drop = processor.getChannelPitchDrop (channel);
+    dropSlider.setValue ((double) drop, juce::dontSendNotification);
+    dropValueLabel.setText (drop > 0 ? "\xe2\x86\x93" + juce::String (drop)
+                                     : juce::String ("\xe2\x80\x93"),   // en dash: no drop
+                            juce::dontSendNotification);
 
     envelope.setValue (EnvelopeStage::attack,  processor.getChannelAttack (channel));
     envelope.setValue (EnvelopeStage::decay,   processor.getChannelDecay (channel));
@@ -191,7 +246,7 @@ void ChannelStrip::resized()
     // The host editor can give the strip less height than the ideal layout, so
     // the gaps between sections shrink first and the heights shrink after that.
     constexpr int captionHeight = 11;
-    constexpr int wantedHeight = 188;
+    constexpr int wantedHeight = 219;
 
     const auto room = area.getHeight();
     const auto tight = room < wantedHeight;
@@ -201,6 +256,7 @@ void ChannelStrip::resized()
     const int soundHeight = tight ? 20 : 22;
     const int clearRowHeight = tight ? 18 : 20;
     const int pitchRowHeight = tight ? 18 : 20;
+    const int dropRowHeight = tight ? 12 : 14;
     const int levelHeight = tight ? 16 : 18;
     const int muteHeight = tight ? 20 : 22;
 
@@ -247,6 +303,15 @@ void ChannelStrip::resized()
     pitchRow.removeFromRight (buttonGap);
     pitchValueLabel.setBounds (pitchRow.reduced (1, 1));
 
+    // The drop's own line, inside the Pitch block and directly under it: a short
+    // readout and a track, no caption row of its own, because the strip has no
+    // height to give and the arrow says what the number is.
+    auto dropRow = area.removeFromTop (dropRowHeight);
+    constexpr int dropLabelWidth = 24;
+    dropValueLabel.setBounds (dropRow.removeFromLeft (dropLabelWidth).reduced (1, 0));
+    dropRow.removeFromLeft (2);
+    dropSlider.setBounds (dropRow);
+
     area.removeFromTop (gapSize);
     levelCaptionArea = area.removeFromTop (captionHeight); // drawn in paint()
     levelSlider.setBounds (area.removeFromTop (levelHeight));
@@ -256,7 +321,15 @@ void ChannelStrip::resized()
     envelope.setBounds (area.removeFromTop (envelopeHeight));
 
     area.removeFromTop (gapSize);
-    muteButton.setBounds (area.removeFromTop (muteHeight));
+    chokeCaptionArea = area.removeFromTop (captionHeight); // drawn in paint()
+
+    // The choke box and the mute switch share the last row. The box takes 34 px,
+    // which leaves 40 for "Mute" — the button's font is clamped to 11 px at this
+    // height, and the word measures 24.
+    auto muteRow = area.removeFromTop (muteHeight);
+    chokeComboBox.setBounds (muteRow.removeFromLeft (34));
+    muteRow.removeFromLeft (3);
+    muteButton.setBounds (muteRow);
 
     lastSpareHeight = area.getHeight();
 }
@@ -281,6 +354,7 @@ void ChannelStrip::paint (juce::Graphics& g)
     paintCaption (g, "Pitch", pitchCaptionArea);
     paintCaption (g, "Level", levelCaptionArea);
     paintCaption (g, "Env", envelopeCaptionArea);
+    paintCaption (g, "Choke", chokeCaptionArea);
 
     // Lit dot at the end of the header while this channel is firing.
     const auto dot = soundingDotArea.toFloat().withSizeKeepingCentre (6.0f, 6.0f);
@@ -421,13 +495,33 @@ void ChannelStrip::handleSoundClicked()
 
 void ChannelStrip::handleClearRowClicked()
 {
-    processor.beginTransaction ("Clear row");
-    processor.clearChannelRow (channel);
+    // The row is this lane's whole part in the song, and one click takes it, so it
+    // asks first. See `TransportBar::handleClearPatternClicked` for why the box is
+    // asynchronous and parented.
+    juce::Component::SafePointer<ChannelStrip> safeThis (this);
 
-    if (processor.onStateChanged != nullptr)
-        processor.onStateChanged();
+    juce::AlertWindow::showAsync (juce::MessageBoxOptions()
+                                      .withIconType (juce::MessageBoxIconType::WarningIcon)
+                                      .withTitle ("Clear this row?")
+                                      .withMessage (processor.getChannelName (channel)
+                                                        + ": every step on it goes off. "
+                                                        "One undo brings them back.")
+                                      .withButton ("Clear")
+                                      .withButton ("Keep it")
+                                      .withParentComponent (this),
+                                  [safeThis] (int button)
+    {
+        if (safeThis == nullptr || button != 0)
+            return;
 
-    refresh();
+        safeThis->processor.beginTransaction ("Clear row");
+        safeThis->processor.clearChannelRow (safeThis->channel);
+
+        if (safeThis->processor.onStateChanged != nullptr)
+            safeThis->processor.onStateChanged();
+
+        safeThis->refresh();
+    });
 }
 
 void ChannelStrip::handleShiftRow (int steps)

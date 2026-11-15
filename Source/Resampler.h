@@ -19,7 +19,9 @@ namespace gb
 
     The table has several cutoff bands so an upward pitch shift lowers the kernel's
     cutoff below Nyquist and suppresses the alias instead of merely smoothing it. A
-    voice picks one band at note-on, so the kernel never changes within a hit.
+    voice picks its band from the fastest rate the hit is ever going to read at, and
+    `renderVoice` follows the rate down from there, so a pitch drop does not spend
+    the whole tail anti-aliased against a rate it left thirty milliseconds ago.
 
     Construction is deliberately done when the engine is constructed, off the audio
     thread. No allocation or trigonometry happens in the render loop.
@@ -34,7 +36,6 @@ public:
 
     SincKernelTable()
     {
-        constexpr auto pi = 3.14159265358979323846;
         coefficients.resize ((std::size_t) cutoffBands * (std::size_t) (phases + 1)
                              * (std::size_t) taps);
 
@@ -44,40 +45,68 @@ public:
 
             for (int phase = 0; phase <= phases; ++phase)
             {
-                const auto fraction = (double) phase / (double) phases;
                 double values[taps] {};
-                double sum = 0.0;
-
-                for (int tap = 0; tap < taps; ++tap)
-                {
-                    // Base tap indices run from (floor - 11) to (floor + 12),
-                    // so tap 11 is the source sample immediately below the
-                    // fractional read position.
-                    const auto distance = (double) (tap - (halfWidth - 1)) - fraction;
-                    const auto x = cutoff * distance;
-                    const auto sinc = std::abs (x) < 1.0e-12
-                                          ? 1.0
-                                          : std::sin (pi * x) / (pi * x);
-                    const auto windowPosition = distance / (double) halfWidth;
-                    const auto window = std::abs (windowPosition) >= 1.0
-                                            ? 0.0
-                                            : 0.42 + 0.5 * std::cos (pi * windowPosition)
-                                                  + 0.08 * std::cos (2.0 * pi * windowPosition);
-                    const auto value = cutoff * sinc * window;
-                    values[(std::size_t) tap] = value;
-                    sum += value;
-                }
-
-                // Normalising to unity DC keeps a resampled hit at the level the
-                // source was recorded at, so the kernel cannot become a gain change.
-                if (std::abs (sum) > 1.0e-12)
-                    for (auto& value : values)
-                        value /= sum;
+                fillKernel ((double) cutoff, (double) phase / (double) phases, values);
 
                 for (int tap = 0; tap < taps; ++tap)
                     at (band, phase, tap) = (float) values[(std::size_t) tap];
             }
         }
+    }
+
+    /** Builds one windowed-sinc kernel: `taps` coefficients, normalised to unity DC.
+
+        The same maths the table above runs over every band and phase. It is a
+        static because there is a second caller: the master's true-peak meter needs
+        a full-band kernel at three fixed fractions, and building a whole
+        `SincKernelTable` for that would allocate 380 kB to read 72 numbers.
+    */
+    static void fillKernel (double cutoff, double fraction, double* values) noexcept
+    {
+        constexpr auto pi = 3.14159265358979323846;
+        double sum = 0.0;
+
+        for (int tap = 0; tap < taps; ++tap)
+        {
+            // Base tap indices run from (floor - 11) to (floor + 12),
+            // so tap 11 is the source sample immediately below the
+            // fractional read position.
+            const auto distance = (double) (tap - (halfWidth - 1)) - fraction;
+            const auto x = cutoff * distance;
+            const auto sinc = std::abs (x) < 1.0e-12
+                                  ? 1.0
+                                  : std::sin (pi * x) / (pi * x);
+            const auto windowPosition = distance / (double) halfWidth;
+            const auto window = std::abs (windowPosition) >= 1.0
+                                    ? 0.0
+                                    : 0.42 + 0.5 * std::cos (pi * windowPosition)
+                                          + 0.08 * std::cos (2.0 * pi * windowPosition);
+            const auto value = cutoff * sinc * window;
+            values[(std::size_t) tap] = value;
+            sum += value;
+        }
+
+        // Normalising to unity DC keeps a resampled hit at the level the
+        // source was recorded at, so the kernel cannot become a gain change.
+        if (std::abs (sum) > 1.0e-12)
+            for (int tap = 0; tap < taps; ++tap)
+                values[(std::size_t) tap] /= sum;
+    }
+
+    /** Fills `weights` with a full-band interpolation kernel for one sub-sample step.
+
+        Reading a signal's band-limited reconstruction a quarter of a sample past a
+        sample is what makes an inter-sample peak visible at all; `fraction` here is
+        in units of input samples, so 0.25, 0.5 and 0.75 are the three points a 4x
+        true-peak meter has to add between consecutive samples.
+    */
+    static void interpolatingWeights (double fraction, float* weights) noexcept
+    {
+        double values[taps] {};
+        fillKernel (1.0, fraction, values);
+
+        for (int tap = 0; tap < taps; ++tap)
+            weights[tap] = (float) values[(std::size_t) tap];
     }
 
     /** Kernel cutoff for a band, as a fraction of the source Nyquist. */

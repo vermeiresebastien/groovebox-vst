@@ -24,8 +24,14 @@ public:
     void paint (juce::Graphics&) override;
     void resized() override;
 
+    /** Ctrl/Cmd+Z and Ctrl/Cmd+Shift+Z (or Ctrl+Y), straight to the undo manager. */
+    bool keyPressed (const juce::KeyPress&) override;
+
 private:
     void refreshAll();
+
+    /** Steps the undo manager one gesture either way; false when there was nothing. */
+    bool undoOrRedo (bool undo);
 
     GrooveboxProcessor& processor;
 

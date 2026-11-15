@@ -358,6 +358,8 @@ int main()
 
             const auto kind = dynamic_cast<juce::TextButton*> (inner) != nullptr ? juce::String ("TextButton:'")
                                 + dynamic_cast<juce::TextButton*> (inner)->getButtonText() + "'"
+                              : dynamic_cast<juce::ComboBox*> (inner) != nullptr ? juce::String ("ComboBox:'")
+                                + dynamic_cast<juce::ComboBox*> (inner)->getText() + "'"
                               : dynamic_cast<juce::Slider*> (inner) != nullptr ? juce::String ("Slider")
                               : dynamic_cast<juce::Label*> (inner) != nullptr ? juce::String ("Label:'")
                                 + dynamic_cast<juce::Label*> (inner)->getText() + "'"
@@ -383,9 +385,12 @@ int main()
     {
         checkFadersIn (*anyStrip, "channel 0", [&processor] (juce::Slider& s)
         {
-            // The strip has exactly one linear slider, the level fader.
-            juce::ignoreUnused (s);
-            return (double) processor.getChannelLevel (0);
+            // Two faders live in a strip now, and they are told apart by range:
+            // the level runs 0..1.5, the pitch drop counts semitones up to 12.
+            // Reading both against the same parameter would have the drop drag
+            // "fail" by checking itself against the fader it is not.
+            return s.getMaximum() > 1.51 ? (double) processor.getChannelPitchDrop (0)
+                                         : (double) processor.getChannelLevel (0);
         });
     }
 
@@ -470,8 +475,11 @@ int main()
         auto& apvts = processor.getValueTreeState();
 
         juce::Slider* levelSlider = nullptr;
+        juce::Slider* dropSlider = nullptr;
+        juce::Label* dropLabel = nullptr;
         juce::Button* muteButton = nullptr;
         juce::Label* pitchLabel = nullptr;
+        juce::ComboBox* chokeBox = nullptr;
         EnvelopeControls* envelope = nullptr;
 
         for (int i = 0; i < anyStrip->getNumChildComponents(); ++i)
@@ -480,20 +488,35 @@ int main()
 
             if (auto* s = dynamic_cast<juce::Slider*> (child);
                 s != nullptr && s->getSliderStyle() == juce::Slider::LinearHorizontal)
-                levelSlider = s;
+            {
+                // Two horizontal faders live in a strip now, so they are told apart
+                // by range rather than by the order they were added in: the level
+                // tops out at 1.5, the drop counts semitones up to 12.
+                if (s->getMaximum() > 1.51)
+                    dropSlider = s;
+                else
+                    levelSlider = s;
+            }
+            else if (auto* l = dynamic_cast<juce::Label*> (child);
+                     l != nullptr && l->getTooltip().startsWith ("Pitch drop"))
+                dropLabel = l;
             else if (auto* b = dynamic_cast<juce::Button*> (child);
                      b != nullptr && b->getButtonText() == "Mute")
                 muteButton = b;
             else if (auto* l = dynamic_cast<juce::Label*> (child);
                      l != nullptr && l->getTooltip().startsWith ("Pitch offset"))
                 pitchLabel = l;
+            else if (auto* c = dynamic_cast<juce::ComboBox*> (child))
+                chokeBox = c;
             else if (auto* e = dynamic_cast<EnvelopeControls*> (child))
                 envelope = e;
         }
 
         ++checked;
 
-        if (levelSlider == nullptr || muteButton == nullptr || pitchLabel == nullptr || envelope == nullptr)
+        if (levelSlider == nullptr || muteButton == nullptr || pitchLabel == nullptr
+             || chokeBox == nullptr || envelope == nullptr
+             || dropSlider == nullptr || dropLabel == nullptr)
         {
             fail ("the strip is missing a control the automation check needs");
         }
@@ -510,10 +533,12 @@ int main()
 
             const struct { juce::String id; float value; const char* what; } cases[]
             {
-                { Params::levelId (0),   0.37f, "level" },
-                { Params::pitchId (0),   3.0f,  "pitch" },
-                { Params::attackId (0),  0.62f, "attack" },
-                { Params::muteId (0),    1.0f,  "mute" },
+                { Params::levelId (0),     0.37f, "level" },
+                { Params::pitchId (0),     3.0f,  "pitch" },
+                { Params::pitchDropId (0), 5.0f,  "drop" },
+                { Params::attackId (0),    0.62f, "attack" },
+                { Params::muteId (0),      1.0f,  "mute" },
+                { Params::chokeId (0),     2.0f,  "choke" },
             };
 
             for (const auto& c : cases)
@@ -536,11 +561,29 @@ int main()
                     ok = pitchLabel->getText() == "+3";
                     detail = pitchLabel->getText();
                 }
+                else if (kind == "drop")
+                {
+                    // Both halves: the fader has to be where the host put it, and so
+                    // does the number the user actually reads.
+                    ok = std::abs (dropSlider->getValue() - (double) c.value) < 0.01
+                           && dropLabel->getText() == juce::String ("\xe2\x86\x93" "5");
+                    detail = "\"" + dropLabel->getText() + "\" at "
+                                + juce::String (dropSlider->getValue(), 1);
+                }
                 else if (kind == "attack")
                 {
                     const auto a = envelope->getValue (EnvelopeStage::attack);
                     ok = std::abs (a - c.value) < 0.01f;
                     detail = juce::String (a, 3);
+                }
+                else if (kind == "choke")
+                {
+                    // The item id is one above the group number, because JUCE keeps
+                    // id 0 for "nothing selected" — so a box that shows the right
+                    // group but has the offset wrong anywhere in the pair fails here.
+                    ok = chokeBox->getSelectedId() == static_cast<int> (c.value) + 1;
+                    detail = "id " + juce::String (chokeBox->getSelectedId())
+                                + " (\"" + chokeBox->getText() + "\")";
                 }
                 else // mute
                 {
@@ -557,8 +600,42 @@ int main()
             // Undo the automation so the audio checks below start from sane values.
             processor.setChannelLevel (0, 1.0f);
             processor.setChannelPitch (0, 0);
+            processor.setChannelPitchDrop (0, 0);
             processor.setChannelMuted (0, false);
+            processor.setChannelChokeGroup (0, 0);
             processor.resetChannelEnvelope (0);
+            anyStrip->refresh();
+
+            //==================================================================
+            // The other direction: a pick in the box has to reach the engine, and
+            // reach the group it names. The mute toggle, the fader and the envelope
+            // rows are checked this way by dragging; a combo box is checked by
+            // selecting, which runs the same notification a click does.
+            ++checked;
+
+            const auto pickReachesEngine = [&] (int group)
+            {
+                chokeBox->setSelectedId (group + 1, juce::sendNotificationSync);
+
+                const auto landed = processor.getChannelChokeGroup (0);
+
+                if (landed != group)
+                {
+                    fail ("picking \"" + chokeBox->getText() + "\" set the lane's group to "
+                            + juce::String (landed) + ", not " + juce::String (group));
+                    return false;
+                }
+
+                return true;
+            };
+
+            auto picked = pickReachesEngine (0);
+            picked = pickReachesEngine (Layout::numChokeGroups) && picked;
+
+            if (picked)
+                pass ("a pick in the choke box reaches the lane, both ends of its range");
+
+            processor.setChannelChokeGroup (0, 0);
             anyStrip->refresh();
         }
     }
@@ -622,6 +699,79 @@ int main()
     }
 
     //======================================================================
+    // The swing grid parameter is an int from 2 to 4, so a host can put it on 3 —
+    // a pair that does not divide a 16-step bar, and so not a grid at all. The
+    // engine answers a 3 with the wider pair; the panel has to light the button that
+    // says which pair that is. Before this, a 3 left both dark, which reads as a
+    // control that has stopped working rather than as a value that cannot mean
+    // anything.
+    std::printf ("\n-- the swing grid buttons follow what the engine plays --\n");
+
+    if (transportBar != nullptr)
+    {
+        juce::Button* eighth = nullptr;
+        juce::Button* sixteenth = nullptr;
+
+        for (int i = 0; i < transportBar->getNumChildComponents(); ++i)
+        {
+            auto* button = dynamic_cast<juce::TextButton*> (transportBar->getChildComponent (i));
+
+            if (button == nullptr)
+                continue;
+
+            const auto text = button->getButtonText();
+
+            if (text == "1/8")
+                eighth = button;
+            else if (text == "1/16")
+                sixteenth = button;
+        }
+
+        auto* gridParam = processor.getValueTreeState().getParameter (Params::swingGridId);
+
+        ++checked;
+
+        if (eighth == nullptr || sixteenth == nullptr || gridParam == nullptr)
+        {
+            fail ("the swing grid controls are not all reachable");
+        }
+        else
+        {
+            pass ("both grid buttons and the host parameter are there");
+
+            const auto writeGrid = [gridParam] (int value)
+            {
+                gridParam->setValueNotifyingHost (gridParam->convertTo0to1 ((float) value));
+            };
+
+            struct Case { int grid; bool eighthOn; };
+
+            const Case cases[] = { { 2, false }, { 3, true }, { 4, true } };
+
+            for (const auto& testCase : cases)
+            {
+                writeGrid (testCase.grid);
+                transportBar->refresh();
+
+                ++checked;
+
+                // Exactly one lit, and the one the engine is following.
+                if (eighth->getToggleState() == testCase.eighthOn
+                     && sixteenth->getToggleState() != testCase.eighthOn)
+                    pass ("grid " + juce::String (testCase.grid) + " lights the "
+                            + juce::String (testCase.eighthOn ? "1/8" : "1/16") + " button");
+                else
+                    fail ("grid " + juce::String (testCase.grid) + " lit 1/8="
+                            + juce::String (eighth->getToggleState() ? 1 : 0)
+                            + " 1/16=" + juce::String (sixteenth->getToggleState() ? 1 : 0));
+            }
+
+            writeGrid (4);
+            transportBar->refresh();
+        }
+    }
+
+    //======================================================================
     // Velocity editing has to work through the real UI: the button switches the
     // grid over, a drag in a cell sets the step's velocity, and the audio that
     // comes out is quieter. That whole chain is invisible to an audio-only test.
@@ -662,35 +812,39 @@ int main()
             processor.setStep (0, 0, true);
             processor.setStepVelocity (0, 0, 1.0f);
 
-            // Cell (channel 11, step 0) is the top-left of the grid, so it is easy
-            // to locate without knowing the row order.
-            const auto cell = juce::Rectangle<int> (0, 0, 1, 1);
-            juce::ignoreUnused (cell);
-
-            // Use the grid's own geometry: drag in the first column of the bottom
-            // row, which is channel 0.
-            const auto gridArea = stepGrid->getLocalBounds();
-            const auto labelWidth = juce::jmin (108, juce::jmax (40, gridArea.getWidth() / 4));
-            const auto gridX = gridArea.getX() + labelWidth + 3;
-            const auto rowSpan = juce::jmax (2, (gridArea.getHeight() - (Layout::numChannels - 1) * 3) / Layout::numChannels);
-            const auto bottomRowY = gridArea.getY() + (Layout::numChannels - 1) * (rowSpan + 3);
-
-            // A quarter of the way up the row should land near 25%.
-            const auto targetY = bottomRowY + rowSpan - juce::jmax (2, rowSpan / 4);
-            const auto point = juce::Point<int> (gridX + 3, targetY);
-
-            stepGrid->mouseDown (makeEvent (*stepGrid, point.toFloat()));
-            stepGrid->mouseUp (makeEvent (*stepGrid, point.toFloat()));
-
-            const auto recorded = processor.getStepVelocity (0, 0);
+            // The grid's own geometry, asked rather than re-derived. The point has to
+            // land inside a real cell, and the border inset, the gap between rows and
+            // the reversed row order are the grid's business; every one of them was
+            // duplicated here until a 17 px change to the strip height put this drag
+            // in the gap under the last row, where it silently did nothing.
+            const auto cell = stepGrid->getCellBounds (0, 0);
 
             ++checked;
 
-            if (recorded > 0.05f && recorded < 0.6f)
-                pass ("a drag in a step sets its velocity (" + juce::String (recorded, 2) + ")");
+            if (cell.getWidth() < 6 || cell.getHeight() < 6)
+            {
+                fail ("channel 0 step 0 is too small to drag (" + juce::String (cell.getWidth())
+                        + " x " + juce::String (cell.getHeight()) + ")");
+            }
             else
-                fail ("a drag in a step did not set a sensible velocity (got "
-                        + juce::String (recorded, 2) + ")");
+            {
+                // A quarter of the way up the cell, which is how far the bar has risen.
+                const auto point = juce::Point<int> (cell.getX() + 3,
+                                                     cell.getBottom() - juce::jmax (2, cell.getHeight() / 4));
+
+                stepGrid->mouseDown (makeEvent (*stepGrid, point.toFloat()));
+                stepGrid->mouseUp (makeEvent (*stepGrid, point.toFloat()));
+
+                const auto recorded = processor.getStepVelocity (0, 0);
+
+                ++checked;
+
+                if (recorded > 0.05f && recorded < 0.6f)
+                    pass ("a drag in a step sets its velocity (" + juce::String (recorded, 2) + ")");
+                else
+                    fail ("a drag in a step did not set a sensible velocity (got "
+                            + juce::String (recorded, 2) + ")");
+            }
 
             // And the velocity has to reach the audio: compare a full-velocity hit
             // against the one just set.
@@ -837,6 +991,82 @@ int main()
                 fail ("the left arrow did not move the row back (velocity at 0 "
                         + juce::String (processor.getStepVelocity (0, 0), 3) + ")");
         }
+    }
+
+    //======================================================================
+    // The grid paints through the undo manager, so the keyboard has to reach it:
+    // without a handler, an edit that took a drag to make can only be taken back by
+    // making another edit — and the panel gives no sign that a history exists at
+    // all. This drives the editor's own key path, which is the half a host's focus
+    // chain hands to us.
+    std::printf ("\n-- undo and redo from the keyboard --\n");
+    {
+        for (int s = 0; s < Layout::numSteps; ++s)
+            processor.setStep (0, s, false);
+
+        processor.getUndoManager().clearUndoHistory();
+
+        const auto cmd = juce::ModifierKeys::commandModifier;
+
+        // Nothing in the history yet, so the key must not be claimed: a plugin that
+        // answers every shortcut it recognises has eaten the host's.
+        ++checked;
+
+        if (! editor->keyPressed (juce::KeyPress ('z', cmd, 0)))
+            pass ("with nothing to take back the key is left for the host");
+        else
+            fail ("Ctrl/Cmd+Z was claimed even though the history was empty");
+
+        processor.beginTransaction ("paint step 5");
+        processor.setStep (0, 4, true);
+
+        ++checked;
+
+        if (processor.isStepOn (0, 4))
+            pass ("there is a gesture to take back");
+        else
+            fail ("the step was not set before the key was pressed");
+
+        ++checked;
+
+        if (editor->keyPressed (juce::KeyPress ('z', cmd, 0)))
+            pass ("Ctrl/Cmd+Z is taken once there is something to undo");
+        else
+            fail ("Ctrl/Cmd+Z was not taken");
+
+        ++checked;
+
+        if (! processor.isStepOn (0, 4))
+            pass ("and it takes the engine's step back, not only the stored one");
+        else
+            fail ("Ctrl/Cmd+Z left the step firing in the engine");
+
+        ++checked;
+
+        if (editor->keyPressed (juce::KeyPress ('Z', cmd | juce::ModifierKeys::shiftModifier, 0))
+             && processor.isStepOn (0, 4))
+            pass ("Ctrl/Cmd+Shift+Z puts it back");
+        else
+            fail ("Ctrl/Cmd+Shift+Z did not redo the edit");
+
+        // Back once more, so the other spelling of redo has something to act on.
+        editor->keyPressed (juce::KeyPress ('z', cmd, 0));
+
+        ++checked;
+
+        if (editor->keyPressed (juce::KeyPress ('y', cmd, 0))
+             && processor.isStepOn (0, 4))
+            pass ("Ctrl+Y is the same redo");
+        else
+            fail ("Ctrl+Y is not wired to the undo manager");
+
+        // A plain letter typed with nothing held belongs to whoever has focus.
+        ++checked;
+
+        if (! editor->keyPressed (juce::KeyPress ('z', juce::ModifierKeys::noModifiers, 0)))
+            pass ("a bare letter is not swallowed");
+        else
+            fail ("a bare Z was swallowed by the shortcut handler");
     }
 
     std::printf ("\n%s  %d checks, %d problems\n",

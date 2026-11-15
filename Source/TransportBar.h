@@ -7,7 +7,8 @@ namespace gb
 {
 
 /**
-    The master output meter: one bar per output channel, plus a clip indicator.
+    The master output meter: one bar per output channel, a true-peak tick on each,
+    plus a clip indicator.
 
     It has its own timer because the transport bar's 200 ms refresh is far too
     slow to catch a drum transient; the peak itself is held on the audio side, so

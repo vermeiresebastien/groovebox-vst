@@ -36,6 +36,29 @@ SampleStore::SampleStore()
 //==============================================================================
 // Decoding
 
+SampleStore::FileKey SampleStore::fileKeyFor (const juce::File& file)
+{
+    return { file.getFullPathName(), file.getSize(), file.getLastModificationTime().toMilliseconds() };
+}
+
+int SampleStore::findSampleForFile (const juce::File& file) const
+{
+    if (! file.existsAsFile())
+        return 0;
+
+    const auto key = fileKeyFor (file);
+
+    // Oldest registration first. If a file was loaded, edited and loaded again, only
+    // the second entry still describes what is on disk, so the order here decides
+    // nothing about which bytes come back — the two entries for one path are the
+    // same decoded audio whenever both match at all.
+    for (size_t i = 0; i < keys.size(); ++i)
+        if (keys[i].matches (key))
+            return (int) i + 1;
+
+    return 0;
+}
+
 int SampleStore::addFile (const juce::File& file, juce::String& errorOut)
 {
     if (! file.existsAsFile())
@@ -43,6 +66,11 @@ int SampleStore::addFile (const juce::File& file, juce::String& errorOut)
         errorOut = "File not found";
         return 0;
     }
+
+    // The key is read before the decode, because it has to describe the file as it
+    // was when the bytes were read. Taking it afterwards would record a modification
+    // time that a later recall could not tell apart from this one.
+    const auto key = fileKeyFor (file);
 
     std::unique_ptr<juce::AudioFormatReader> reader (formats.createReaderFor (file));
 
@@ -69,7 +97,7 @@ int SampleStore::addFile (const juce::File& file, juce::String& errorOut)
     sample->buffer.setSize (numChannels, numSamples);
     reader->read (&sample->buffer, 0, numSamples, 0, true, numChannels > 1);
 
-    const auto id = addSample (sample);
+    const auto id = addSample (sample, key);
 
     if (id == 0)
         errorOut = "This session has already loaded " + juce::String (maxSamples) + " samples";
@@ -120,7 +148,7 @@ int SampleStore::addFromMemory (const void* data, size_t numBytes, const juce::S
     return id;
 }
 
-int SampleStore::addSample (Sample::Ptr sample)
+int SampleStore::addSample (Sample::Ptr sample, FileKey origin)
 {
     if (sample == nullptr)
         return 0;
@@ -134,6 +162,11 @@ int SampleStore::addSample (Sample::Ptr sample)
     // the audio thread may retain the sample, and it can only do that safely
     // because something here holds it for the rest of the session.
     owned.push_back (sample);
+
+    // Alongside it, in the same order, so an index into either is an index into the
+    // other and into the ids. Both go in here rather than at the call sites, which
+    // is what keeps them from drifting apart.
+    keys.push_back (std::move (origin));
 
     // Release, so a reader that acquires this pointer also sees the decoded
     // buffer, the name and the sample rate that were written before it.

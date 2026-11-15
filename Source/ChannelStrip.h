@@ -79,6 +79,29 @@ private:
     juce::Slider levelSlider;
     juce::TextButton muteButton { "Mute" };
 
+    /**
+        How far above its own note a hit on this lane starts, in semitones.
+
+        Lives in the Pitch block rather than having a caption row of its own,
+        because the strip has 77 px of width and no spare height, and because the
+        thing it modifies is right above it: the number is the note the lane is
+        tuned to, and this says how far the hit falls to reach it. Reads "↓5" —
+        arrow and value together, so the amount is visible without a click, which
+        is the same reason the choke control is a combo box and not a popup menu.
+    */
+    juce::Label dropValueLabel;
+    juce::Slider dropSlider;
+
+    /** Which choke group this lane is in, as `0` (none) and `1`..`Layout::numChokeGroups`.
+
+        Shares the mute row: both are the per-lane switches, and the strip has no
+        vertical room for a row of its own. A combo box rather than a popup menu
+        because it shows the current value without a click, and because
+        `setSelectedId` can be driven from the parameter — a `PopupMenu` needs a
+        modal loop, which a plugin editor in a host cannot insist on.
+    */
+    juce::ComboBox chokeComboBox;
+
     EnvelopeControls envelope;
 
     /** Reads one envelope value back out of the processor. */
@@ -94,6 +117,7 @@ private:
     juce::Rectangle<int> pitchCaptionArea;
     juce::Rectangle<int> levelCaptionArea;
     juce::Rectangle<int> envelopeCaptionArea;
+    juce::Rectangle<int> chokeCaptionArea;
     juce::Rectangle<int> soundingDotArea;
 
     // True while the channel is firing, so the timer only repaints on a change.

@@ -20,7 +20,8 @@ namespace
 MasterMeter::MasterMeter (GrooveboxProcessor& processorToUse)
     : processor (processorToUse)
 {
-    setTooltip ("Master output level. Click to clear the clip indicator.");
+    setTooltip ("Master output level. Bar = sample peak, tick = true (inter-sample) "
+                "peak. Click to clear the clip indicator.");
     startTimerHz (30);
 }
 
@@ -57,6 +58,25 @@ void MasterMeter::paint (juce::Graphics& g)
 
             g.setColour (fill);
             g.fillRect (inner.withWidth (inner.getWidth() * fraction));
+        }
+
+        // True peak, on the same scale as the bar: where the two markers part
+        // company is the inter-sample headroom, and a tick past 0 dBFS says the
+        // waveform leaves the chip above full scale even when no sample did. It is
+        // drawn over the fill and changes nothing else — the latch below is still
+        // the sample reaching 0 dBFS, which is a different claim.
+        const auto truePeak = processor.getMasterTruePeak (channel);
+        const auto truePeakDb = juce::Decibels::gainToDecibels (truePeak, floorDb);
+        const auto truePeakFraction
+            = juce::jlimit (0.0f, 1.0f, (truePeakDb - floorDb) / (ceilingDb - floorDb));
+
+        if (truePeakFraction > 0.0f)
+        {
+            const auto tick = inner.withX (inner.getX() + inner.getWidth() * truePeakFraction - 1.0f)
+                                   .withWidth (2.0f);
+
+            g.setColour (truePeakDb >= 0.0f ? Colours::meterOver : Colours::muted);
+            g.fillRect (tick);
         }
 
         // The latch is drawn over the fill rather than instead of it, so a channel
@@ -232,7 +252,11 @@ void TransportBar::refresh()
     swingValueLabel.setText (juce::String (juce::roundToInt (processor.getSwing() * 100.0f)) + "%",
                              juce::dontSendNotification);
 
-    const auto grid = processor.getSwingGrid();
+    // The grid the engine is following, not the number the parameter holds: a host
+    // that types a 3 gets the 1/8 pair, and this is where the panel says so. Without
+    // the same rule on both sides the two buttons would go dark on a value the panel
+    // itself cannot write, which reads as a control that has stopped working.
+    const auto grid = Layout::usableSwingGrid (processor.getSwingGrid());
     swingEighthButton.setToggleState (grid == 4, juce::dontSendNotification);
     swingSixteenthButton.setToggleState (grid == 2, juce::dontSendNotification);
 
@@ -342,13 +366,41 @@ void TransportBar::handleTempoPlus()
 
 void TransportBar::handleClearPatternClicked()
 {
-    processor.beginTransaction ("Clear pattern");
-    processor.clearPattern();
+    /**
+        Every step on every lane goes at once, so this asks first.
 
-    if (processor.onStateChanged != nullptr)
-        processor.onStateChanged();
+        `AlertWindow::showAsync` rather than `show`: `show` runs a modal loop, which
+        is the thing that deadlocks a host that is still rendering, and the answer
+        comes back as the index of the button that was pressed instead of as a
+        return value. The box is parented to the plugin window for the same reason
+        a child window is dangerous in an AU.
 
-    refresh();
+        The strip keeps its own `beginTransaction`, which is what makes the clear a
+        single undo rather than a hundred and ninety-two.
+    */
+    juce::Component::SafePointer<TransportBar> safeThis (this);
+
+    juce::AlertWindow::showAsync (juce::MessageBoxOptions()
+                                      .withIconType (juce::MessageBoxIconType::WarningIcon)
+                                      .withTitle ("Clear the whole pattern?")
+                                      .withMessage ("This switches off every step on every lane. "
+                                                    "One undo brings them all back.")
+                                      .withButton ("Clear")
+                                      .withButton ("Keep it")
+                                      .withParentComponent (this),
+                                  [safeThis] (int button)
+    {
+        if (safeThis == nullptr || button != 0)
+            return;
+
+        safeThis->processor.beginTransaction ("Clear pattern");
+        safeThis->processor.clearPattern();
+
+        if (safeThis->processor.onStateChanged != nullptr)
+            safeThis->processor.onStateChanged();
+
+        safeThis->refresh();
+    });
 }
 
 void TransportBar::handleVelocityClicked()

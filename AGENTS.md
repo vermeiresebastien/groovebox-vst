@@ -1,9 +1,9 @@
 # Groovebox -- agent instructions
 
 JUCE 8.0.4 C++17 sample step sequencer (16 steps x 12 channels, per-channel pitch,
-ADSR and velocity, swing, master trim + peak meter). VST3 + Standalone. Plugin
-manufacturer code `Eruw`, product code `Grvb`, version from `project(... VERSION ...)`
-in [CMakeLists.txt](CMakeLists.txt).
+ADSR, velocity and choke group, swing, master trim + peak meter). VST3 + Standalone.
+Plugin manufacturer code `Eruw`, product code `Grvb`, version from
+`project(... VERSION ...)` in [CMakeLists.txt](CMakeLists.txt).
 
 ## Deliverables: `launch/` is the one place to build, run and ship from
 
@@ -42,6 +42,40 @@ It is fully gitignored and nothing in it is authored in place.
   adding the visible -24..+6 dB trim (default -2 dB, chosen so the default output stays
   level-matched with the old build) and migrating saved values -- not changing what a
   fader means behind the user's back.
+- **A colour law is transparent at the top of its travel.** Velocity is two laws now,
+  gain and tone, and the tone one-pole is bypassed outright at full velocity
+  (`SequencerEngine::brightnessMixFor`), so a grid hit leaves the engine at the bits the
+  sample was recorded at. The check named "a full-velocity hit is the sample at the trim"
+  is what stops a future corner value from quietly retuning the whole kit.
+- **A curve fix does not get to move a level.** The exponential decay/release and the
+  velocity lowpass landed with every gain constant where it already was; the one
+  existing check whose number moved was re-banded with the measured value and the reason
+  in the comment, not widened to hide a difference. The tone law does cost level on a
+  bright source (1.9 dB of peak at quarter velocity, on flat noise) and that cost is
+  stated in the README instead of being bought back invisibly.
+- **A gate on an unmeasured defect has to be two-sided.** The kernel edge was written up
+  as an attenuation of the transient; measured on a flat source it was a **7.4 % overshoot**
+  of the first sample followed by a 2.8 % dip. A `head <= body * 1.02` check passed on the
+  broken build. Ask for the head to equal the body in both directions, and let the run say
+  which way it was wrong. The same run is how locality is proven: diff the disabled-fix
+  output against the fixed one -- `[24]` and the count line were the only eleven lines that
+  moved, so nothing else in the engine got retuned.
+- **A tuning control is not allowed to be a tone control.** The pitch drop kept the
+  anti-alias band it picked at note-on -- the band for the top of the sweep -- and that
+  cost **-4.03 dB** of the 2..7 kHz band at a drop of 12, of which -3.29 dB was the band
+  and -0.73 dB the kernel's own price (measured against a +1-semitone row, because a
+  broadband tilt ratio cannot tell those apart on its own). Following the rate takes it to
+  -0.51 dB, 0.995 of the kernel baseline. The band is still never looser than the rate
+  being read, and a band switch is not a step: the kernels are symmetric about the same
+  centre tap, so below the tighter cutoff they are the same signal.
+- **A byte-identical A/B falsifies your explanation, not the test.** The claim that a
+  stale `samplesToSourceEnd` "cuts the hit in half" survived writing into the plan and the
+  engine comment until the disabled-fix run came back with identical bytes: the countdown
+  is re-derived from the current rate at the top of every `renderVoice` call
+  ([Source/SequencerEngine.cpp:704](Source/SequencerEngine.cpp)), so a stale one can only
+  survive one block. The real defect is block-size dependence -- 570 of 1576 samples gone
+  at a 1024 block, nothing at 256, which is why every fixture in the suite had missed it.
+  Re-measure where the mechanism can actually show, and let the gate say that instead.
 - Anything that reads like a spec in [README.md](README.md) or
   [installer/README.txt](installer/README.txt) must be code-verified before shipping.
   Three false claims were caught this way: that the sound button's menu switches between
@@ -59,7 +93,7 @@ build-new\GrooveboxLayoutTest_artefacts\Release\GrooveboxLayoutTest.exe # real e
 
 Both compile the plugin sources headlessly ([CMakeLists.txt:166-221](CMakeLists.txt));
 they print a check count and a problem count, and exit non-zero on failure. Last green
-run: 123 smoke checks, 63 layout checks, 0 problems.
+run: 212 smoke checks, 82 layout checks, 0 problems.
 
 - No modal loops: `MessageManager::runDispatchLoopUntil` needs
   `JUCE_MODAL_LOOPS_PERMITTED` and JUCE 8 has no public single-step message pump, so the
@@ -70,8 +104,18 @@ run: 123 smoke checks, 63 layout checks, 0 problems.
 - JUCE 8 removed `AudioProcessorValueTreeState::setParameterNotifyingHost`; the one
   remaining way in is `apvts.getParameter (id)->setValueNotifyingHost
   (apvts.getParameterRange (id).convertTo0to1 (v))`, wrapped as
-  `GrooveboxProcessor::writeParameter` ([Source/PluginProcessor.cpp:133](Source/PluginProcessor.cpp)).
-  88 parameters (4 global + 12 x 7); the pattern is deliberately not one.
+  `GrooveboxProcessor::writeParameter` ([Source/PluginProcessor.cpp:202](Source/PluginProcessor.cpp)).
+  112 parameters (4 global + 12 x 9); the pattern is deliberately not one. The listener
+  list in `allParameterIds` is built from `Params::laneTargets()` for the same reason:
+  when it was a hand-written copy of the lane ids, the choke parameter was created,
+  offered to the host and read on restore with nothing listening for it, and only a test
+  that writes all 112 could see that the engine never moved.
+- **The click ruler is derived, never typed.** Every fade, corner sweep and choke gate
+  is 1.5 x `maxDelta` of the 997 Hz tone fixture -- the wave's own sample-to-sample slew,
+  0.1419, so the limit reads 0.2129 and a real one-sample cut measures 0.7943. It follows
+  the signal being measured, which is why a different test source cannot make the gate
+  lenient by accident. A new discontinuity check multiplies `sourceSlew`, it does not
+  copy a constant.
 
 ## Installer conventions (Inno Setup 6 -- house template, with two deliberate divergences)
 

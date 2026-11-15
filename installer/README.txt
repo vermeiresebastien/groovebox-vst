@@ -2,8 +2,8 @@ Groovebox - Skeer Audio
 =======================
 
 A drag-and-drop sample step sequencer: 16 steps, 12 drum channels, per-channel
-pitch, ADSR and velocity, swing on a 1/8 or 1/16 grid, and a master trim with a
-peak meter. It ships as a VST3 plugin and as a standalone app.
+pitch, pitch drop, ADSR and velocity, swing on a 1/8 or 1/16 grid, and a master
+trim with a peak meter. It ships as a VST3 plugin and as a standalone app.
 
 
 Where things went
