@@ -9,13 +9,36 @@ peak meter. It ships as a VST3 plugin and as a standalone app.
 Where things went
 -----------------
 
-VST3 (the plugin hosts load):
-  per-user install  -> %LOCALAPPDATA%\Programs\Common\VST3\Groovebox.vst3
-  all-users install -> %ProgramFiles%\Common Files\VST3\Groovebox.vst3
-  with the Ableton task -> %USERPROFILE%\Documents\VST3\Groovebox.vst3
-    (Live does not scan Documents\VST3 on its own; the task exists for hosts
-     that were told to read a folder you chose. Leave it unticked unless that
-     is your setup — the per-user path above is scanned as-is by Live here.)
+VST3 (the plugin hosts load) — one place, and only one:
+
+  %ProgramFiles%\Common Files\VST3\Groovebox.vst3
+
+  There is no per-user copy and no second copy in a DAW folder. A plugin that
+  exists twice shows up twice in your browser and the two bundles drift apart
+  the first time one is rebuilt, so this installer writes a single copy into
+  the folder every host scans.
+
+The setup asks for elevation. Windows will show a UAC prompt when it starts,
+because %ProgramFiles% is a protected folder. That is intentional: it is the
+cost of putting the plugin somewhere all your hosts see, rather than putting a
+second copy somewhere they happen to scan as well.
+
+If you installed an earlier Groovebox, check for the retired copies. Look in
+%LOCALAPPDATA%\Programs\Common\VST3 and %USERPROFILE%\Documents\VST3. This
+uninstaller does not reach into either — an elevated uninstaller resolves those
+per-user paths to whoever is clicking, not to the account that owns them, so
+deliberately nothing here deletes them. Remove a stray by hand, and only after
+you have confirmed which copy is current: compare the file Groovebox.vst3
+inside Contents\x86_64-win\ against the one in
+%ProgramFiles%\Common Files\VST3\Groovebox.vst3\Contents\x86_64-win\. If the
+hashes differ, the older copy is not a duplicate of your build — it is a
+different build, and deleting it destroys the only copy of it.
+
+Worth knowing which stray actually bites you. Live's own scan database records
+742 bundles under %ProgramFiles%\Common Files\VST3 and 4 under
+%LOCALAPPDATA%\Programs\Common\VST3, and none under Documents: a leftover in
+the LOCALAPPDATA folder will rescan as a second Groovebox, while one in
+Documents\VST3 is invisible until a host is told to look there.
 
 Standalone app (no host needed):
   Groovebox.exe in this folder. Double-click it, or run it from a terminal if
@@ -28,10 +51,14 @@ and run the setup again.
 
 After installing, rescan in your host. In Ableton Live: Options > Preferences >
 Plug-Ins, tick "Use VST3 Plug-In System Folder", and click Rescan (hold Alt to
-force a full rescan). If Groovebox does not appear, tick "VST3 Plug-In Custom
-Folder" and point it at one of the folders above, then rescan again. Live lists
-it under Plug-Ins > VST3 > Earworm > Groovebox, and it loads on a MIDI track --
-it is an instrument, so it is not in the Audio Effects list.
+force a full rescan). Live lists it under Plug-Ins > VST3 > Earworm > Groovebox,
+and it loads on a MIDI track -- it is an instrument, so it is not in the Audio
+Effects list.
+
+If you earlier added Documents\VST3 as Live's "VST3 Plug-In Custom Folder",
+remove that entry now and rescan. Groovebox no longer installs there, and if
+an old copy is still sitting in a folder Live scans, you get two entries for
+one plugin.
 
 Run only one at a time. The standalone takes the audio device for itself, so
 start it after closing your host, or it will fail to open the driver -- and
@@ -96,7 +123,7 @@ One 16-step bar per channel. There is no song mode or pattern chaining yet, so a
 long arrangement is built in the host.
 
 Groovebox makes no network calls. The installer writes one registry key,
-HKCU\Software\Skeer\Groovebox, and the uninstaller removes it -- along with every
+HKLM\Software\Skeer\Groovebox, and the uninstaller removes it -- along with every
 copy of the plugin it installed.
 
 This build is not code-signed, so Windows may warn when the installer starts.

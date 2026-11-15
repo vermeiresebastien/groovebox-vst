@@ -78,10 +78,10 @@ run: 123 smoke checks, 63 layout checks, 0 problems.
 The siblings still install per-user and still let Setup close your DAW. This one does not,
 on purpose: see the two bolded rules below.
 
-- Payload is read straight out of `launch/` ([installer/Groovebox.iss:34](installer/Groovebox.iss)),
+- Payload is read straight out of `launch/` ([installer/Groovebox.iss:35](installer/Groovebox.iss)),
   so a setup can never carry binaries older than the last build; the only exception is
   `README.txt`, a tracked source in `installer/`.
-- **`CloseApplications=no`** ([installer/Groovebox.iss:79](installer/Groovebox.iss)).
+- **`CloseApplications=no`** ([installer/Groovebox.iss:80](installer/Groovebox.iss)).
   With `yes` -- and the house default filter `*.exe,*.vst3` -- a silent install that
   finds the bundle locked force-quits the host holding it, which on this machine means
   Ableton Live with an unsaved set. Failing to write a locked file, with the README

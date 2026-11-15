@@ -1,17 +1,23 @@
 ; Groovebox - Windows installer
 ;
-; Installs the VST3 into a folder the host scans and the standalone into a per-user
-; program folder. Follows the conventions of the PulseKit and SKULPT installers so all
-; three products behave the same way for a user who installs them side by side:
+; ONE destination for the plugin: C:\Program Files\Common Files\VST3. That is the folder
+; every host on this machine scans, so a second copy is not a convenience -- it is a
+; duplicate entry in the browser plus two bundles that drift apart the first time one of
+; them is rebuilt. An earlier version of this script also wrote a per-user copy and
+; offered a task that copied it into Documents\VST3; both are gone. The retired per-user
+; paths are NOT kept in [UninstallDelete]: see the note there for why an elevated
+; uninstaller must not resolve them, and that the README tells the user to clean them.
 ;
-;   * no administrator rights needed by default -- everything lands under LOCALAPPDATA;
-;   * the VST3 goes into the per-user VST3 folder, which Bitwig, Reaper and Studio One
-;     scan without any configuration -- and which, measured on this machine, is the
-;     custom folder Ableton Live 12 is already set to scan;
-;   * a task copies it into Documents\VST3 as well, for hosts that only see a folder the
-;     user names explicitly (Live does not look in Documents\VST3 unless you point its
-;     VST3 Plug-In Custom Folder setting there);
-;   * the uninstaller removes every copy, so uninstalling really uninstalls.
+; Consequences of writing to Program Files:
+;
+;   * the setup asks for elevation (UAC). That is the price of a machine-wide plugin, and
+;     the rule outranks installing without a prompt;
+;   * because the process is elevated, it must not touch per-user areas -- the registry
+;     hints are HKLM, not HKCU, and there is no {localappdata} or {userdocs} left in here.
+;     Inno warns about that combination and the warning is correct, so the causes are
+;     fixed rather than silenced with UsedUserAreasWarning=no;
+;   * the standalone lives under {app} in Program Files too, so it needs no separate
+;     privilege story, and the uninstaller removes every copy it made.
 ;
 ; Sources are read straight from launch/, the one folder the build exports to, so the
 ; installer can never contain binaries older than the last build.
@@ -47,13 +53,12 @@ VersionInfoProductVersion={#MyAppVersion}
 DefaultDirName={autopf}\{#MyAppPublisher}\{#MyAppName}
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
-; Lowest by default so anyone can install; the dialog override adds an "all users" option
-; on the wizard's first page for those who want the system-wide VST3 folder, which is what
-; Cubase and Nuendo need. "commandline" is listed as well so /CURRENTUSER and /ALLUSERS are
-; honored by scripted installs -- with "dialog" alone they are silently ignored, and a
-; scripted install then lands machine-wide while looking like it succeeded.
-PrivilegesRequired=lowest
-PrivilegesRequiredOverridesAllowed=commandline dialog
+; Machine-wide, because the plugin has exactly one home and it sits in Program Files.
+; Setup therefore asks for elevation. There is deliberately no
+; PrivilegesRequiredOverridesAllowed line: /CURRENTUSER and the wizard's "all users"
+; toggle are exactly how a second, drifting copy came back last time, and a run that
+; silently downgraded would put the VST3 somewhere the hosts do not all scan.
+PrivilegesRequired=admin
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 OutputDir={#Deliverables}
@@ -81,25 +86,23 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
-Name: "abletonfolder"; Description: "Also copy the VST3 into Documents\VST3 (needed for Ableton's custom folder)"; GroupDescription: "DAW integration"; Flags: checkedonce
 
 [Files]
-; The plugin itself. Which folder it lands in depends on the install mode chosen on the
-; wizard's first page; see [Code] for why both are needed.
-Source: "{#Deliverables}\{#Vst3Bundle}\*"; DestDir: "{commonpf64}\Common Files\VST3\{#Vst3Bundle}"; Flags: ignoreversion recursesubdirs createallsubdirs; Check: IsAdminInstallMode
-Source: "{#Deliverables}\{#Vst3Bundle}\*"; DestDir: "{localappdata}\Programs\Common\VST3\{#Vst3Bundle}"; Flags: ignoreversion recursesubdirs createallsubdirs; Check: not IsAdminInstallMode
-
-; The extra copy for hosts that only see a user-chosen folder.
-Source: "{#Deliverables}\{#Vst3Bundle}\*"; DestDir: "{userdocs}\VST3\{#Vst3Bundle}"; Flags: ignoreversion recursesubdirs createallsubdirs; Tasks: abletonfolder
+; The plugin, in the one folder every host scans. No Check= and no Tasks= on this line:
+; a condition here is what let a second destination exist alongside it.
+Source: "{#Deliverables}\{#Vst3Bundle}\*"; DestDir: "{commonpf64}\Common Files\VST3\{#Vst3Bundle}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 ; The standalone, so the kit can be played without a host.
 Source: "{#Deliverables}\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
 Source: "README.txt"; DestDir: "{app}"; Flags: ignoreversion
 
 [Registry]
-Root: HKCU; Subkey: "Software\Skeer\{#MyAppName}"; ValueType: string; ValueName: "InstallDir"; ValueData: "{app}"; Flags: uninsdeletekey
-Root: HKCU; Subkey: "Software\Skeer\{#MyAppName}"; ValueType: string; ValueName: "Version"; ValueData: "{#MyAppVersion}"; Flags: uninsdeletekey
-Root: HKCU; Subkey: "Software\Skeer\{#MyAppName}"; ValueType: string; ValueName: "VST3Path"; ValueData: "{code:GetVst3Path}"; Flags: uninsdeletekey
+; HKLM, not HKCU: an elevated setup writing per-user keys leaves the next non-elevated
+; read looking in the wrong hive, and HKCU here would be that mistake in the other
+; direction -- this install is machine-wide, so its facts belong in the machine hive.
+Root: HKLM; Subkey: "Software\Skeer\{#MyAppName}"; ValueType: string; ValueName: "InstallDir"; ValueData: "{app}"; Flags: uninsdeletekey
+Root: HKLM; Subkey: "Software\Skeer\{#MyAppName}"; ValueType: string; ValueName: "Version"; ValueData: "{#MyAppVersion}"; Flags: uninsdeletekey
+Root: HKLM; Subkey: "Software\Skeer\{#MyAppName}"; ValueType: string; ValueName: "VST3Path"; ValueData: "{commonpf64}\Common Files\VST3\{#Vst3Bundle}"; Flags: uninsdeletekey
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"
@@ -110,23 +113,20 @@ Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; WorkingDi
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent
 
 [UninstallDelete]
-; Remove the plugin from whichever VST3 folder this install used, plus the Ableton copy.
-; Inno removes files it installed anyway, but the bundle directory itself would survive.
-Type: filesandordirs; Name: "{commonpf64}\Common Files\VST3\{#Vst3Bundle}"; Check: IsAdminInstallMode
-Type: filesandordirs; Name: "{localappdata}\Programs\Common\VST3\{#Vst3Bundle}"; Check: not IsAdminInstallMode
-Type: filesandordirs; Name: "{userdocs}\VST3\{#Vst3Bundle}"
+; The live destination: Setup removes the files it installed, but the .vst3 bundle directory
+; itself would survive as an empty shell, and hosts list a bare folder.
+Type: filesandordirs; Name: "{commonpf64}\Common Files\VST3\{#Vst3Bundle}"
+; The retired per-user destinations are NOT deleted from here, deliberately. An elevated
+; uninstaller resolves {localappdata} and {userdocs} to whoever is clicking, not to the user
+; an old unprivileged install wrote for -- so the lines would delete the wrong profile's
+; copy and call it done. ISCC warns about exactly this ("PrivilegesRequired is set to admin
+; but per-user areas are used"), and the fix is to stop reaching into those areas, not to
+; silence the warning. Nothing is orphaned by that choice: a previous Groovebox setup
+; registered its own copies in its install log and removes them when it is uninstalled or
+; upgraded (same AppId), and a copy somebody placed by hand is cleaned by hand -- the
+; README carries the one-line check and delete for it.
 
 [Code]
-// The path recorded in the registry, so another tool can find the plugin without
-// guessing which of the two possible locations was used.
-function GetVst3Path(Param: String): String;
-begin
-  if IsAdminInstallMode then
-    Result := ExpandConstant('{commonpf64}\Common Files\VST3\{#Vst3Bundle}')
-  else
-    Result := ExpandConstant('{localappdata}\Programs\Common\VST3\{#Vst3Bundle}');
-end;
-
 // Warn once, plainly, that the installer is not code-signed. Better a sentence here than
 // a SmartScreen dialog the user has to interpret on their own.
 //
