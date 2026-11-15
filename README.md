@@ -16,7 +16,7 @@ sample you drag onto its row, and which also plays from MIDI notes.
 | **Pitch drop** | **0–12 semitones per channel: the hit starts that far above the note and glides down onto it over 30 ms — kick bloom you cannot get from Live's sample page. It is a parameter like the rest, never something the plugin decides for you** |
 | **ADSR per channel** | **Attack, Decay, Sustain and Release for every channel, so a hit can be tightened or turned into a sustained sound** |
 | **Choke groups** | **Three per lane. A hit in a group cuts every other hit in that group short, ramped over 20 ms — put the closed hat in the same group as the open one and it stops it instead of stacking on it** |
-| **Step probability** | **Every step says how often it is allowed to fire, 0–100 %. Hit *Chance* in the top bar and drag inside a step. The *Variation* knob — parameter **Mutate** — decides how much of that the machine may use: shut, the grid is law** |
+| **Step probability** | **Every step says how often it is allowed to fire, 0–100 %. Hit *Chance* in the top bar and drag inside a step; a step that can be dropped has its corner cut off. The *Variation* knob — parameter **Mutate** — decides how much of that the machine may use: shut, the grid is law** |
 | Swing | 0–100 % on either a 1/8 or 1/16 grid |
 | Tempo | Follows the host project tempo; in the standalone build it has its own transport and tempo |
 | Mix | Per-channel level and mute, plus a "clear row" button |
@@ -83,9 +83,12 @@ underneath is the part that gets dropped, which is the one reading that still ho
 when you look away and back. As with velocity, the step's on/off state is left alone,
 and the exact number sits under the pointer.
 
-**Where it shows:** only while **Chance** is open. Outside it, a step's colour carries
-its velocity as before, so a hit that fires three times in four looks like a certain one
-until you press the button.
+**Where it shows:** at rest, any step the take can drop has its bottom-right corner cut
+off, with the edge of the cut lit so it reads against a pale lane and a quiet one alike.
+That is a mark on the *possibility*, not a gauge of it: three cells at three different
+probabilities look alike until **Chance** is opened, and the exact number only ever appears
+there. Two things take the mark away — a step that fires every time, and the **Variation**
+knob shut, which is the state where nothing can be dropped and the grid is law.
 
 **The *Variation* knob decides how much of all that the machine is allowed to use.** The
 parameter behind it is **Mutate**, 0–100 %, and the two ends are the whole design:
@@ -506,7 +509,11 @@ readout and envelope rows all catch up to it. The step-value overlays are driven
 through the real buttons too, because an audio test cannot tell a drag that wrote
 a velocity from one that meant to write a probability — and it checks that the
 shared 100% reset does the number that is on the grid, in both directions, and
-that Reroll moves the take without moving the pattern.
+that Reroll moves the take without moving the pattern. The corner mark is checked
+by painting the grid into an image and comparing two renders that differ in one
+probability, since it is the one part of the panel with no bounds to inspect: that
+says where the pixels moved, that they moved in only that one cell, and that a
+mark which should not appear there makes two renders of the same cell identical.
 
 Run both after any change to the editor or the engine. Both have already caught
 real bugs: swing that was computed but never applied, a step that fired early

@@ -112,7 +112,7 @@ build-new\GrooveboxLayoutTest_artefacts\Release\GrooveboxLayoutTest.exe # real e
 
 Both compile the plugin sources headlessly ([CMakeLists.txt:166-231](CMakeLists.txt));
 they print a check count and a problem count, and exit non-zero on failure. Last green
-run: 291 smoke checks, 101 layout checks, 0 problems.
+run: 291 smoke checks, 109 layout checks, 0 problems.
 
 - **A walk that runs zero times looks like a wrong answer, and partly like a right one.**
   Section [29] built its 4096-cell decision matrix with three mirrored loop headers --
@@ -165,8 +165,11 @@ run: 291 smoke checks, 101 layout checks, 0 problems.
 - **Trust the link, not the exit code.** `Copy-Item` preserves the source's mtime, so a file restored by copy
   can be *older* than the object MSVC built from the version it replaced, and the incremental build then
   reports 0 while running stale code -- one A/B half here linked the old codec against the new header, which is
-  also a class-layout mismatch. `out/run-gate.ps1` and `out/ab-41.ps1` refuse to run when any file in
-  `Source/` or `Tests/` is newer than the exe; after copying into `Source/`, set `LastWriteTime = Get-Date`.
+  also a class-layout mismatch. `out/run-gate.ps1` and `out/ab-41.ps1` refuse to run when a source is newer
+  than the exe; after copying into `Source/`, set `LastWriteTime = Get-Date`. **The glob is per target**: each
+  console app compiles `Source/` plus its own `Tests/*Test.cpp`, and `cmake` correctly leaves the *other*
+  exe alone, so a guard over all of `Tests/` refuses permanently the moment only the other test was edited --
+  a guard that can never pass is not a guard, and the first thing it trains is the habit of editing the script.
 - No modal loops: `MessageManager::runDispatchLoopUntil` needs
   `JUCE_MODAL_LOOPS_PERMITTED` and JUCE 8 has no public single-step message pump, so the
   layout test drives `ChannelStrip::refresh()` -- the same `syncAutomatableControls()`
@@ -193,6 +196,27 @@ run: 291 smoke checks, 101 layout checks, 0 problems.
   trap as the parameter table, one layer up: a property two components happen to agree on
   is not an identity, and the second copy of a classification is where the third control
   gets misfiled.
+- **An A/B arm that starts from the previous arm's file measures the first mutation
+  twice.** `out/ab-42b.ps1` ran three breakages of the step-probability corner mark and
+  all three came back with the *same* four BAD lines: each arm edited the working copy, so
+  once arm one had deleted the `paint()` call that draws the mark, arms two and three were
+  removing pixels from a picture that had none. Restore the recorded good file at the top
+  of every arm. The tell afterwards is that the arms disagree -- five of them now kill
+  4 / 1 / 2 / 2 / 1 checks -- and every check is killed by at least one.
+- **Choose the control where the defect can actually show.** The overlay half of that
+  mark's test compared two renders at velocity 1.0, and a velocity bar at 1.0 fills the
+  whole cell, so a mark that leaked into the overlay was painted over and the check passed
+  on a build with the overlay rule deleted -- a negative control that cannot go red is
+  not a control. At velocity 0.1 the bar is 3 px tall, the notch is 10, and the same
+  mutation fails it. State in the comment what geometry makes the check able to bite.
+- **A claim about pixels needs pixels.** `StepGridComponent::paint` is public, so the
+  layout test renders the grid into a `juce::Image` and compares two renders that differ
+  in one number: where the pixels moved, that they moved only inside that one cell, and
+  that the mark is a two-tone cut (some pixels down *and* some up) rather than a recolour.
+  Which arms cannot kill a check matters as much as which can -- the off-cell assertion
+  passes on a build whose predicate ignores `isStepOn`, because `paint()` only draws marks
+  inside the lit branch, so the predicate's own term is discharged by the rule check
+  instead. Say which is which rather than letting eight green checks imply eight controls.
 - Automatability is testable single-threaded because
   `AudioProcessorParameter::setValueNotifyingHost` notifies listeners synchronously.
 - JUCE 8 removed `AudioProcessorValueTreeState::setParameterNotifyingHost`; the one

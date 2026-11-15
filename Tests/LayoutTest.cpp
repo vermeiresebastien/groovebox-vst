@@ -1375,6 +1375,280 @@ int main()
             fail ("a bare Z was swallowed by the shortcut handler");
     }
 
+    //======================================================================
+    // The other number every step carries has to be visible without opening the
+    // overlay that edits it, and this is the one part of the panel that can only be
+    // checked by painting. The mark is not a control: it has no bounds, nothing to
+    // click and no parameter behind it, so every component-inspecting check above
+    // would be inspecting a rule that only the paint path ever applies. Two renders
+    // that differ in exactly one number, compared pixel by pixel, is what proves both
+    // halves of the claim — that the mark was drawn, and that nothing else moved.
+    std::printf ("\n-- the mark on a step the take can drop --\n");
+    {
+        const int probeChannel = 0;
+        const int probeStep = 7;   // not 0: earlier sections park the playhead there
+
+        // One row, two neighbours, identical but for the chance: same channel colour,
+        // same level, both switched on. Anything that differs between the two renders
+        // therefore differs because of the probability and nothing else.
+        for (int s = 0; s < Layout::numSteps; ++s)
+        {
+            processor.setStep (probeChannel, s, false);
+            processor.setStepVelocity (probeChannel, s, 1.0f);
+            processor.setStepChance (probeChannel, s, 1.0f);
+        }
+
+        processor.setStep (probeChannel, probeStep - 1, true);
+        processor.setStep (probeChannel, probeStep, true);
+        processor.setMutate (1.0f);
+
+        stepGrid->setVelocityMode (false);
+        stepGrid->setChanceMode (false);
+
+        auto render = [stepGrid]
+        {
+            juce::Image image (juce::Image::ARGB,
+                               juce::jmax (1, stepGrid->getWidth()),
+                               juce::jmax (1, stepGrid->getHeight()), true);
+
+            juce::Graphics g (image);
+            stepGrid->paint (g);
+            return image;
+        };
+
+        struct Diff
+        {
+            int pixels = 0;     // pixels that moved at all
+            int outside = 0;    // ... and moved outside the window they were allowed to
+            int darker = 0;     // moved down: the cut
+            int brighter = 0;   // moved up: the lit edge of it
+            long sumX = 0;
+            long sumY = 0;
+        };
+
+        auto compare = [] (const juce::Image& a, const juce::Image& b,
+                           const juce::Rectangle<int>& window)
+        {
+            Diff d;
+            const int w = juce::jmin (a.getWidth(), b.getWidth());
+            const int h = juce::jmin (a.getHeight(), b.getHeight());
+
+            for (int y = 0; y < h; ++y)
+            {
+                for (int x = 0; x < w; ++x)
+                {
+                    const auto before = a.getPixelAt (x, y);
+                    const auto after = b.getPixelAt (x, y);
+
+                    if (before == after)
+                        continue;
+
+                    ++d.pixels;
+
+                    if (! window.contains (x, y))
+                        ++d.outside;
+
+                    const auto luma = before.getRed() + before.getGreen() + before.getBlue()
+                                    - after.getRed() - after.getGreen() - after.getBlue();
+
+                    if (luma > 0)      ++d.darker;
+                    else if (luma < 0) ++d.brighter;
+
+                    d.sumX += x;
+                    d.sumY += y;
+                }
+            }
+
+            return d;
+        };
+
+        const auto cell = stepGrid->getCellBounds (probeChannel, probeStep);
+
+        auto asText = [] (const juce::Rectangle<int>& r)
+        {
+            return juce::String (r.getX()) + " " + juce::String (r.getY()) + " "
+                 + juce::String (r.getWidth()) + "x" + juce::String (r.getHeight());
+        };
+
+        // The cell, plus one pixel of slack: the mark's edge is drawn on the cell's own
+        // boundary, and an antialiased line can bleed a pixel into the gap, which is
+        // still this cell's business rather than its neighbour's.
+        const auto window = cell.expanded (1);
+
+        std::printf ("   probe cell (channel %d, step %d) at %s, grid %d x %d\n",
+                     probeChannel, probeStep, asText (cell).toRawUTF8(),
+                     stepGrid->getWidth(), stepGrid->getHeight());
+
+        processor.setStepChance (probeChannel, probeStep, 1.0f);
+        const auto certain = render();
+
+        processor.setStepChance (probeChannel, probeStep, 0.5f);
+        const auto mutableMarked = render();
+
+        ++checked;
+        {
+            const auto d = compare (certain, mutableMarked, window);
+
+            if (d.pixels > 0)
+                pass ("a step that can be dropped is drawn differently from one that cannot");
+            else
+                fail ("a step at half chance painted exactly like a certain one — the grid still"
+                        " hides the probability until its overlay is opened");
+
+            ++checked;
+
+            // Two-sided on purpose. "Nothing moved outside the cell" is satisfied by a
+            // grid where nothing moved at all, which is the answer a missing mark gives;
+            // locality only means something once there is a difference to be local to.
+            if (d.pixels > 0 && d.outside == 0)
+                pass ("and only that cell moved: the mark is local, not a repaint");
+            else
+                fail ("the mark moved " + juce::String (d.outside) + " of "
+                        + juce::String (d.pixels) + " pixels outside its own cell");
+
+            ++checked;
+
+            if (d.darker > 0 && d.brighter > 0)
+                pass ("it is a cut with a lit edge, not a recolour: "
+                        + juce::String (d.darker) + " pixels down, "
+                        + juce::String (d.brighter) + " up");
+            else
+                fail ("the mark drew " + juce::String (d.darker) + " darker and "
+                        + juce::String (d.brighter)
+                        + " brighter pixels, so one of its two colours is missing");
+
+            ++checked;
+
+            const auto centreX = (double) d.sumX / (double) juce::jmax (1, d.pixels);
+            const auto centreY = (double) d.sumY / (double) juce::jmax (1, d.pixels);
+
+            if (centreX > (double) cell.getX() + cell.getWidth() * 0.5
+                 && centreY > (double) cell.getY() + cell.getHeight() * 0.5)
+                pass ("and in the bottom-right corner, clear of the level the colour carries");
+            else
+                fail ("the mark centred at (" + juce::String (centreX, 1) + ", "
+                        + juce::String (centreY, 1) + ") inside a cell at " + asText (cell));
+        }
+
+        // Three negative controls, each a pair of renders that must come back identical.
+        auto mustMatch = [&compare] (const juce::Image& a, const juce::Image& b,
+                                     const juce::Rectangle<int>& window)
+        {
+            return compare (a, b, window).pixels == 0;
+        };
+
+        // The mark reports the take, not the wish. With the variation shut nothing can
+        // be dropped, and a warning about a thing that cannot happen is a lie — the same
+        // rule the README states as "shut, the grid is law".
+        ++checked;
+        {
+            processor.setMutate (0.0f);
+            processor.setStepChance (probeChannel, probeStep, 1.0f);
+            const auto shutCertain = render();
+
+            processor.setStepChance (probeChannel, probeStep, 0.5f);
+            const auto shutMutable = render();
+
+            processor.setMutate (1.0f);
+
+            if (mustMatch (shutCertain, shutMutable, window))
+                pass ("with the variation shut it paints nothing: an uncertain step is law too");
+            else
+                fail ("a step the machine is not allowed to drop was still marked");
+        }
+
+        // An off step is not waiting for the take; it is not in it. Its probability is
+        // stored and inert, so marking it would say "this may not happen" about a cell
+        // that is already empty.
+        ++checked;
+        {
+            processor.setStep (probeChannel, probeStep, false);
+            processor.setStepChance (probeChannel, probeStep, 1.0f);
+            const auto offCertain = render();
+
+            processor.setStepChance (probeChannel, probeStep, 0.5f);
+            const auto offMutable = render();
+
+            processor.setStep (probeChannel, probeStep, true);
+            processor.setStepChance (probeChannel, probeStep, 1.0f);
+
+            if (mustMatch (offCertain, offMutable, window))
+                pass ("and a step switched off is not marked, whatever it stores");
+            else
+                fail ("an empty cell was marked as if it had a hit to lose");
+        }
+
+        // Inside an overlay the bar owns the cell, and the number is on screen already.
+        // A notch cut here would be eating the thing the overlay was opened to show —
+        // so a chance that changes must move nothing while the velocity bars are up.
+        //
+        // The level is deliberately low. A velocity of 1.0 draws a bar over the whole
+        // cell, and a bar that covers the corner hides a mark that leaked into the
+        // overlay: the check would pass on a broken build. At a tenth the bar is three
+        // pixels tall and the notch is ten, so the seven pixels above it are exactly
+        // where a leaked mark has to show.
+        ++checked;
+        {
+            stepGrid->setVelocityMode (true);
+
+            for (int s = 0; s < Layout::numSteps; ++s)
+                processor.setStepVelocity (probeChannel, s, 0.1f);
+
+            processor.setStepChance (probeChannel, probeStep, 1.0f);
+            const auto overlayCertain = render();
+
+            processor.setStepChance (probeChannel, probeStep, 0.5f);
+            const auto overlayMutable = render();
+
+            processor.setStepChance (probeChannel, probeStep, 1.0f);
+
+            for (int s = 0; s < Layout::numSteps; ++s)
+                processor.setStepVelocity (probeChannel, s, 1.0f);
+
+            stepGrid->setVelocityMode (false);
+
+            if (mustMatch (overlayCertain, overlayMutable, window))
+                pass ("inside an overlay the mark stands down and leaves the bar alone");
+            else
+                fail ("the mark drew itself over the velocity bar");
+        }
+
+        // The rule the pixels were obtained under, stated once, so a future change to
+        // one of the four arms has to disagree with a render above to get through.
+        ++checked;
+        {
+            processor.setStepChance (probeChannel, probeStep, 0.5f);
+
+            const auto atRest = stepGrid->isStepMutable (probeChannel, probeStep);
+
+            stepGrid->setChanceMode (true);
+            const auto inOverlay = stepGrid->isStepMutable (probeChannel, probeStep);
+            stepGrid->setChanceMode (false);
+
+            processor.setMutate (0.0f);
+            const auto knobShut = stepGrid->isStepMutable (probeChannel, probeStep);
+            processor.setMutate (1.0f);
+
+            processor.setStep (probeChannel, probeStep, false);
+            const auto whileOff = stepGrid->isStepMutable (probeChannel, probeStep);
+            processor.setStep (probeChannel, probeStep, true);
+
+            if (atRest && ! inOverlay && ! knobShut && ! whileOff)
+                pass ("the rule says: at rest mark it, in an overlay no, knob shut no, step off no");
+            else
+                fail ("the mark's rule came back at rest " + juce::String ((int) atRest)
+                        + ", in an overlay " + juce::String ((int) inOverlay)
+                        + ", knob shut " + juce::String ((int) knobShut)
+                        + ", step off " + juce::String ((int) whileOff));
+        }
+
+        // Back as found: the knob is what a fresh session opens with.
+        processor.setMutate (0.0f);
+
+        for (int s = 0; s < Layout::numSteps; ++s)
+            processor.setStep (probeChannel, s, false);
+    }
+
     std::printf ("\n%s  %d checks, %d problems\n",
                  problems == 0 ? "PASSED" : "FAILED", checked, problems);
 

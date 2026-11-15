@@ -93,6 +93,12 @@ the grid -- pressing one puts the other away -- and "100%" next to them resets
 whichever number you are looking at. A reset or a drag across the cells is one
 edit, so one undo takes the whole grid back rather than a step at a time.
 
+You do not have to open "Chance" to know which hits are in play: a step the
+machine is allowed to drop has its bottom-right corner cut off. It marks the
+possibility, not the size of it -- the number itself is on the Chance overlay.
+A step that fires every time has no cut, and neither does anything else while
+the Variation knob is at 0%, because then nothing is being dropped.
+
 The "Variation" knob decides how much of all that the machine is allowed to use.
 At 0% the pattern plays exactly as drawn, whatever the cells say; at 100% every
 step answers to its own probability. Which hits get dropped comes from the

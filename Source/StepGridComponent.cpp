@@ -16,6 +16,38 @@ namespace
         const auto extension = path.fromLastOccurrenceOf (".", false, false).trim().toLowerCase();
         return supportedExtensions.contains (extension);
     }
+
+    /**
+        The mark on a cell the take can drop: a corner cut off, with its edge lit.
+
+        Both colours belong to the mark rather than to the cell, because the cell is
+        already spoken for — its colour is the channel's and its alpha is the velocity.
+        A notch alone would have to be dark or light, and the grid's own colour law
+        guarantees it is neither at one end of the velocity range: a mutable step can
+        sit on a pale lane at full level, where a light dot disappears, or at a quarter
+        of it, where a dark one does. The lit hypotenuse against the cut gives the mark
+        its own contrast, so it reads whatever is underneath.
+
+        A third of the shorter side, floored at three pixels, because a mark that
+        cannot be drawn at all on a tight layout is worse than one that is small.
+    */
+    void paintMutableMark (juce::Graphics& g, juce::Rectangle<float> cell)
+    {
+        const auto leg = juce::jmax (3.0f, juce::jmin (cell.getWidth(), cell.getHeight()) / 3.0f);
+
+        juce::Path notch;
+        notch.startNewSubPath (cell.getRight(),       cell.getBottom());
+        notch.lineTo          (cell.getRight() - leg, cell.getBottom());
+        notch.lineTo          (cell.getRight(),       cell.getBottom() - leg);
+        notch.closeSubPath();
+
+        g.setColour (Colours::background);
+        g.fillPath (notch);
+
+        g.setColour (Colours::text);
+        g.drawLine (cell.getRight() - leg, cell.getBottom(),
+                    cell.getRight(),       cell.getBottom() - leg, 1.0f);
+    }
 } // namespace
 
 //==============================================================================
@@ -229,6 +261,11 @@ void StepGridComponent::paint (juce::Graphics& g)
 
                 g.setColour (channelColour.withMultipliedAlpha (0.35f + 0.65f * velocity));
                 g.fillRoundedRectangle (cell, corner);
+
+                // The other number this cell carries, reported without opening the
+                // overlay that edits it. See isStepMutable for what the mark claims.
+                if (isStepMutable (channel, step))
+                    paintMutableMark (g, cell);
             }
             else
             {
@@ -290,6 +327,24 @@ void StepGridComponent::paint (juce::Graphics& g)
     // Editing a per-step number replaces the plain on/off cells with a bar per step.
     if (overlay != Overlay::none)
         paintValueOverlay (g);
+}
+
+bool StepGridComponent::isStepMutable (int channel, int step) const
+{
+    // The mark is for the resting grid only; see the header.
+    if (overlay != Overlay::none)
+        return false;
+
+    // An off step is not waiting for the take — it is not in it. Nothing fires, so
+    // there is nothing that could be dropped, and the probability it still stores is
+    // inert until the step is switched back on.
+    if (! processor.isStepOn (channel, step))
+        return false;
+
+    // Two ends of one rule. A step at certain is never dropped whatever the knob says;
+    // with the knob shut the grid is law, so not even an uncertain step can move.
+    return processor.getMutate() > 0.0f
+        && processor.getStepChance (channel, step) < 1.0f;
 }
 
 void StepGridComponent::setVelocityMode (bool shouldEditVelocity)
@@ -637,6 +692,20 @@ void StepGridComponent::timerCallback()
             lastSounding[(size_t) channel] = sounding;
             needsRepaint = true;
         }
+    }
+
+    // The variation knob changes what every lit cell is claiming — a mark appears on
+    // the steps the machine is now allowed to drop — and nothing else in the panel
+    // repaints the grid for it. A drag on the knob does not go through the undo path,
+    // and a parameter write does not raise onStateChanged, so at rest this is the only
+    // way the grid finds out. Every other number a cell paints from is either written
+    // through a path that already calls refresh(), or is the playhead, watched above.
+    const auto mutate = processor.getMutate();
+
+    if (mutate != lastMutate)
+    {
+        lastMutate = mutate;
+        needsRepaint = true;
     }
 
     if (needsRepaint)

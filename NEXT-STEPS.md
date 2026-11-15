@@ -134,7 +134,7 @@ sample-exact clock invariant that test `[12]` protects.
 | **F4** | Sub-step onset keystone → ratchet/rolls | fills without leaving the plugin | 6-8 h | med-high — rewrites the split loop | F3, chaining |
 | **F5** | 4-slot pattern bank + auto-evolve over N bars | the sequencer becomes a song sketch | 6 h | low | — |
 | **U1** | First sound on open: 12 **synthesised** default lanes (no shipped files) | right now the plugin opens silent with an empty grid | 8-12 h | med — level honesty, installer payload | — |
-| **U2** | Kit workflow: multi-file drop fills lanes (`StepGridComponent.cpp:541` uses `files[0]` and fails silently `:543`), lane menu from `getSampleIds()`, remembered folder, audition on click (B7) | 12 file dialogs → one gesture | 12-20 h | low | U3 |
+| **U2** | Kit workflow: multi-file drop fills lanes (`StepGridComponent.cpp`'s `filesDropped` uses `files[0]` and ignores the rest; its silence was fixed earlier, it raises the same error box the browse path does), lane menu from `getSampleIds()`, remembered folder, audition on click (B7) | 12 file dialogs → one gesture | 12-20 h | low | U3 |
 | **U3** | Live programs/kits (`getNumPrograms()==1`) = a free preset browser in Live's browser | makes the thing shareable and recallable | 16-24 h, partly blocked by path-only refs | med | — |
 | **U4** | Pattern → MIDI clip export by drag (`juce::MidiFile` already linked; `skulpt/Source/SequenceView.cpp:507` is the precedent) | gets your groove into the arranger | 4-8 h | low | — |
 | **U5** | Editor floor fits a 1366×768 laptop (830 px min, `PluginEditor.cpp:9-10`), all-12-strip layout test | `Tests/LayoutTest.cpp:301` checks **one** size and **the first strip only**; the `tight` branch (`ChannelStrip.cpp:197-209`) is never executed | 4-6 h | low | — |
@@ -316,10 +316,12 @@ touches the velocity law. No step here is allowed to be reported as better becau
   so the plugin makes sound the instant it opens (today the constructor loads nothing,
   `PluginProcessor.cpp:47-56`). Keep levels at the current trim so nothing is louder by default. Gate:
   assert a fresh processor produces a non-zero onset per lane with zero file loads. ~8-12 h.
-- **5.2** Kit path: multi-file drop fills consecutive lanes (today `files[0]` only,
-  `StepGridComponent.cpp:541`, and failures are silent at `:543` — the browse path *does* have an error
-  message, `ChannelStrip.cpp:404-411`, so copy that behaviour), remembered last folder, and a lane menu
-  built from `getSampleIds()` so a lane can point at a sample already in the session. ~10-14 h.
+- **5.2** Kit path: multi-file drop fills consecutive lanes (today `filesDropped` in
+  `StepGridComponent.cpp` loads `files[0]` and ignores the rest; the silent-failure half of
+  this item was discharged earlier -- the same path already raises the browse path's error
+  box through `loadSampleIntoChannel`'s `error` out-param), remembered last folder, and a
+  lane menu built from `getSampleIds()` so a lane can point at a sample already in the
+  session. ~10-14 h.
 - **5.3** Audition: wire `previewChannel` behind the audio-thread command queue introduced by 2.3, or delete
   it. Leaving a message-thread `triggerChannel` in the tree is a loaded gun. ~2-4 h.
 - **5.4** Live programs/kits: `getNumPrograms() > 1` with names, i.e. a preset browser in Live's own
@@ -1042,12 +1044,57 @@ left in the manager.
 host actually lists (`Mutate`, `Seed`), and the sweep caught two counts the core commit had
 left at **112** where the code says 114.
 
-**4.2b (new, from the panel work): a probability is invisible outside its own overlay.**
-`StepGridComponent::paint` dims a cell by velocity only, so a step that fires one time in
-four looks exactly like one that fires every time until **Chance** is pressed. The fix is a
-marker, not more dimming — two numbers already say opposite things about one rectangle,
-which is why one bar rises from the bottom and the other hangs from the top — and a corner
-pip on the cells that are mutable is the version that does not touch what the colour means.
+**4.2b — a probability is visible outside its own overlay (done 2026-11-16).**
+`StepGridComponent::paint` dimmed a cell by velocity only, so a step that fires one time in
+four looked exactly like one that fires every time until **Chance** was pressed. The mark is
+the corner of the cell cut off, with the edge of the cut lit: a notch alone would have to be
+dark or light, and the grid's own colour law guarantees the cell is neither at one end of the
+velocity range — a mutable step sits on a pale lane at full level, where a light pip vanishes,
+or at a tenth of it, where a dark one does. Two colours from the mark itself, not from the
+cell, so it reads whatever is underneath, and nothing about what the colour *means* moves.
+
+The rule is one function, `StepGridComponent::isStepMutable`: marked when the cell is lit, the
+overlay is closed, the knob is open and the step's own chance is under certain. Each term is a
+claim about a different thing — an off step is not waiting for the take, it is not in it; with
+the knob shut the grid is law, so the mark would be warning about a thing that cannot happen;
+inside an overlay the bar owns the rectangle and a notch would be eating the number the overlay
+was opened to show. `launch/`-side consequence: moving the knob is a parameter write, which
+does not go through `onStateChanged`, so the grid's 30 ms timer now watches `getMutate()`
+alongside the playhead and the activity lights — at rest, that was the only way the grid could
+find out.
+
+Tested by painting. The mark has no bounds, so every component-inspecting check the suite has
+would be inspecting a rule only `paint()` applies; the layout test renders the grid into an
+image and compares two renders that differ in exactly one cell's chance. **109 layout checks,
+from 101**: the mark appears, it appears only inside that cell, it is a cut *and* a lit edge
+(some pixels down, some up), its centre is in the bottom-right quadrant, and three negative
+controls — knob shut, step off, overlay open — each demand two renders come back identical.
+Five-arm A/B (`out/ab-42b.ps1`, logs `out/layout-42b-*.txt`) kills 4 / 1 / 2 / 2 / 1 checks per
+arm, and two harness faults fell out of it rather than being stated in advance. The arms were
+editing the working copy instead of the snapshot, so after the first deleted the `paint()` call
+the other two reported the first one's answer — three identical BAD blocks that looked decisive
+and measured one mutation; each arm now restores the recorded good file first. And the overlay
+control was built at velocity 1.0, where the bar fills the cell and hides a mark that leaked
+into it, so arm d passed on a build with the overlay term deleted; at velocity 0.1 the bar is
+3 px, the notch is 10, and it bites. Both are in AGENTS.md with the numbers.
+
+One asymmetry worth keeping, because it is the honest shape of the result: the off-cell control
+cannot go red on a predicate that ignores `isStepOn` — `paint()` only draws marks inside the lit
+branch, so the outcome is already correct before the rule is consulted. That term is discharged
+by the rule check instead. Eight new checks, seven of them killable; the eighth is a claim about
+pixels that a different piece of code is holding up.
+
+Docs: the README's **"Where it shows"** paragraph was a present-tense statement of the defect
+this step closes — "only while Chance is open … looks like a certain one until you press the
+button" — and is now the mark's own description, including what takes it away; the feature table
+row gained the cut corner; the layout-test paragraph says the mark is checked by comparing
+renders. `installer/README.txt` gained the same in plain text. Run at the close of 4.2b: **291
+smoke checks / 0 failures**, **109 layout checks / 0 problems**, staleness guard 0 on both
+(guard now scoped per target — see AGENTS.md), `Tests/RtPathGuard.ps1` exit 0, `Groovebox`
+target exit 0. No audio changed.
+
+Still not done here: the mark reports the *possibility*, not its size. Three cells at 10 %,
+50 % and 90 % carry the same corner, and deepening that is what the overlay is for.
 
 Run at the close of 4.2, panel included: **291 smoke checks / 0 failures**, **101 layout
 checks / 0 problems**, staleness guard 0 on both, `Tests/RtPathGuard.ps1` exit 0

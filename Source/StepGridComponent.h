@@ -88,6 +88,22 @@ public:
     */
     juce::Rectangle<int> getCellBounds (int channel, int step) const;
 
+    /**
+        Whether the take can drop this step, which is what the corner mark reports.
+
+        Public because the mark is a claim about two numbers and a knob, and a pixel
+        check can only prove that *something* was drawn. This is the half that says it
+        was drawn for the right reason: a step that fires every time is not mutable, a
+        step that is switched off cannot drop, and with the variation shut the grid is
+        law, so nothing on it is mutable either — marking a step the machine is not
+        allowed to touch would be a warning about a thing that cannot happen.
+
+        Only while no overlay is open, because that is the case the mark exists for.
+        With a value bar on the grid the number is already the cell's whole subject,
+        and a notch cut into the corner would be eating the bar it shares the cell with.
+    */
+    bool isStepMutable (int channel, int step) const;
+
 private:
     /** A cell address; a channel of -1 means "no cell" (e.g. in the label column). */
     struct Cell
@@ -185,6 +201,7 @@ private:
     // Change detection for the refresh timer
     //==========================================================================
     int lastStep = -1;
+    float lastMutate = -1.0f;
     std::array<bool, (size_t) Layout::numChannels> lastSounding {};
 
     static constexpr int cellGap = 3;
