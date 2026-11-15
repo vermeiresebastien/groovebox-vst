@@ -73,12 +73,15 @@ run: 123 smoke checks, 63 layout checks, 0 problems.
   `GrooveboxProcessor::writeParameter` ([Source/PluginProcessor.cpp:133](Source/PluginProcessor.cpp)).
   88 parameters (4 global + 12 x 7); the pattern is deliberately not one.
 
-## Installer conventions (house template, Inno Setup 6)
+## Installer conventions (Inno Setup 6 -- house template, with two deliberate divergences)
 
-- Payload is read straight out of `launch/` ([installer/Groovebox.iss:31](installer/Groovebox.iss)),
+The siblings still install per-user and still let Setup close your DAW. This one does not,
+on purpose: see the two bolded rules below.
+
+- Payload is read straight out of `launch/` ([installer/Groovebox.iss:34](installer/Groovebox.iss)),
   so a setup can never carry binaries older than the last build; the only exception is
   `README.txt`, a tracked source in `installer/`.
-- **`CloseApplications=no`** ([installer/Groovebox.iss:75](installer/Groovebox.iss)).
+- **`CloseApplications=no`** ([installer/Groovebox.iss:79](installer/Groovebox.iss)).
   With `yes` -- and the house default filter `*.exe,*.vst3` -- a silent install that
   finds the bundle locked force-quits the host holding it, which on this machine means
   Ableton Live with an unsaved set. Failing to write a locked file, with the README
@@ -91,24 +94,77 @@ run: 123 smoke checks, 63 layout checks, 0 problems.
 - Run ISCC and any setup exe **from PowerShell, not Git Bash**: MSYS rewrites `/Qs`,
   `/DIR=...` and friends into paths, and ISCC answers "You may not specify more than one
   script filename".
-- **The installer cannot be exercised end-to-end from the agent shell.** The shell is
-  sandboxed to this workspace, so Setup clears compilation, command-line parsing and its
-  own temp extraction, then Windows denies it the first directory outside the project:
-  `Error 5: Access is denied`, exit code 4 after a rollback, no install and no damage.
+- **The install itself is run through a UAC prompt the agent shell cannot answer.** A plain
+  elevated-free attempt from here dies the way sandboxed Setup always does -- compilation,
+  command-line parsing and its own temp extraction all clear, then Windows denies the first
+  directory outside the project: `Error 5: Access is denied`, exit code 4 after a rollback,
+  no install and no damage.
   `%TEMP%` itself is refused even earlier because `GetTempPath` hands back the 8.3 form
-  `C:\Users\SEBAST~1\...`; setting `TEMP` to a path inside the repo gets past that. With
-  everything retargeted inside the repo the process then hangs before writing any log,
-  and registry writes come back `Error 32: Sharing violation` -- the full observation log
-  is `out\test\NOTE.txt`. A real install/uninstall has to be run by a person, from
-  Explorer or a normal terminal. Do not report an installer as tested on the strength of
-  it compiling.
-- Host folders, measured from Live 12.3.5's own scan set
-  (`%APPDATA%\Ableton\Live 12 Suite\Preferences\PluginManager\PluginScanDb.ldb`): global
-  `C:\Program Files\Common Files\VST3`, custom VST3
-  `%LOCALAPPDATA%\Programs\Common\VST3` -- which is exactly where the per-user install
-  writes -- and custom VST2 `C:\Program Files\Steinberg\Vstplugins`. `Documents\VST3` is
-  **not** scanned. Groovebox has never been scanned on this machine; the only "Earworm"
-  entry in that database is VRAC+.
+  `C:\Users\Sebastien\AppData\Local\Temp` as `C:\Users\SEBAST~1\...`; setting `TEMP` to a
+  path inside the repo gets past that. With everything retargeted inside the repo the
+  process hangs before writing any log and registry writes come back `Error 32: Sharing
+  violation` -- the full observation log is `out\test\NOTE.txt`.
+  What does work, and is how the 2026-11-15 install/uninstall/reinstall was verified: hand
+  the elevation to Windows and to the user, from PowerShell rather than Setup directly --
+  `Start-Process -Verb RunAs -Wait -PassThru` with `/VERYSILENT /NORESTART
+  /SUPPRESSMSGBOXES /LOG=<path in the repo>`. Setup then installs machine-wide for real
+  (`Administrative install mode: Yes`, `Install mode root key: HKEY_LOCAL_MACHINE` in its
+  own log) and exits 0, with the user clicking the prompt. Two traps: do **not** wrap that
+  call in `timeout N` -- it kills PowerShell mid-UAC-wait, and the script deletes its log
+  first, so the reinstall fails silently with no evidence. And pass `-ArgumentList` as one
+  quoted string, not an array. Still: do not report an installer as tested on the strength
+  of it compiling.
+- **One VST3 destination, unconditionally: `C:\Program Files\Common Files\VST3`.** No
+  per-user copy, no DAW-folder copy, no task, no `Check:`, no `IsAdminInstallMode` branch.
+  A second copy is not convenience -- it is a duplicate browser entry plus two bundles that
+  drift apart on the first rebuild, and it happened here: an orphan in `Documents\VST3` was
+  found a whole build behind `launch/` (module `7483d04a` vs installed `b4e09344`), and has
+  since been relocated -- see Housekeeping. So:
+  * exactly **one** `[Files]` line for the bundle, `DestDir: {commonpf64}\Common Files\VST3\`,
+    with **neither** `Check=` **nor** `Tasks=` -- a condition on that line is how a second
+    destination comes back;
+  * `PrivilegesRequired=admin`, and **no** `PrivilegesRequiredOverridesAllowed` line. The
+    rule outranks installing without a UAC prompt, and an override is precisely what let the
+    copy downgrade to a per-user folder;
+  * a DAW-folder `[Tasks]` entry gets **deleted**, not left unchecked -- an option that
+    exists gets ticked, and its description becomes documentation for a second copy;
+  * retired destinations are **not** listed in `[UninstallDelete]`, even though the obvious
+    instinct is to clean up after the old scheme. An elevated uninstaller resolves
+    `{localappdata}` and `{userdocs}` to whoever is clicking, not to the account that owns
+    them, and Inno says so: it warns "PrivilegesRequired is set to admin but per-user areas
+    (localappdata,userdocs) are used". Keeping the lines and silencing the warning with
+    `UsedUserAreasWarning=no` is the wrong trade -- reaching into those areas at all is the
+    defect. Each old version's own uninstaller removes the copies it made, and a hand-placed
+    stray gets deleted by hand after a hash compare. (`[InstallDelete]` would be worse still:
+    it runs during an install too, before the new files land.)
+  * and because the process is elevated it must not touch per-user areas -- registry hints go
+    to `HKLM`, and there is no `{localappdata}` or `{userdocs}` token anywhere in the script.
+    Fix the causes; never set `UsedUserAreasWarning=no`.
+- **Grep smell for any `.iss` in this family** -- a hit means re-audit the destinations:
+  `grep -n 'userdocs\|localappdata\|PrivilegesRequired\|IsAdminInstallMode\|Tasks:' installer/*.iss`.
+  More than one `[Files]` line naming `Vst3Bundle` is the defect, whatever the conditions say.
+  Siblings still have it: [skulpt/installer/SKULPT.iss](../skulpt/installer/SKULPT.iss) and
+  [pulsekit/installer/PulseKit.iss](../pulsekit/installer/PulseKit.iss) both ship the
+  `lowest` + per-user pattern.
+- Groovebox has **no runtime asset search path at all** -- `getSpecialFolder`,
+  `FileSearchPath`, `getAppDataDirectory` and `ProgramData` return zero hits in `Source/`.
+  The installer writes no data asset (payload is the exe, the bundle and `README.txt`), and
+  samples reach the plugin as absolute paths the user dragged in, stored in the set file. So
+  moving the install folder cannot strand a side-by-side lookup, and nothing here needs a
+  discovery order. If a bundled library is ever added, that path must include
+  `C:\ProgramData\Skeer Audio\...` -- the payload can no longer live beside a per-user
+  install -- and the ordered list must be one testable function with a check asserting the
+  machine folder is in it.
+- Host folders, **measured** 2026-11-15 from the scan set Live 12.3.5 actually keeps at
+  `%APPDATA%\Ableton\Live 12.3.5\Preferences\PluginScanDb.txt`. It is grep-readable, but
+  only with `grep -F`: paths are quoted with single backslashes, so a shell regex with
+  `\\\\` matches nothing and reads as "no entries". Counts of distinct bundle paths:
+  `C:\Program Files\Common Files\VST3` **742**, `%LOCALAPPDATA%\Programs\Common\VST3` **4**,
+  `Documents` **0**, `Groovebox` **0** (never scanned here). So the machine folder Live
+  scans for sure is `C:\Program Files\Common Files\VST3` -- the one destination is measured,
+  not assumed -- and `Documents\VST3` is genuinely not scanned, which is what makes an
+  orphan there harmless to a Live rescan. Do not cite a `Live 12 Suite\...\PluginManager\
+  PluginScanDb.ldb` path; that file does not exist.
 
 ## Housekeeping
 
@@ -117,9 +173,17 @@ run: 123 smoke checks, 63 layout checks, 0 problems.
   at `D:\Projects\tools\groovebox-dist-2026-10-11` with a `FROM.txt`, three files
   SHA-256-checked before `dist\` was removed. A second deliverable folder is how the
   wrong build gets judged -- `launch/` is the only one.
+  Same rule caught the case where the instinct is wrong: a stray `Documents\VST3\Groovebox.vst3`
+  is not automatically a duplicate, and duplicates are the only orphans you may delete. When
+  its module hash does not equal the installed one it is an older build, and the only copy of
+  it -- deleting "cleans up" nothing and destroys something. Done 2026-11-15: archived at
+  `D:\Projects\tools\groovebox-documents-vst3-2026-11-14` with a `FROM.txt`, both files
+  SHA-256-matched and `cmp -s` exit 0 before the original was removed. Check what else shares
+  the folder first -- `SKULPT.vst3` lives in `Documents\VST3` too, and is not ours to touch.
 - Scratch that must not be tracked goes in `out/` (gitignored). `out\test\` holds the
   staged installer experiment -- `Groovebox-test.iss` retargets every `DestDir` under
   `out\test\stage\` so the payload could be proven without touching the system -- and
   `out\test\NOTE.txt` records exactly how far it got and where the shell refused it. Read
-  that note before trying to run a setup exe from here again; it will not work.
+  that note before trying the retarget-inside-the-repo approach again; it does not work. The
+  real install does, through `Start-Process -Verb RunAs` -- see the installer bullet above.
 - Per-repo conventions live in this file, not in anyone's memory.
