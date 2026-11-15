@@ -64,7 +64,17 @@ public:
         dragging down to nothing never switches the step off.
     */
     void setVelocityMode (bool shouldEditVelocity);
-    bool isVelocityMode() const noexcept { return velocityMode; }
+    bool isVelocityMode() const noexcept { return overlay == Overlay::velocity; }
+
+    /**
+        The same gesture on the other per-step number: how often the step fires.
+
+        One drag machinery, two fields, because the two are the same interaction on
+        the same cell — and because a third set of hover and drag state is how a grid
+        ends up with a bar that can be dragging two values at once.
+    */
+    void setChanceMode (bool shouldEditChance);
+    bool isChanceMode() const noexcept { return overlay == Overlay::chance; }
 
     /** Channel whose row contains `y`, or -1 when y is outside every row. */
     int channelAtY (int y) const;
@@ -108,26 +118,42 @@ private:
     void setDragHoverChannel (int channel);
 
     //==========================================================================
-    // Velocity editing
+    // Per-step value editing
+    //
+    // One overlay, two fields. Which one is being edited is the only difference, so
+    // the drag state, the hover readout and the painting are shared.
     //==========================================================================
+    enum class Overlay
+    {
+        none,
+        velocity,   // how hard the step hits, drawn rising from the bottom
+        chance,     // how often it fires, drawn falling from the top
+    };
 
-    /** Draws the velocity bars and the value under the pointer. */
-    void paintVelocityOverlay (juce::Graphics& g);
+    /** Draws the value bars and the number under the pointer, for the active field. */
+    void paintValueOverlay (juce::Graphics& g);
 
-    /** Sets one cell's velocity from where the pointer is inside that cell. */
-    void setVelocityFromPointer (int channel, int step, juce::Point<int> position);
+    /** Opens one overlay and closes whichever other one was open. */
+    void openOverlay (Overlay wanted);
 
-    bool velocityMode = false;
+    /** Reads the active field of one cell. */
+    float valueOf (int channel, int step) const;
 
-    /** Cell the pointer is over in velocity mode, or {-1, -1}. */
-    Cell velocityHover;
+    /** Writes the active field of one cell. */
+    void setValue (int channel, int step, float value);
 
-    /** Cell the velocity drag started in, so the drag stays on one step. */
-    Cell velocityDragCell;
+    /** Sets the active field from where the pointer is inside the row. */
+    void setValueFromPointer (int channel, int step, juce::Point<int> position);
 
-    int velocityDragStartY = 0;
-    float velocityDragStartValue = 1.0f;
-    bool isDraggingVelocity = false;
+    Overlay overlay = Overlay::none;
+
+    /** Cell the pointer is over while an overlay is open, or {-1, -1}. */
+    Cell valueHover;
+
+    /** Cell the drag started in, so the drag stays on one step. */
+    Cell valueDragCell;
+
+    bool isDraggingValue = false;
 
     GrooveboxProcessor& processor;
 

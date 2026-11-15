@@ -287,50 +287,87 @@ void StepGridComponent::paint (juce::Graphics& g)
         }
     }
 
-    // Velocity editing replaces the plain on/off cells with a bar per step.
-    if (velocityMode)
-        paintVelocityOverlay (g);
+    // Editing a per-step number replaces the plain on/off cells with a bar per step.
+    if (overlay != Overlay::none)
+        paintValueOverlay (g);
 }
 
 void StepGridComponent::setVelocityMode (bool shouldEditVelocity)
 {
-    if (velocityMode == shouldEditVelocity)
+    openOverlay (shouldEditVelocity ? Overlay::velocity : Overlay::none);
+}
+
+void StepGridComponent::setChanceMode (bool shouldEditChance)
+{
+    openOverlay (shouldEditChance ? Overlay::chance : Overlay::none);
+}
+
+void StepGridComponent::openOverlay (Overlay wanted)
+{
+    if (overlay == wanted)
         return;
 
-    velocityMode = shouldEditVelocity;
+    // One overlay at a time, and closing means closing whichever was open: the two
+    // toggles that ask for one can disagree about it, and a grid that is editing two
+    // numbers at once is a grid that writes a cell nobody meant to write.
+    overlay = wanted;
 
-    if (! velocityMode)
+    if (overlay == Overlay::none)
     {
-        velocityHover = {};
-        isDraggingVelocity = false;
+        valueHover = {};
+        isDraggingValue = false;
     }
 
     repaint();
 }
 
-void StepGridComponent::setVelocityFromPointer (int channel, int step, juce::Point<int> position)
+float StepGridComponent::valueOf (int channel, int step) const
+{
+    return overlay == Overlay::chance ? processor.getStepChance (channel, step)
+                                      : processor.getStepVelocity (channel, step);
+}
+
+void StepGridComponent::setValue (int channel, int step, float value)
+{
+    if (overlay == Overlay::chance)
+        processor.setStepChance (channel, step, value);
+    else
+        processor.setStepVelocity (channel, step, value);
+}
+
+void StepGridComponent::setValueFromPointer (int channel, int step, juce::Point<int> position)
 {
     const auto row = getRowBounds (channel);
 
     if (row.isEmpty())
         return;
 
-    // The value comes from how high the pointer sits in the row, so the bar
-    // follows the pointer. Rounded to twentieths so it is easy to land on a value
-    // and reads as a tidy number.
+    // The value comes from how high the pointer sits in the row, so the bar follows
+    // the pointer. Rounded to twentieths so it is easy to land on a value and reads
+    // as a tidy number.
     const auto fromBottom = (float) (row.getBottom() - position.y) / (float) juce::jmax (1, row.getHeight());
     const auto rounded = juce::jlimit (0.0f, 1.0f, std::round (fromBottom * 20.0f) / 20.0f);
 
-    if (std::abs (rounded - processor.getStepVelocity (channel, step)) < 0.001f)
+    /**
+        Half a drag step, and not a hair.
+
+        The number that gets stored is the one the processor keeps: a probability is
+        snapped again, harder, onto the rungs the saved record can carry, so what comes
+        back out of `valueOf` is not the twentieth the pointer is on. A guard tighter
+        than that snap would re-push the whole grid on every pixel of a drag that had
+        not moved at all — and each of those pushes is a change the undo manager sees.
+    */
+    if (std::abs (rounded - valueOf (channel, step)) < 0.025f)
         return;
 
-    processor.setStepVelocity (channel, step, rounded);
+    setValue (channel, step, rounded);
     repaint();
 }
 
-void StepGridComponent::paintVelocityOverlay (juce::Graphics& g)
+void StepGridComponent::paintValueOverlay (juce::Graphics& g)
 {
     const auto valueFont = juce::Font (juce::FontOptions (9.0f));
+    const auto editingChance = overlay == Overlay::chance;
 
     for (int channel = 0; channel < Layout::numChannels; ++channel)
     {
@@ -341,15 +378,25 @@ void StepGridComponent::paintVelocityOverlay (juce::Graphics& g)
             if (cell.isEmpty())
                 continue;
 
-            const auto velocity = juce::jlimit (0.0f, 1.0f, processor.getStepVelocity (channel, step));
+            const auto value = juce::jlimit (0.0f, 1.0f, valueOf (channel, step));
             const auto on = processor.isStepOn (channel, step);
             const auto colour = processor.getChannelColour (channel);
 
-            // A bar rising from the bottom of the cell: its height is the velocity,
-            // and it is dimmed while the step is off so an on step still stands out.
             const auto body = cell.toFloat().reduced (1.0f);
-            const auto barHeight = juce::jmax (2.0f, body.getHeight() * velocity);
-            const auto bar = body.withTop (body.getBottom() - barHeight);
+            const auto barHeight = juce::jmax (2.0f, body.getHeight() * value);
+
+            /**
+                Two directions, because the two numbers say opposite things about the
+                same rectangle.
+
+                A velocity is how much of the hit is there, so its bar grows up from
+                nothing. A probability is how much of the time the step is left in, so
+                its bar hangs from the top and the gap under it is the part that gets
+                dropped — which is the one reading that survives looking away from the
+                buttons and back.
+            */
+            const auto bar = editingChance ? body.withBottom (body.getY() + barHeight)
+                                           : body.withTop (body.getBottom() - barHeight);
 
             g.setColour (on ? colour : colour.withAlpha (0.35f));
             g.fillRoundedRectangle (bar, 2.0f);
@@ -360,10 +407,10 @@ void StepGridComponent::paintVelocityOverlay (juce::Graphics& g)
     }
 
     // The value under the pointer, so a drag is precise rather than guesswork.
-    if (juce::isPositiveAndBelow (velocityHover.channel, Layout::numChannels)
-        && juce::isPositiveAndBelow (velocityHover.step, Layout::numSteps))
+    if (juce::isPositiveAndBelow (valueHover.channel, Layout::numChannels)
+        && juce::isPositiveAndBelow (valueHover.step, Layout::numSteps))
     {
-        const auto cell = getCellBounds (velocityHover.channel, velocityHover.step);
+        const auto cell = getCellBounds (valueHover.channel, valueHover.step);
 
         if (! cell.isEmpty())
         {
@@ -371,7 +418,7 @@ void StepGridComponent::paintVelocityOverlay (juce::Graphics& g)
             g.drawRoundedRectangle (cell.toFloat().reduced (0.5f), (float) cornerRadius * 0.5f, 2.0f);
 
             const auto value = juce::roundToInt (juce::jlimit (0.0f, 1.0f,
-                                 processor.getStepVelocity (velocityHover.channel, velocityHover.step)) * 100.0f);
+                                 valueOf (valueHover.channel, valueHover.step)) * 100.0f);
 
             const auto label = juce::Rectangle<int> (cell.getX() - 4, cell.getY() - 12,
                                                      juce::jmax (cell.getWidth(), 22), 11);
@@ -395,16 +442,17 @@ void StepGridComponent::mouseDown (const juce::MouseEvent& e)
     if (cell.channel < 0)               // label column or outside the grid
         return;
 
-    if (velocityMode)
+    if (overlay != Overlay::none)
     {
         // A drag edits the one step it started on, so it stays put even if the
         // pointer wanders into a neighbouring cell part way through.
-        velocityDragCell = cell;
-        isDraggingVelocity = true;
-        velocityHover = cell;
+        valueDragCell = cell;
+        isDraggingValue = true;
+        valueHover = cell;
 
-        processor.beginTransaction ("Edit step velocity");
-        setVelocityFromPointer (cell.channel, cell.step, e.getPosition());
+        processor.beginTransaction (overlay == Overlay::chance ? "Edit step probability"
+                                                               : "Edit step velocity");
+        setValueFromPointer (cell.channel, cell.step, e.getPosition());
         return;
     }
 
@@ -428,20 +476,20 @@ void StepGridComponent::mouseDown (const juce::MouseEvent& e)
 
 void StepGridComponent::mouseDrag (const juce::MouseEvent& e)
 {
-    if (velocityMode)
+    if (overlay != Overlay::none)
     {
-        if (isDraggingVelocity)
+        if (isDraggingValue)
         {
-            setVelocityFromPointer (velocityDragCell.channel, velocityDragCell.step, e.getPosition());
+            setValueFromPointer (valueDragCell.channel, valueDragCell.step, e.getPosition());
             return;
         }
 
         // Not dragging: just keep the readout under the pointer.
         const auto cell = cellAt (e.getPosition());
 
-        if (cell.channel != velocityHover.channel || cell.step != velocityHover.step)
+        if (cell.channel != valueHover.channel || cell.step != valueHover.step)
         {
-            velocityHover = cell;
+            valueHover = cell;
             repaint();
         }
 
@@ -468,31 +516,31 @@ void StepGridComponent::mouseDrag (const juce::MouseEvent& e)
 void StepGridComponent::mouseUp (const juce::MouseEvent&)
 {
     isDragPainting = false;
-    isDraggingVelocity = false;
+    isDraggingValue = false;
 }
 
 void StepGridComponent::mouseMove (const juce::MouseEvent& e)
 {
-    if (! velocityMode)
+    if (overlay == Overlay::none)
         return;
 
     const auto cell = cellAt (e.getPosition());
 
-    if (cell.channel == velocityHover.channel && cell.step == velocityHover.step)
+    if (cell.channel == valueHover.channel && cell.step == valueHover.step)
         return;
 
-    velocityHover = cell;
+    valueHover = cell;
     repaint();
 }
 
 void StepGridComponent::mouseExit (const juce::MouseEvent&)
 {
-    if (! velocityMode)
+    if (overlay == Overlay::none)
         return;
 
-    if (velocityHover.channel >= 0)
+    if (valueHover.channel >= 0)
     {
-        velocityHover = {};
+        valueHover = {};
         repaint();
     }
 }

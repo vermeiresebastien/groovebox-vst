@@ -9,16 +9,24 @@ namespace
     /**
         Every parameter id, so listeners can be registered and removed in one pass.
 
-        The lane half comes out of `Params::laneTargets()` rather than being written
-        out again here. A hand-list of lane ids is how the choke parameter came to be
-        built, offered to the host and read by the engine without anything ever
-        listening for it: the value moved, the atomics never did, and nothing except
-        a test that writes every id could see the difference.
+        Both halves come out of `Params` rather than being written out again here. A
+        hand-list of lane ids is how the choke parameter came to be built, offered to
+        the host and read by the engine without anything ever listening for it: the
+        value moved, the atomics never did, and nothing except a test that writes every
+        id could see the difference.
+
+        The same trap has a global shape, and Mutate walked straight into it: a fourth
+        hand-written list of the machine-wide ids meant that adding a control to
+        `createLayout` gave it a parameter, a host entry and a restore path while
+        leaving it deaf to every write. `Params::globalIds()` is the one list, and this
+        is the only thing that says what the set is.
     */
     juce::StringArray allParameterIds()
     {
-        juce::StringArray ids { Params::masterGainId, Params::swingId,
-                                Params::swingGridId, Params::tempoId };
+        juce::StringArray ids;
+
+        for (const auto* id : Params::globalIds())
+            ids.add (id);
 
         for (const auto& target : Params::laneTargets())
             ids.add (target.id);
@@ -37,12 +45,12 @@ GrooveboxProcessor::GrooveboxProcessor()
     for (const auto& id : allParameterIds())
         apvts.addParameterListener (id, this);
 
-    // Resolve the id table here, on the message thread, rather than letting the
-    // first parameter change do it: its static storage is built on whichever call
+    // Resolve the id tables here, on the message thread, rather than letting the
+    // first parameter change do it: their static storage is built on whichever call
     // reaches it first, and this is the only thread that is guaranteed not to be
     // rendering. While we are here, check the two halves of the arrangement still
     // agree — every row names a parameter that exists, and the parameter list has
-    // no lane control the table does not know about.
+    // nothing the tables do not know about.
     const auto& targets = Params::laneTargets();
 
     for (const auto& target : targets)
@@ -51,7 +59,14 @@ GrooveboxProcessor::GrooveboxProcessor()
         juce::ignoreUnused (target); // the loop is a jassert, so in a release build it reads nothing
     }
 
-    jassert (apvts.parameters.size() == 4 + Params::numLaneTargets);
+    for (const auto* id : Params::globalIds())
+    {
+        jassert (apvts.getParameter (id) != nullptr);
+        juce::ignoreUnused (id);
+    }
+
+    jassert (apvts.parameters.size()
+             == (int) Params::globalIds().size() + Params::numLaneTargets);
 
     // The parameters were built before anything was listening, so the atomics the
     // audio thread reads still hold their own defaults rather than the parameters'.
@@ -101,6 +116,17 @@ void GrooveboxProcessor::parameterChanged (const juce::String& id, float value)
     if (id == Params::swingId)      { sequencerState.swing.store (value); return; }
     if (id == Params::swingGridId)  { sequencerState.swingGrid.store (juce::roundToInt (value)); return; }
     if (id == Params::tempoId)      { sequencerState.manualTempo.store (value); return; }
+    if (id == Params::mutateId)     { sequencerState.mutate.store (juce::jlimit (Params::mutateMin, Params::mutateMax, value)); return; }
+
+    // The seed reaches the engine as the integer it is, because the key of a roll is
+    // the number the user wrote down: letting it arrive as a fraction of a million
+    // and rounding at the other end would make 1 and 2 the same take.
+    if (id == Params::seedId)
+    {
+        sequencerState.seed.store (juce::jlimit (Params::seedMin, Params::seedMax,
+                                                 juce::roundToInt (value)));
+        return;
+    }
 
     // A lane id is "ch" then digits then the control name, so the digits say which
     // lane moved and the rest says what moved on it — but neither half means
@@ -181,6 +207,9 @@ void GrooveboxProcessor::syncStateFromParameters()
     sequencerState.swing.store (valueOf (Params::swingId));
     sequencerState.swingGrid.store (juce::roundToInt (valueOf (Params::swingGridId)));
     sequencerState.manualTempo.store (valueOf (Params::tempoId));
+    sequencerState.mutate.store (valueOf (Params::mutateId));
+    sequencerState.seed.store (juce::jlimit (Params::seedMin, Params::seedMax,
+                                             juce::roundToInt (valueOf (Params::seedId))));
 
     for (int channel = 0; channel < Layout::numChannels; ++channel)
     {
@@ -402,6 +431,51 @@ void GrooveboxProcessor::resetVelocities()
 }
 
 //==============================================================================
+// Probability
+
+float GrooveboxProcessor::getStepChance (int channel, int step) const
+{
+    if (! juce::isPositiveAndBelow (channel, Layout::numChannels)
+        || ! juce::isPositiveAndBelow (step, Layout::numSteps))
+        return 1.0f;
+
+    return sequencerState.chance[(size_t) channel][(size_t) step].load();
+}
+
+void GrooveboxProcessor::setStepChance (int channel, int step, float chance)
+{
+    if (! juce::isPositiveAndBelow (channel, Layout::numChannels)
+        || ! juce::isPositiveAndBelow (step, Layout::numSteps))
+        return;
+
+    /**
+        Snapped to the rungs the record can hold, before it reaches the engine.
+
+        A step is saved as one byte of 255, so a probability that is not a whole number
+        of those comes back rounded — and unlike velocity, which the panel draws as a
+        bar nobody reads a number off, the probability is displayed as a percentage.
+        Snapping here is what makes the number on screen the number in the file, rather
+        than the nearest thing to it that survives a save.
+    */
+    const auto rung = (float) juce::jlimit (0, Layout::chanceLevels,
+                                            juce::roundToInt (juce::jlimit (0.0f, 1.0f, chance)
+                                                              * (float) Layout::chanceLevels))
+                      / (float) Layout::chanceLevels;
+
+    sequencerState.chance[(size_t) channel][(size_t) step].store (rung);
+    pushPatternToState();
+}
+
+void GrooveboxProcessor::resetChances()
+{
+    for (int channel = 0; channel < Layout::numChannels; ++channel)
+        for (int step = 0; step < Layout::numSteps; ++step)
+            sequencerState.chance[(size_t) channel][(size_t) step].store (1.0f);
+
+    pushPatternToState();
+}
+
+//==============================================================================
 // Row shifting
 
 void GrooveboxProcessor::shiftChannelRow (int channel, int steps)
@@ -411,11 +485,13 @@ void GrooveboxProcessor::shiftChannelRow (int channel, int steps)
 
     std::array<bool, (size_t) Layout::numSteps> on {};
     std::array<float, (size_t) Layout::numSteps> velocity {};
+    std::array<float, (size_t) Layout::numSteps> chance {};
 
     for (int step = 0; step < Layout::numSteps; ++step)
     {
         on[(size_t) step] = sequencerState.pattern[(size_t) channel][(size_t) step].load();
         velocity[(size_t) step] = sequencerState.velocity[(size_t) channel][(size_t) step].load();
+        chance[(size_t) step] = sequencerState.chance[(size_t) channel][(size_t) step].load();
     }
 
     // Positive shifts move later; the modulo keeps it inside the bar both ways.
@@ -423,8 +499,12 @@ void GrooveboxProcessor::shiftChannelRow (int channel, int steps)
     {
         const auto from = ((step - steps) % Layout::numSteps + Layout::numSteps) % Layout::numSteps;
 
+        // Every field the cell has, not the two this function knew about when the
+        // grid had two. A step that moves to a new place and loses its probability
+        // arrives somewhere else than where it was written.
         sequencerState.pattern[(size_t) channel][(size_t) step].store (on[(size_t) from]);
         sequencerState.velocity[(size_t) channel][(size_t) step].store (velocity[(size_t) from]);
+        sequencerState.chance[(size_t) channel][(size_t) step].store (chance[(size_t) from]);
     }
 
     pushPatternToState();
@@ -720,6 +800,37 @@ void GrooveboxProcessor::setManualTempo (double bpm)
                                      (float) juce::jlimit ((double) Params::tempoMin, (double) Params::tempoMax, bpm));
 }
 
+float GrooveboxProcessor::getMutate() const noexcept
+{
+    return sequencerState.mutate.load();
+}
+
+void GrooveboxProcessor::setMutate (float amount)
+{
+    writeParameter (Params::mutateId,
+                                     juce::jlimit (Params::mutateMin, Params::mutateMax, amount));
+}
+
+int GrooveboxProcessor::getSeed() const noexcept
+{
+    return sequencerState.seed.load();
+}
+
+void GrooveboxProcessor::setSeed (int seed)
+{
+    writeParameter (Params::seedId,
+                                     (float) juce::jlimit (Params::seedMin, Params::seedMax, seed));
+}
+
+int GrooveboxProcessor::rerollSeed()
+{
+    // A new number rather than a new pattern: what changes is which hits the machine
+    // is allowed to drop, and the grid the user painted is exactly where it was.
+    setSeed (juce::Random::getSystemRandom().nextInt (Params::seedMax + 1));
+
+    return getSeed();
+}
+
 //==============================================================================
 // Master
 
@@ -769,60 +880,201 @@ void GrooveboxProcessor::pushLaneToState (int channel)
     child.setProperty ("colour", samples.getChannelColour (channel).toString(), &undoManager);
 }
 
+namespace
+{
+    /**
+        How wide a step is in each generation of the record, and the tag that says so.
+
+        `v<n>:` is the same number as `Layout::stateVersion`, built from it rather than
+        written next to it, because the two disagreeing is the one bug in this design
+        that no test of the payload itself would catch.
+
+        The width is a function of the codec rather than a constant, because the
+        question a reader has to answer is "how many bytes is a step in *this* record",
+        and the answer differs between the generations it can read: v2 has no
+        probability to carry. Writing the current width everywhere instead would mean a
+        v2 session is read with the wrong stride, which is not a silent truncation but
+        a grid of nonsense — the worst kind of mistake a codec can make.
+    */
+    constexpr int strideForCodec (int codec) noexcept
+    {
+        switch (codec)
+        {
+            case 3:  return 3;   // flag, level, probability
+            case 2:  return 2;   // flag, level
+            default: return 0;   // untagged rows, or a generation this build cannot name
+        }
+    }
+
+    juce::String stepPayloadTag()
+    {
+        return "v" + juce::String (Layout::stateVersion) + ":";
+    }
+
+    /**
+        The codec a payload names for itself, or 0 when it names none.
+
+        Only a `v<digits>:` at the very front counts. Sessions from before there was a
+        tag are rows of digits and commas, so they answer 0 here and are read by their
+        shape the way they always were — which is exactly the guessing the tag exists
+        to end for anything written from now on.
+    */
+    int stepPayloadCodecOf (const juce::String& encoded)
+    {
+        if (encoded.isEmpty() || encoded[0] != 'v')
+            return 0;
+
+        auto at = 1;
+
+        while (at < encoded.length() && encoded[at] >= '0' && encoded[at] <= '9')
+            ++at;
+
+        if (at == 1 || at >= encoded.length() || encoded[at] != ':')
+            return 0;
+
+        return encoded.substring (1, at).getIntValue();
+    }
+}
+
 void GrooveboxProcessor::pushPatternToState()
 {
-    // Two characters per step: 00 for an off step, 01..99 for a step that fires,
-    // carrying its velocity. Fixed width, so a row is always 32 characters and the
-    // decoder never has to guess where it is.
-    //
-    // An on step never stores 00, so that value keeps meaning "off" and a step can
-    // never be silently switched off by dragging its velocity to the bottom.
-    //
-    // The pattern is a property rather than 192 parameters: a host's automation
-    // list would be buried by it, and nobody draws a grid cell as a lane.
-    juce::String encoded;
+    // A write is this build taking responsibility for the grid, so a payload it could
+    // not read stops being kept here. This is the only place that decides, and
+    // `getStateInformation` does not come through while holding one — which is what
+    // makes it an edit, and not a save, that takes a session over.
+    holdingUnreadablePattern = false;
+
+    /**
+        Three bytes a step, base64'd behind the codec's own name.
+
+        The v1 rows this replaced spent two characters on a hundredth of a step, gave
+        an off step no level at all, and left the format to be guessed from how long a
+        row happened to be. v2 put the flag and the level in separate bytes, so a step
+        that is switched off keeps the level it will come back at and a level is a MIDI
+        number. v3 adds the probability, as a number of 255ths so that the byte fills
+        the field: 255 is a step that fires every time, which is also what a step from
+        a v2 record means and what every cell of a new session starts as.
+
+        Base64 rather than digits or hex: 576 bytes is 768 characters against v1's 395,
+        which is the price of the two extra fields, and every one of those characters is
+        safe inside an XML attribute.
+    */
+    constexpr auto stride = strideForCodec (Layout::stateVersion);
+
+    std::array<juce::uint8, (size_t) Layout::numChannels * Layout::numSteps * stride> bytes {};
 
     for (int channel = 0; channel < Layout::numChannels; ++channel)
     {
         for (int step = 0; step < Layout::numSteps; ++step)
         {
-            const auto on = sequencerState.pattern[(size_t) channel][(size_t) step].load();
-            const auto velocity = sequencerState.velocity[(size_t) channel][(size_t) step].load();
+            const auto at = (size_t) ((channel * Layout::numSteps) + step) * stride;
 
-            const auto level = on
-                                 ? juce::jlimit (1, 99, juce::roundToInt (velocity * 100.0f))
-                                 : 0;
+            bytes[at] = (juce::uint8) (sequencerState.pattern[(size_t) channel][(size_t) step].load() ? 1 : 0);
 
-            encoded += juce::String (level).paddedLeft ('0', 2);
+            bytes[at + 1] = (juce::uint8) juce::jlimit (0, 127,
+                juce::roundToInt (sequencerState.velocity[(size_t) channel][(size_t) step].load() * 127.0f));
+
+            bytes[at + 2] = (juce::uint8) juce::jlimit (0, Layout::chanceLevels,
+                juce::roundToInt (sequencerState.chance[(size_t) channel][(size_t) step].load()
+                                   * (float) Layout::chanceLevels));
         }
-
-        if (channel < Layout::numChannels - 1)
-            encoded += ',';
     }
+
+    const auto encoded = stepPayloadTag()
+                           + juce::Base64::toBase64 (bytes.data(), bytes.size());
 
     // The flag says this write is the atomics going *out*, not a pattern arriving.
     // Without it the listener below would read it straight back in on every cell of
     // a drag, and the undo manager would see a change the grid had just made.
     pushingPatternToState = true;
+    apvts.state.setProperty ("stateVersion", Layout::stateVersion, &undoManager);
     apvts.state.setProperty ("pattern", encoded, &undoManager);
     pushingPatternToState = false;
 }
 
 void GrooveboxProcessor::applyPatternFromState()
 {
-    // Start from nothing, then read whatever the pattern property holds: a row
-    // shorter than the grid leaves the steps it does not reach off, and a session
-    // with no pattern at all is an empty machine rather than a stale one.
+    // Start from nothing, then read whatever the pattern property holds: a payload
+    // shorter than the grid leaves the steps it does not reach off, and a session with
+    // no pattern at all is an empty machine rather than a stale one.
     for (int channel = 0; channel < Layout::numChannels; ++channel)
     {
         for (int step = 0; step < Layout::numSteps; ++step)
         {
             sequencerState.pattern[(size_t) channel][(size_t) step].store (false);
             sequencerState.velocity[(size_t) channel][(size_t) step].store (1.0f);
+
+            // Off every time is not the neutral value for a probability — every time
+            // is, and that is what a record that never mentions one means.
+            sequencerState.chance[(size_t) channel][(size_t) step].store (1.0f);
         }
     }
 
     const auto encoded = apvts.state.getProperty ("pattern").toString();
+
+    if (const auto codec = stepPayloadCodecOf (encoded); codec != 0)
+    {
+        const auto stride = strideForCodec (codec);
+
+        if (stride == 0)
+        {
+            // A record written by a build that knows more about a step than this one
+            // does. Decoding it wrong and saving it back would destroy the session, so
+            // nothing here touches it: the grid stays empty, because an empty grid is
+            // the true picture of what this build can hear, and the bytes go back out
+            // as they came in until an edit makes this build responsible for the
+            // pattern — at which point `pushPatternToState` takes the row over.
+            //
+            // Note that a v2 record is not in this branch. It is narrower, not
+            // stranger: everything it does say is readable, and the one field it does
+            // not have is the one whose absence means "always".
+            holdingUnreadablePattern = true;
+            return;
+        }
+
+        juce::MemoryBlock bytes;
+        juce::MemoryOutputStream sink (bytes, false);
+
+        if (! juce::Base64::convertFromBase64 (sink, encoded.fromFirstOccurrenceOf (":", false, false)))
+        {
+            // Tagged as ours but not decodable, which is the same problem wearing a
+            // different name: this code cannot read it, so it keeps it.
+            holdingUnreadablePattern = true;
+            return;
+        }
+
+        const auto* raw = static_cast<const juce::uint8*> (bytes.getData());
+        const auto available = (int) bytes.getSize();
+
+        for (int channel = 0; channel < Layout::numChannels; ++channel)
+        {
+            for (int step = 0; step < Layout::numSteps; ++step)
+            {
+                const auto at = (channel * Layout::numSteps) + step;
+
+                // Indexed by step, not walked, so a record of any length can only ever
+                // describe the steps it reaches — the same bound v1 rows were read under.
+                if ((at + 1) * stride > available)
+                    continue;
+
+                const auto atByte = (size_t) at * stride;
+
+                sequencerState.pattern[(size_t) channel][(size_t) step].store (raw[atByte] != 0);
+                sequencerState.velocity[(size_t) channel][(size_t) step].store ((float) raw[atByte + 1] / 127.0f);
+
+                // A v2 record has no third byte, and what it says about probability is
+                // the value the loop above already stored. Reading past the stride of
+                // the codec in hand is how a narrower generation gets turned into a
+                // grid of nonsense.
+                if (stride > 2)
+                    sequencerState.chance[(size_t) channel][(size_t) step]
+                        .store ((float) raw[atByte + 2] / (float) Layout::chanceLevels);
+            }
+        }
+
+        return;
+    }
+
     const auto rows = juce::StringArray::fromTokens (encoded, ",", "");
 
     for (int channel = 0; channel < juce::jmin (rows.size(), Layout::numChannels); ++channel)
@@ -1010,7 +1262,12 @@ void GrooveboxProcessor::getStateInformation (juce::MemoryBlock& destData)
 {
     // `copyState` flushes the parameters into the tree, so everything the host can
     // automate is in there; the pattern is a plain property and has to be current.
-    pushPatternToState();
+    //
+    // Except when it holds a record this build cannot read, where being current is the
+    // whole point: the property already contains exactly what came in, and flushing the
+    // grid over it would be the save destroying the session it was asked to preserve.
+    if (! holdingUnreadablePattern)
+        pushPatternToState();
 
     if (auto xml = apvts.copyState().createXml())
         copyXmlToBinary (*xml, destData);

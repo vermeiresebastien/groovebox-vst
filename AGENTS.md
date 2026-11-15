@@ -72,16 +72,35 @@ It is fully gitignored and nothing in it is authored in place.
   stale `samplesToSourceEnd` "cuts the hit in half" survived writing into the plan and the
   engine comment until the disabled-fix run came back with identical bytes: the countdown
   is re-derived from the current rate at the top of every `renderVoice` call
-  ([Source/SequencerEngine.cpp:704](Source/SequencerEngine.cpp)), so a stale one can only
+  ([Source/SequencerEngine.cpp:785](Source/SequencerEngine.cpp)), so a stale one can only
   survive one block. The real defect is block-size dependence -- 570 of 1576 samples gone
   at a 1024 block, nothing at 256, which is why every fixture in the suite had missed it.
   Re-measure where the mechanism can actually show, and let the gate say that instead.
+- **A red test is a question about the signal before it is a question about the limit.**
+  The true-peak meter came in reading 0.9042 for a 0.8 sine at 441 Hz, and the write-up
+  that was already in the test called it the honest over-read of a short kernel meeting
+  its own image near Nyquist. It was the fixture: a tone whose first sample is at full
+  amplitude is a **step**, and a band-limited reconstruction of a step rings above the
+  crest for as long as the kernel is wide -- the peak landed on sample 12, 13 or 15, the
+  first intervals a 24-tap window can span. A Python model of the same kernel with zero
+  history matched the C++ to five digits; with a 64-sample raised-cosine on the start,
+  both the model and the bus read the crest to 0.00011 and the Fs/3 gap to 1.1549 against
+  the analytic 1.1547. Widening that gate from 0.02 to 0.07 would have written a
+  fixture's start edge into the DSP's spec, the README and a check designed to pass;
+  fixing the tone let the limit tighten and turned a claimed weakness into a measurement.
+- **A report has to be proven a report.** "The tick gates nothing" is not shown by a
+  signal that stays under 0 dBFS anyway. The square wave in `[26]` puts the reconstruction
+  at 1.1378 with not one sample past 0.9000, and asserts the clip latch stays **clear**
+  ([Source/MasterBus.h:150](Source/MasterBus.h) latches on the sample, not the estimate).
+  Same rule for the meter's own accuracy: the sweep checks the reported *gap* against
+  `1/cos(pi/N)` rather than only checking that the tick is high, because a filter with
+  gain would pass the second and fail the first.
 - Anything that reads like a spec in [README.md](README.md) or
   [installer/README.txt](installer/README.txt) must be code-verified before shipping.
   Three false claims were caught this way: that the sound button's menu switches between
   loaded samples (it only opens a `FileChooser`; `SampleStore::getSampleIds()` has no UI
   caller), that there is no MIDI note input (there is, C1-B1 = notes 36-47,
-  `Layout::firstMidiNote` in [Source/Common.h:27](Source/Common.h)), and that Live scans
+  `Layout::firstMidiNote` in [Source/Common.h:28](Source/Common.h)), and that Live scans
   `Documents\VST3` (it does not -- see Host folders below).
 
 ## Tests: two console apps, no CMake test target
@@ -91,10 +110,63 @@ build-new\GrooveboxSmokeTest_artefacts\Release\GrooveboxSmokeTest.exe   # timing
 build-new\GrooveboxLayoutTest_artefacts\Release\GrooveboxLayoutTest.exe # real editor, bounds of every control
 ```
 
-Both compile the plugin sources headlessly ([CMakeLists.txt:166-221](CMakeLists.txt));
+Both compile the plugin sources headlessly ([CMakeLists.txt:166-231](CMakeLists.txt));
 they print a check count and a problem count, and exit non-zero on failure. Last green
-run: 212 smoke checks, 82 layout checks, 0 problems.
+run: 291 smoke checks, 82 layout checks, 0 problems.
 
+- **A walk that runs zero times looks like a wrong answer, and partly like a right one.**
+  Section [29] built its 4096-cell decision matrix with three mirrored loop headers --
+  `for (step = numSteps - (backwards ? 1 : 0); backwards ? step >= 0 : step < numSteps;` --
+  and in the forward direction that starts the counter *one past* its own end condition, so
+  the body never ran and every cell kept its allocated zero. Seven checks went red against
+  an engine that had been correct all along, which was the lucky half. The other half: three
+  checks went **green** on the empty answer, because "no cell comes back as the knob opens"
+  and "a cell that says never is never kept" are both satisfied by nothing at all. So a
+  matrix walk gets one index and a mirror, not two spellings of the same loop; and a check
+  whose pass condition is `== 0` or `> someFloor` needs the precondition that the thing being
+  counted is non-degenerate, next to it in the same section. [29] prints `fired` counts for
+  both knob settings for exactly that reason -- a zero in the wrong column is the bug report.
+- **A `MemoryOutputStream` reports the allocation, not the payload, until it is flushed.**
+  Decoding a base64 step record into an externally-owned `MemoryBlock` left `getSize()` at
+  832 for a 576-byte record, because the stream rounds the block up as it grows and only
+  shrinks it to `bytesWritten` in `flush()`, which the destructor has not yet run. An
+  equality on the decoded width therefore measures the allocator's growth policy. [19]'s
+  probe survived for months because it only ever asked for a *lower* bound. Flush, then
+  read the size, and take the data pointer *after* the flush -- shrinking can move it, and
+  the bytes would otherwise come from freed memory.
+- **A tolerance on a hash is not a coin's standard deviation.** The same section first
+  gated the fired fraction at four sigma of a fair coin over 4096 cells (0.0271) and the
+  actual take sat inside it by 0.0061: one legitimate change of the key would have gone red
+  on correct DSP. A splitmix64 draw is a fixed permutation, so its spread over neighbouring
+  seeds is a property of it that can simply be measured -- the shipped gate takes three
+  times the worst departure of 31 other seeds from their mean (0.0495), with the tested seed
+  deliberately *out* of that sample, because a limit drawn around the point it then gates is
+  a tautology. The comparison target is also the engine's own formula re-evaluated
+  (`1 - 0.5 * (1 - 128/255)` = 0.75098), not a rounded saying of it.
+
+- **A baseline you cannot re-check is an opinion.** Section [28] fingerprints one fixed
+  kit -- the same arming, the same 161280 samples, FNV-1a over the length and both
+  channels' bits -- against a recorded literal, `4BC3AA231178C071`, whose provenance is
+  written next to it. It is what makes 4.2's "bit-identical at probability 1.0" a
+  machine answer instead of a listening session. Two sides, both in the same section:
+  the hash must repeat on a re-render, and it must *move* on a perturbation (one lane
+  softer, a shorter render), or it is a constant wearing a gate. The fixture's velocities
+  are all `k/127` because the payload stores a 7-bit level, so a non-lattice value makes
+  the save/load half fail for the wrong reason.
+- The smoke harness needs `/STACK:16000000` ([CMakeLists.txt:194-202](CMakeLists.txt)):
+  a `GrooveboxProcessor` is 23 KB and `main` holds dozens of them, so the default 1 MB
+  reserve dies with `STATUS_STACK_OVERFLOW` **printing nothing** -- stdout is buffered
+  and lost with the process. A section added at the end of the file moving *where an
+  earlier one crashes* is the signature; it is the harness's frame, not the plugin's.
+- A test that wants `setStateInformation` to actually load something has to hand it
+  `copyXmlToBinary` output: `getXmlFromBinary` only recognises that helper's own 8-byte
+  magic+length header and answers bare XML with `nullptr`, which the processor reads as
+  "no session" and acts on not at all -- a silent green that was really a no-op.
+- **Trust the link, not the exit code.** `Copy-Item` preserves the source's mtime, so a file restored by copy
+  can be *older* than the object MSVC built from the version it replaced, and the incremental build then
+  reports 0 while running stale code -- one A/B half here linked the old codec against the new header, which is
+  also a class-layout mismatch. `out/run-gate.ps1` and `out/ab-41.ps1` refuse to run when any file in
+  `Source/` or `Tests/` is newer than the exe; after copying into `Source/`, set `LastWriteTime = Get-Date`.
 - No modal loops: `MessageManager::runDispatchLoopUntil` needs
   `JUCE_MODAL_LOOPS_PERMITTED` and JUCE 8 has no public single-step message pump, so the
   layout test drives `ChannelStrip::refresh()` -- the same `syncAutomatableControls()`
@@ -104,12 +176,17 @@ run: 212 smoke checks, 82 layout checks, 0 problems.
 - JUCE 8 removed `AudioProcessorValueTreeState::setParameterNotifyingHost`; the one
   remaining way in is `apvts.getParameter (id)->setValueNotifyingHost
   (apvts.getParameterRange (id).convertTo0to1 (v))`, wrapped as
-  `GrooveboxProcessor::writeParameter` ([Source/PluginProcessor.cpp:202](Source/PluginProcessor.cpp)).
-  112 parameters (4 global + 12 x 9); the pattern is deliberately not one. The listener
-  list in `allParameterIds` is built from `Params::laneTargets()` for the same reason:
+  `GrooveboxProcessor::writeParameter` ([Source/PluginProcessor.cpp:231](Source/PluginProcessor.cpp)).
+  114 parameters (6 global + 12 x 9); the pattern is deliberately not one. The listener
+  list in `allParameterIds` ([Source/PluginProcessor.cpp:24](Source/PluginProcessor.cpp))
+  is built from `Params::globalIds()` and `Params::laneTargets()` for the same reason:
   when it was a hand-written copy of the lane ids, the choke parameter was created,
   offered to the host and read on restore with nothing listening for it, and only a test
-  that writes all 112 could see that the engine never moved.
+  that writes all of them could see that the engine never moved. Mutate did it again
+  three controls later -- the hand-list had a *fourth* hand-written half, so the trap
+  was not the lane list, it was any list written twice. `Params::globalIds()` carries
+  its length in its type, so forgetting a row is a compile error, and test [21] writes
+  every id in both tables and then compares the count against what the host is offered.
 - **The click ruler is derived, never typed.** Every fade, corner sweep and choke gate
   is 1.5 x `maxDelta` of the 997 Hz tone fixture -- the wave's own sample-to-sample slew,
   0.1419, so the limit reads 0.2129 and a real one-sample cut measures 0.7943. It follows

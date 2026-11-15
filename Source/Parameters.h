@@ -118,6 +118,27 @@ namespace Params
     inline constexpr const char* swingId      = "swing";
     inline constexpr const char* swingGridId  = "swingGrid";
     inline constexpr const char* tempoId      = "tempo";
+    inline constexpr const char* mutateId     = "mutate";
+    inline constexpr const char* seedId       = "seed";
+
+    /**
+        The parameters that belong to the machine rather than to a lane.
+
+        `createLayout` spells these one `add` call at a time, so this table exists to
+        be counted against it. Test [21] writes every id here and every id in
+        `laneTargets()`, then checks the host is offered exactly that many: a control
+        added to the layout and left out of the tables shows up as a count that
+        disagrees, which is the half the per-id writes cannot see. The size is written
+        into the type for the same reason `numLaneControls` is — forgetting to extend
+        it when a parameter joins is a compile error, not a silent stale number.
+    */
+    inline const std::array<const char*, 6>& globalIds()
+    {
+        static const std::array<const char*, 6> ids
+            { masterGainId, swingId, swingGridId, tempoId, mutateId, seedId };
+
+        return ids;
+    }
 
     /** Channel level, linear. The panel's fader tops out at 1.5, so that is the
         range; the engine still clamps to 2.0 for anything that reaches it another
@@ -141,6 +162,33 @@ namespace Params
 
     inline constexpr float tempoMin = 20.0f;
     inline constexpr float tempoMax = 400.0f;
+
+    /**
+        How much of the grid's per-step probabilities the machine may use.
+
+        Zero is "play what is drawn", and it is the default: the pattern is the one
+        the user painted until they say otherwise. One hands every cell the number it
+        carries. It can only take hits away — a closed step never comes back, and a
+        cell at 100% is never dropped — so opening this never adds a hit that the grid
+        does not already claim.
+    */
+    inline constexpr float mutateMin = 0.0f;
+    inline constexpr float mutateMax = 1.0f;
+    inline constexpr float mutateDefault = 0.0f;
+
+    /**
+        Which sequence of rolls a session is, as a number the user can write down.
+
+        A parameter rather than a hidden field because the point of a take is that it
+        can be named: two sessions with the same seed and the same grid drop the same
+        hits, so an A/B of two bounce renders is an A/B. Automatable like everything
+        else here, which a host can use to reshuffle a pattern over time — a seed ramp
+        is a re-roll every time it crosses an integer, so it is a special effect and
+        not a setting.
+    */
+    inline constexpr int seedMin = 0;
+    inline constexpr int seedMax = 999999;
+    inline constexpr int seedDefault = 0;
 
     /**
         Swing pair size in steps: 4 swings the 1/8 notes, 2 the 1/16s.
@@ -175,6 +223,14 @@ namespace Params
 
         layout.add (std::make_unique<juce::AudioParameterFloat> (
             juce::ParameterID { tempoId, 1 }, "Tempo", tempoMin, tempoMax, 120.0f));
+
+        // Next to Swing, because it is the other thing that decides how much of what
+        // is written down actually happens.
+        layout.add (std::make_unique<juce::AudioParameterFloat> (
+            juce::ParameterID { mutateId, 1 }, "Mutate", mutateMin, mutateMax, mutateDefault));
+
+        layout.add (std::make_unique<juce::AudioParameterInt> (
+            juce::ParameterID { seedId, 1 }, "Seed", seedMin, seedMax, seedDefault));
 
         for (int channel = 0; channel < Layout::numChannels; ++channel)
         {

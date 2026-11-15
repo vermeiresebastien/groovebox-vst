@@ -16,14 +16,15 @@ sample you drag onto its row, and which also plays from MIDI notes.
 | **Pitch drop** | **0–12 semitones per channel: the hit starts that far above the note and glides down onto it over 30 ms — kick bloom you cannot get from Live's sample page. It is a parameter like the rest, never something the plugin decides for you** |
 | **ADSR per channel** | **Attack, Decay, Sustain and Release for every channel, so a hit can be tightened or turned into a sustained sound** |
 | **Choke groups** | **Three per lane. A hit in a group cuts every other hit in that group short, ramped over 20 ms — put the closed hat in the same group as the open one and it stops it instead of stacking on it** |
+| **Step probability** | **Every step says how often it is allowed to fire, 0–100 %. What actually happens is that wish discounted by the *Mutate* knob, and the same grid with the same seed drops the same hits every time** |
 | Swing | 0–100 % on either a 1/8 or 1/16 grid |
 | Tempo | Follows the host project tempo; in the standalone build it has its own transport and tempo |
 | Mix | Per-channel level and mute, plus a "clear row" button |
-| **Master trim & meter** | **A −24 to +6 dB master trim you can see and reach, with a peak meter and a clip latch on the output** |
-| **Automation** | **Levels, pitches, pitch drops, envelopes, mutes, choke groups, swing, tempo and the master trim are host parameters — automate them, and the panel follows what the host drew** |
+| **Master trim & meter** | **A −24 to +6 dB master trim you can see and reach, a bar for the sample peak with a tick for the true peak hiding between the samples, and a clip latch on the output** |
+| **Automation** | **Levels, pitches, pitch drops, envelopes, mutes, choke groups, swing, swing grid, tempo, the master trim, the variation amount and the seed are host parameters — automate them, and the panel follows what the host drew** |
 | Row editing | Click a cell to toggle it; drag across cells to paint a run |
 | **Shift a row** | **The ← and → buttons in a channel strip turn that whole row one step earlier or later, and every step's velocity goes with it** |
-| Persistence | Pattern, pitch, levels, mutes, names, colours and sample paths are saved in the session; a session saved before the parameter migration is read in and its values carried over |
+| Persistence | Pattern, per-step velocity and probability, pitch, levels, mutes, names, colours, seed and sample paths are saved in the session; a session saved before the parameter migration is read in and its values carried over |
 
 ## Step velocity
 
@@ -139,13 +140,28 @@ Gain is smoothed over 20 ms so dragging it cannot zipper, and double-clicking th
 slider returns it to −2 dB.
 
 The meter beside it is one bar per output channel over a scale of −42 to +6 dBFS,
-with the clip indicator marking 0 dBFS. It reads a peak held on the audio side —
-the editor polls a few times a second, far too slowly for a drum transient, so
-the bus keeps the highest value it saw and lets it fall away between blocks.
-Anything reaching 0 dBFS latches the clip indicator, and **the latch is only
-cleared by clicking the meter**. There is no limiter: if a kit is too hot, the fix
-is the trim or the channel levels, not a processor quietly reshaping what you
-mixed.
+a thin tick at the **true peak**, and the clip indicator marking 0 dBFS. It reads a
+peak held on the audio side — the editor polls a few times a second, far too slowly
+for a drum transient, so the bus keeps the highest value it saw and lets it fall
+away between blocks.
+
+The tick exists because a sample peak is not the level the converter puts out.
+Between two samples the band-limited waveform can be higher than either of them, and
+on a summed kit that is regularly a decibel or two — one hit through this master
+measures 1.05 dB of it. The worst case is easy to state exactly: a tone with four
+samples to the period has its crest halfway between two of them, so the bar reads
+0.5657 of an 0.8 wave while the wave itself crests at 0.8000, and the tick says so.
+The bus reconstructs its own output at four points per sample — the same windowed-sinc
+kernel the voices already use, at three fixed sub-sample offsets — and reports the
+highest point it finds. The tick turns red at 0 dBFS, where a bar can still be short
+of it.
+
+**That number is a report and nothing else.** It gates no level, changes no latch
+and reshapes no audio: the latch still means 0 dBFS *at the sample*, which is what
+the plugin wrote. Anything reaching 0 dBFS latches the clip indicator, and **the
+latch is only cleared by clicking the meter**. There is no limiter: if a kit is too
+hot, the fix is the trim or the channel levels, not a processor quietly reshaping
+what you mixed.
 
 ## Automation
 
@@ -381,6 +397,17 @@ It asserts, among other things, that:
   for "better" here);
 - the meter holds what the output reached, the clip indicator latches at 0 dBFS,
   the latch survives silence until you click it, and the peak falls away;
+- the **true-peak tick reads the level between the samples**: over seven tones whose
+  samples straddle the crest, from 441 Hz to a quarter of the sample rate, the bar lands
+  on the `cos(π/N)` the sampling says it must (worst error 0.00000) and the tick lands on
+  the wave's own crest (worst 0.00011), with the gap it reports matching `1/cos(π/N)` to
+  four decimals at every row; at a third of the sample rate it reads 1.1549 where √3/2
+  implies 1.1547; a 1 kHz tone, where a sample is already on the crest, is given nothing
+  (1.0000); a lone 0.9 sample reads 0.9000 and not the reconstruction filter's own ring;
+  a hard ±0.9 edge is shown as the 1.2643 overshoot it is while its **latch stays clear**,
+  because no sample reached 0 dBFS; one real hit through the master measures 1.05 dB of
+  it; the reading is identical at a 256 and a 2048-sample block, and it leaves the audio
+  bit for bit where it found it;
 - a mono sample stays centred;
 - pattern, pitch, names, swing and grid survive a save/load round trip;
 - an incoming note plays its channel with the transport stopped, a note outside
@@ -443,7 +470,7 @@ Source/
   SampleStore.{h,cpp}   sample decoding, and the channel -> sample assignment
   Resampler.h           the windowed-sinc coefficient table the voices read from
   SequencerEngine.{h,cpp}  the scheduler and the voices (the audio thread)
-  MasterBus.h           the master trim, peak meter and clip latch
+  MasterBus.h           the master trim, sample-peak bar, true-peak tick and clip latch
   PluginProcessor.{h,cpp}  the AudioProcessor, transport and state persistence
   PluginEditor.{h,cpp}     window layout
   StepGridComponent.{h,cpp}  the grid, and the file drag-and-drop target
@@ -492,6 +519,39 @@ Notes on the design:
   at the engine by the same path and both notify the host back. The engine reads
   the parameter atomics, never the tree, so the audio thread stays off the message
   thread.
+- **The grid is one property, not 192 parameters.** A host's automation list would
+  be buried by a parameter per cell, and nobody draws a step as a lane. So the
+  pattern travels as a string on the root of the parameter state: `v3:` followed by
+  base64 of three bytes a step — the switched-on flag, the level as a 7-bit MIDI
+  number, then the probability as a number of 255ths — which is 771 characters for
+  the whole grid. The level and the probability travel whether or not the step is
+  lit, which is what lets a step keep the values you set while it was still switched
+  off; 127 divisions is every velocity a controller can send, and 255 is as fine a
+  slice of "how often" as one byte can name. The root also carries `stateVersion`,
+  and the payload names its own codec as well, so a string says what it is instead of
+  being guessed at from how long its rows happen to be. Sessions from the older
+  two-bytes-a-step, two-digits-a-step and one-digit-a-step formats still load — the
+  width is read from the tag, not assumed — and saving one writes it back in the
+  current format, so a step from a two-byte record comes in meaning *fires every
+  time*, which is what it did before there was a choice.
+- **A take, not a shimmer.** Whether a lit step sounds is decided by one function,
+  `SequencerEngine::wouldThisHitFire`, keyed on the seed and on the bar, step and
+  lane of the hit — splitmix64 over those four, and the top 24 bits of the answer
+  compared against a threshold. There is no counter of rolls and no clock in it, so
+  the same place in the same song rolls the same way on every pass: a bounce is an
+  A/B of the take rather than a different take each time you print it. The threshold
+  is the step's own probability discounted by the *Mutate* amount — `1 - mutate *
+  (1 - chance)` — so opening the knob can only ever take hits away, never add one the
+  grid does not claim, and a step at 100 % is never dropped. Two gates mean the
+  common case never reaches a generator at all: variation shut, or a step that fires
+  every time, and that is what keeps a session with the knob closed bit-identical to
+  the build that had no knob.
+- **A record this build cannot read is kept, not repaired.** A payload whose codec tag
+  names a newer generation — from a session saved by a later build, or a preset
+  someone edited by hand — is not decoded, and goes back out byte for byte so that
+  opening it cannot cost you the file. The grid shows nothing, because an empty grid is
+  the honest picture of what this build can hear, and the first edit of a step takes
+  the pattern over in this build's own format.
 - **Sample rate and pitch conversion.** A voice reads its sample through a
   precomputed windowed-sinc kernel rather than by linear interpolation. Linear
   interpolation is not a filter: pitch a sample up and everything above the

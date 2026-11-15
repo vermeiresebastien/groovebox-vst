@@ -106,14 +106,18 @@ The channel faders top out above unity, and the Master Trim in the top bar spans
 -24 to +6 dB (default -2 dB). Nothing in the signal path scales your mix behind
 your back, and there is no limiter: the trim and the faders are what you have.
 
-The meter beside the trim is the master output. Anything reaching 0 dBFS latches
-the clip indicator, and clicking the meter is the only thing that clears the
-latch.
+The meter beside the trim is the master output. The bar is the sample peak; the
+thin tick is the true peak, the highest point of the waveform between the samples,
+which is what a converter actually puts out. The tick turns red at 0 dBFS while the
+bar can still be short of it -- one hit through this master measures 1.05 dB of that
+difference. It is a reading and nothing more: it gates no level and lights no
+indicator. Anything reaching 0 dBFS at the sample latches the clip indicator, and
+clicking the meter is the only thing that clears the latch.
 
-In a host, every continuous control is a normal plugin parameter -- levels,
-pitch, envelopes, mutes, swing, tempo and the master trim -- so you can automate
-them, and the panel moves to follow what you drew. The pattern itself is not a
-parameter; it is saved with the project.
+In a host, every continuous control is a normal plugin parameter -- levels, pitch,
+pitch drop, envelopes, mutes, choke groups, swing, swing grid, tempo and the master
+trim -- so you can automate them, and the panel moves to follow what you drew. The
+pattern itself is not a parameter; it is saved with the project.
 
 
 Size and limits

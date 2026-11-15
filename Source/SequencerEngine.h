@@ -206,6 +206,42 @@ struct SequencerState
     */
     std::array<std::array<std::atomic<float>, (size_t) Layout::numSteps>, (size_t) Layout::numChannels> velocity {};
 
+    /**
+        chance[channel][step], 0..1: how often that step is allowed to fire.
+
+        Kept beside the pattern and the velocity for the same reason they are: it is a
+        fact about one cell, it is not a parameter, and a cell that is switched off
+        still carries it. One is a step that fires every time, which is both the
+        default and what every step drawn before this feature existed means. The
+        machine only consults a cell's chance while `mutate` is open — see that.
+    */
+    std::array<std::array<std::atomic<float>, (size_t) Layout::numSteps>, (size_t) Layout::numChannels> chance {};
+
+    /**
+        How much of the grid's chances the machine is allowed to use, 0..1.
+
+        Zero plays exactly the pattern that was drawn, whatever the cells say; one
+        hands every cell its own probability. It is one number for the whole machine
+        rather than a per-cell amount because the thing a producer wants to set is how
+        much of the arrangement is *not* written down, and because at zero the engine
+        does not reach for a generator at all — the audio path is the one that was
+        measured before this existed.
+
+        What it can do is take hits away. A closed cell never comes back, and a step at
+        100% is never dropped however far this is opened.
+    */
+    std::atomic<float> mutate { 0.0f };
+
+    /**
+        Which sequence of rolls this session is.
+
+        A hit is decided by where it sits in the song — bar, step, lane — and this
+        number is what makes one song's decisions different from another's. Same seed,
+        same pattern, same place: the same hits drop out, in a bounce and in a live
+        pass, which is what makes an A/B of two takes an A/B rather than a coin toss.
+    */
+    std::atomic<int> seed { 0 };
+
     /** Per-channel output level, linear gain. */
     std::array<std::atomic<float>, (size_t) Layout::numChannels> level {};
 
@@ -269,6 +305,12 @@ struct SequencerState
         // Full velocity by default, so a new step behaves exactly as it did before
         // velocities existed.
         for (auto& row : velocity)
+            for (auto& cell : row)
+                cell.store (1.0f);
+
+        // And every step fires every time, which is what a machine that never had a
+        // probability meant, and what a session from before it still says.
+        for (auto& row : chance)
             for (auto& cell : row)
                 cell.store (1.0f);
 
@@ -377,6 +419,18 @@ public:
 
     /** Absolute position in steps of one step, given the bar the head is in. */
     double getOnsetPositionInSteps (int step) const { return onsetPositionInSteps (step); }
+
+    /**
+        Does the hit painted at (bar, step, channel) survive the roll as things stand?
+
+        Public for the same reason `StepGridComponent::getCellBounds` is: a test that
+        asks a question has to ask the machine that answers it. `fireStep` calls this
+        and nothing else decides, so a determinism check cannot pass next to an engine
+        that rolls another way. There is no clock in it and no counter — the answer is
+        a function of the seed, the grid and where in the bar the hit is, which is what
+        makes an offline bounce and a live pass the same take.
+    */
+    bool wouldThisHitFire (juce::int64 bar, int step, int channel) const;
 
     /** True when the given channel is currently producing sound. */
     bool isChannelSounding (int channel) const noexcept
@@ -609,6 +663,22 @@ private:
 
     void beginBar (double tempo);
     void fireStep (int step);
+
+    /**
+        Whether one cell's roll lets the hit through.
+
+        The answer comes out of a generator keyed on the seed, the bar and step the
+        onset sits at, and the lane — nothing else. No counter, no state carried from
+        the previous hit, so the same session played twice drops the same hits, and a
+        bounce of sixty-four bars is the same take as the sixty-four bars the user
+        heard. That is also why the key is the *absolute* onset: a hit three bars in
+        does not inherit the history of the two before it.
+
+        The draw is the top 24 bits of the mixed value, which is a number a `float`
+        holds exactly, so the comparison is the same comparison on every machine that
+        takes the same bits.
+    */
+    bool rollLetsHitThrough (juce::int64 bar, int step, int channel, float probability) const;
 
     /**
         The one-pole coefficient a hit of this strength reads its source through.

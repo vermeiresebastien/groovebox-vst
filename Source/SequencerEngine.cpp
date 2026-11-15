@@ -552,9 +552,30 @@ void SequencerEngine::fireNextOnset()
 
 void SequencerEngine::fireStep (int step)
 {
+    const auto mutate = state.mutate.load();
+
+    /**
+        Which bar this onset belongs to.
+
+        Read from the same arithmetic that decided to fire the step, rather than by
+        dividing the head: a hit that arrives a sample late — which the scheduler
+        deliberately allows after a host seek — is then still keyed to the bar it is
+        in, and the same place in the song keeps rolling the same way.
+    */
+    const auto bar = mutate > 0.0f
+                       ? (juce::int64) std::floor (onsetPositionInSteps (step)
+                                                    / (double) Layout::numSteps)
+                       : (juce::int64) 0;
+
     for (int channel = 0; channel < Layout::numChannels; ++channel)
     {
         if (! state.pattern[(size_t) channel][(size_t) step].load())
+            continue;
+
+        // One question, asked of one function, which is also the function the tests ask.
+        // A seam that reimplemented this decision would let a green determinism check
+        // sit next to an engine that rolls differently.
+        if (! wouldThisHitFire (bar, step, channel))
             continue;
 
         // A grid hit carries the velocity stored against its step, so the grid has
@@ -562,6 +583,73 @@ void SequencerEngine::fireStep (int step)
         // `trigger`'s business, not the grid's.
         trigger (channel, state.velocity[(size_t) channel][(size_t) step].load(), false);
     }
+}
+
+bool SequencerEngine::wouldThisHitFire (juce::int64 bar, int step, int channel) const
+{
+    const auto mutate = state.mutate.load();
+    const auto chance = state.chance[(size_t) channel][(size_t) step].load();
+
+    // Two gates, and neither of them reaches for a generator: variation closed, or a
+    // cell that fires every time, and this is the branch that ran before the feature
+    // existed. That is not a micro-optimisation. It is the reason the fingerprint of
+    // this machine with the knob shut is the fingerprint of the machine it was before
+    // — nothing that decides a sample is consulted at all.
+    if (mutate <= 0.0f || chance >= 1.0f)
+        return true;
+
+    /**
+        What the cell asked for, discounted by how much of it the knob allows.
+
+        A step that wants three quarters gets seven eighths at half variation: the
+        drop-out can only ever grow from zero, never past what the cell itself asked
+        for, so opening the knob is a promise the grid can be read back from, not a
+        second pattern drawn somewhere else.
+    */
+    return rollLetsHitThrough (bar, step, channel, 1.0f - mutate * (1.0f - chance));
+}
+
+namespace
+{
+    /**
+        The generator: splitmix64, which is a bijection over 64 bits and avalanches a
+        neighbouring key into an unrelated answer.
+
+        Deliberately not `std::mt19937`, and not a counter of rolls. A drum machine has
+        to be able to answer "what does this hit do" from where the hit is, without
+        knowing what was asked before it, and a 2 KB engine of state that has to be
+        reset on every seek is a second clock to keep in step with the first.
+    */
+    inline juce::uint64 splitmix64 (juce::uint64 value) noexcept
+    {
+        value += 0x9E3779B97F4A7C15ull;
+        value = (value ^ (value >> 30)) * 0xBF58476D1CE4E5B9ull;
+        value = (value ^ (value >> 27)) * 0x94D049BB133111EBull;
+
+        return value ^ (value >> 31);
+    }
+}
+
+bool SequencerEngine::rollLetsHitThrough (juce::int64 bar, int step, int channel, float probability) const
+{
+    // Bar, step and lane in the low bits, seed above them, then one multiply so that
+    // neighbours land in different parts of the space. Multiplying by an odd constant
+    // and xoring the seed are both bijections, so two different hits can never be
+    // handed the same question — which is what makes the pattern of drops a take
+    // instead of a shimmer over the whole bar.
+    const auto where = ((juce::uint64) (bar & 0x0fffffffull) << 8)
+                       | ((juce::uint64) (step & 0xf) << 4)
+                       | (juce::uint64) (channel & 0xf);
+
+    const auto key = splitmix64 ((juce::uint64) (juce::uint32) state.seed.load()
+                                  ^ (where * 0x9E3779B97F4A7C15ull));
+
+    // 24 bits of the draw, which a float holds exactly, scaled to [0, 1). Comparing
+    // that against the probability is the whole roll: no rounding of the threshold,
+    // and a probability of one passes because the draw cannot reach it.
+    const auto unit = (float) ((double) (key >> 40) * (1.0 / 16777216.0));
+
+    return unit < probability;
 }
 
 void SequencerEngine::renderVoices (juce::AudioBuffer<float>& buffer, int startSample, int numSamples)

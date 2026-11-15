@@ -191,6 +191,16 @@ target_link_libraries(GrooveboxSmokeTest PRIVATE
     juce::juce_recommended_warning_flags
 )
 
+# A GrooveboxProcessor is 23 KB, and this harness keeps dozens of them as locals
+# of one main(); MSVC reserves the whole frame at entry, so the default 1 MB
+# stack ran out and the process died with STATUS_STACK_OVERFLOW printing nothing
+# — a section added at the end of the file moved where an earlier one crashed,
+# which is how it was known to be frame size rather than logic. The plugin never
+# puts a processor on the stack, so this is the harness's problem and its only.
+if (MSVC)
+    target_link_options(GrooveboxSmokeTest PRIVATE /STACK:16000000)
+endif()
+
 # ---------------------------------------------------------------------------
 # Editor layout check
 #

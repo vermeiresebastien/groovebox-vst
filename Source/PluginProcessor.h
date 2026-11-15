@@ -103,6 +103,32 @@ public:
     void resetVelocities();
 
     /**
+        How often one step is allowed to fire, 0..1. Steps default to every time.
+
+        A step's own wish, not the machine's: what actually gets rolled is this
+        discounted by `getMutate()`, and the value is held on the rung of 255 that the
+        saved record can carry, so what the panel shows is what the session stores.
+    */
+    float getStepChance (int channel, int step) const;
+    void setStepChance (int channel, int step, float chance);
+
+    /** Puts every step's probability back to every time. */
+    void resetChances();
+
+    /**
+        Does the hit at (bar, step, channel) survive the roll as the grid, the knob
+        and the seed stand right now?
+
+        A pass-through to `SequencerEngine::wouldThisHitFire`, which is the same call
+        the audio thread makes — so this answers "what is this take", not "what would a
+        model of this take say".
+    */
+    bool wouldThisStepHit (juce::int64 bar, int step, int channel) const
+    {
+        return engine.wouldThisHitFire (bar, step, channel);
+    }
+
+    /**
         Rotates one channel's row, carrying each step's velocity with it.
 
         A shift of +1 moves every step one place later, wrapping the last step back
@@ -235,6 +261,28 @@ public:
 
     void setManualTempo (double bpm);
 
+    /**
+        How much of the grid's probabilities the machine may use, 0..1.
+
+        Closed, the pattern is exactly what was drawn, whatever the cells say about
+        probability. Open, each step is rolled against its own. See
+        `SequencerState::mutate` for why this is one number for the whole machine.
+    */
+    float getMutate() const noexcept;
+    void setMutate (float amount);
+
+    /** Which sequence of rolls this session is. Same number, same grid, same drops. */
+    int getSeed() const noexcept;
+    void setSeed (int seed);
+
+    /**
+        Picks a new seed and hands it back, for the panel's Reroll.
+
+        The grid does not move. What changes is which of its hits the machine is
+        allowed to drop, which is the difference between a take and a shimmer.
+    */
+    int rerollSeed();
+
     //==========================================================================
     // Master
     //
@@ -346,6 +394,17 @@ private:
         round trip that also fires the panel would make a single drag repaint itself
         as many times as it has cells. */
     bool pushingPatternToState = false;
+
+    /**
+        True while the pattern property holds a record this build cannot read.
+
+        Set by `applyPatternFromState` when the payload's own codec tag names a
+        generation it does not know, and cleared by the next `pushPatternToState` —
+        which is the moment this build starts owning the grid. Between those two, the
+        property is passed back out untouched instead of being rewritten from a grid
+        that has no idea what the newer session meant.
+    */
+    bool holdingUnreadablePattern = false;
 
     /** What the host last asked for, so a transport reset re-prepares the engine
         at the size it will actually be given. */

@@ -414,7 +414,7 @@ half-applied in the working tree by another hand (engine header already on the m
 `processMidi`), so the tree did not compile and the state was snapshotted before finishing the migration.
 Read `out/phase2-inprogress/FROM.txt` before trusting any file in there.
 
-### Phase 3 — the sound of a hit (in progress)
+### Phase 3 — the sound of a hit (done 2026-11-15, 3.1 → 3.6)
 
 The bar `[20]` sets, and the number it is measured against: the fixture's own slew is **0.1419**, so the
 limit is **0.2129**, and the reference tone is printed on every run so a limit that drifts out of scale with
@@ -731,3 +731,269 @@ is now measured to be at its pitch from its first sample — 200.455, unchanged.
 
 Run now: **212 smoke checks / 0 failures**, **82 layout / 0 problems**, `RtPathGuard.ps1` exit 0. Three floats
 per voice and no allocation: `dropExcess`, `dropRemaining`, and the band the sweep ends on.
+
+#### 3.6 — true-peak metering on the master (done 2026-11-15). Phase 3 is closed.
+
+`MasterBus` already knew the highest sample it wrote. That is the number a clip latch wants and not the number a
+converter puts out: between two samples the band-limited waveform can be higher than either of them, so a bar
+that stops short of 0 dBFS can still hand a host something that clips. The bus now reports a second number — the
+peak of its own output reconstructed at four points per sample — and nothing else uses it. It gates no level,
+changes no latch, reshapes no audio, because the house rule is that the trim and the faders are what the user
+has, and a limiter was deliberately not part of this.
+
+**The reconstruction.** `truePeakOversampling = 4` (`MasterBus.h:55`): three kernels at fractions 0.25, 0.5 and
+0.75, built once in `prepare` from `SincKernelTable::interpolatingWeights` (`Resampler.h:103`). That function is
+new and so is `fillKernel` (`Resampler.h:64`), which is the kernel maths that used to be inline in the table's
+constructor — lifted out rather than duplicated, so the meter and the resampler cannot drift apart, and so the
+meter does not allocate the table's 380 kB to read 72 numbers. Per output sample per channel the window shifts
+left one `memmove`, and three 24-tap dot products run against it: 72 multiply-adds, no allocation, no trig, no
+table lookup on the path. Tap `j` stands for sample `i-23+j`, so the read position is `(i-12)+f` and the interval
+being measured is the one twelve samples back — 0.27 ms at 44.1 kHz. That delay is what a kernel this short can
+afford, and it is invisible against a meter that already holds peaks for 120 ms.
+
+**What `[26]` measures.** Seven tones at 0.8 whose samples straddle the crest — phase π/2 + π/N, N even — so
+both numbers are known before anything runs: the sample peak is `A·cos(π/N)` and the level of the wave is `A`,
+and the gap has to be `1/cos(π/N)`.
+
+| f (Hz) | bar | bar should be | tick | crest error | gap | gap should be |
+|---|---|---|---|---|---|---|
+| 441 | 0.7996 | 0.7996 | 0.8000 | -0.0000 | 1.0005 | 1.0005 |
+| 882 | 0.7984 | 0.7984 | 0.8000 | -0.0000 | 1.0019 | 1.0020 |
+| 2205 | 0.7902 | 0.7902 | 0.7999 | -0.0001 | 1.0124 | 1.0125 |
+| 4410 | 0.7608 | 0.7608 | 0.8000 | -0.0000 | 1.0515 | 1.0515 |
+| 5512 | 0.7391 | 0.7391 | 0.7999 | -0.0001 | 1.0823 | 1.0824 |
+| 7350 | 0.6928 | 0.6928 | 0.8000 | +0.0000 | 1.1547 | 1.1547 |
+| 11025 | 0.5657 | 0.5657 | 0.8001 | +0.0001 | 1.4144 | 1.4142 |
+
+Worst bar error 0.00000, worst crest error 0.00011, over a 25:1 frequency range. The gap column is the one that
+matters for a meter: it is the inter-sample headroom the editor draws, and it reproduces `1/cos(π/N)` to four
+decimals at every row. Alongside it: a third of the sample rate, where the samples land at 0 and at `A·√3/2` —
+bar 0.6928, tick 0.8002, gap 1.1549 against the 1.1547 that √3/2 implies; 1 kHz, where a sample already sits on
+the crest, and the tick invents nothing (tick/bar 1.0000); a lone 0.9 sample, where the reconstruction *is* the
+kernel and the highest point of the kernel is the sample, so the tick reads 0.9000 and not the filter's own ring;
+±0.9 square, which is the opposite case — a hard edge with real inter-sample level, bar 0.9000 against tick
+1.1378, 1.2643, where an infinitely banded square overshoots to 1.179 and a 24-tap Hamming kernel puts its
+passband ripple on top of that; the same signal read identically at a 256 and a 2048-sample block; and bit-exact
+audio (`worstTouched == 0.0f`) on every row, which is the claim that the meter is a report.
+
+In situ, one real hit through the master: bar 0.4292, tick 0.4846, **+1.05 dB** of headroom the samples alone do
+not show, nothing latched.
+
+**Two claims of mine were wrong, both about the fixtures.**
+
+*The kernel does not over-read near the top of the band.* The first `[26]` run put the 441 Hz tick at 0.9042 — 13
+% over a 0.8 wave — and the Fs/3 gap at 1.2220 against the analytic 1.1547, and I wrote those up as the honest
+limit of a 24-tap filter whose transition band sits just above Nyquist, answering to the tone *and* its image. A
+Python model of the same kernel, the same normalisation and the same window, run with zero history, reproduced
+0.90416 / 0.89952 / 0.87244 / 0.80934 / 0.82087 / 0.80003 / 0.87029 — the C++ numbers to five digits — and put
+the peak at i = 12, 13 or 15: the first intervals the 24-tap window can span. The tones started at full
+amplitude, which is a step, and the band-limited reconstruction of a step rings above the crest for exactly as
+long as the kernel is wide. Nothing to do with the meter. With a 64-sample raised-cosine on the start of every
+tone — `sine`'s job now, and the comment in the test says why — the sweep reads the crest to 0.00011 and the
+Fs/3 gap to 1.1549, and the image story is gone. The square wave keeps its hard edge on purpose; that is where
+the ring is the finding rather than the artifact.
+
+*The reflex was the bug.* Facing a red sweep row, the cheap move was to widen the gate from 0.02 to 0.07 and
+document 0.9042 as the kernel's limit. That would have written a fixture's start step into the DSP's
+specification, in the README, and in a check designed to pass. Fixing the signal instead let the gate tighten to
+0.005 and turned a claimed weakness into a measured strength. When a check is red, the first question is what
+the signal actually *is*, not what number the limit should become.
+
+One more check went in because the README's "report, not guard" sentence was only asserted by a case where the
+tick stayed under 0 dBFS anyway: the square now proves the interesting case, tick 1.1378 past 0 dBFS with the
+bar at 0.9000 and the latch **clear** — a reconstruction that exceeds full scale does not get to decide what the
+user hears, and does not light the indicator either, which still means a sample reached 0 dBFS.
+
+| A/B | red checks |
+|---|---|
+| `out/smoke-36-ab1.txt` — `truePeakOversampling = 1`, estimator off, first test file | 4: sweep crest, Fs/3 crest, Fs/3 gap, square overshoot |
+| `out/smoke-36-ab2.txt` — same, final test file | 5: those four plus "a true peak over 0 dBFS with no sample there latches nothing" |
+| `out/smoke-36-final.txt` — as shipped | 0 |
+
+What stayed green with the estimator off is what should have: the 1 kHz ratio, the impulse, block-size equality,
+bit-exact audio and the latch semantics. A reconstruction that is switched off still cannot invent level on a
+tone whose samples are already on the crest. If those had gone red too, they would have been measuring the
+existence of the filter rather than the accuracy of the meter — and the five that did go red are the ones that
+would have to be re-explained if the tick were ever wired into a gain stage.
+
+Run now: **228 smoke checks / 0 failures**, **82 layout / 0 problems**, `RtPathGuard.ps1` exit 0. The cost is
+72 multiply-adds per sample per channel, three `std::array<float, 24>` per bus and one `float[3][24]` of state,
+and a reading that is 12 samples late. `launch/` has not been re-assembled for 3.5 and 3.6 yet: Ableton Live and
+the standalone are both running on this machine, and the target removes `launch/Groovebox.vst3` before rewriting
+it, so it waits for the apps to be closed rather than fighting them.
+
+### Phase 4 — variation
+
+**4.1 — the step payload says what a step is (done 2026-11-15).** The grid now travels as `v2:` + base64 of two
+bytes a step — the switched-on flag, then the level as a 7-bit MIDI number — with `stateVersion: 2` on the root
+of the tree beside it. `[27]` is the new section, `[19]`'s record probe was rewritten to read the bytes, and
+`Source/PluginProcessor.cpp:772-961` is the codec.
+
+| | v1 rows, on this build | v2 |
+|---|---|---|
+| payload for 192 steps | **395 characters** | **515 characters** |
+| how a reader knows the format | row length: 16 chars a step means one digit, 32 means two | `v2:` on the payload, `stateVersion` on the root |
+| level resolution | hundredths of the range (0..99) | 127 steps, and `k/127` for all 128 values of *k* comes back **exact** |
+| full velocity | `jlimit (1, 99, …)` **clamped it to 0.99** — every hit at the top of the travel came back 1.3 MIDI steps quiet | 127/127 |
+| a step that is off | keeps no level at all: `setStepVelocity` then a save/load moved it to 1.0, **63.0 MIDI steps** away from where it was left | keeps the byte it was given |
+| a step on at zero | cannot be written: 0 meant off, so the code raised it to 1 | flag and level are separate bytes; on-at-zero is on-at-zero |
+| a payload from a newer build | decoded as digits — base64 is full of them — and **lit steps the session never set**, then re-wrote the property in its own format on the next save | kept byte for byte, grid empty, until an edit takes the row over |
+
+That last row is the one that decided the design. Feeding a `v99:` payload to the old decoder produced a grid
+with steps on that no one painted (`and a build that cannot read it plays nothing it did not read`, red on the
+old code with *"the grid still holds a step from before the load"*), and the following `getStateInformation`
+handed back `0009…`. An unreadable record is therefore not decoded, not repaired and not re-encoded:
+`holdingUnreadablePattern` makes `getStateInformation` skip its flush, and `pushPatternToState` — which is the
+only place the flag clears — is reached by an edit, not by a save. The root's `stateVersion` is left at what
+came in too, because stamping 2 on top of a v99 pattern would describe a record this build did not write.
+
+Backwards is measured, not assumed: v1 digits still load at 0.75 / 0.05 / 0.99 (the legacy path keeps its own
+hundredths, so nothing moves onto the new lattice until the row is written again), v0's ones and zeros still
+come in at full velocity, a row shorter than the grid still invents nothing and the next row still reads from
+where the short one stopped, and a row longer than the grid is still truncated at the edge rather than spliced
+into the neighbouring channel. Those six checks are green on **both** sides of the A/B — they are regression
+gates for the old behaviour, not evidence for the new.
+
+One consequence is worth stating plainly, because it is a change of a stored number: opening a v1 session and
+saving it writes v2, so its levels move from hundredths onto the 1/127 lattice, by at most half a MIDI step.
+The alternative — leaving a readable record alone until it is edited — keeps the old bytes but leaves the
+session half-migrated and the `stateVersion` property lying about it. It is in the README under *How it is put
+together*.
+
+The plan's other half — *"`shiftChannelRow` taught to carry every per-step field it now moves"* — is gated
+rather than refactored, and the difference matters for 4.2. The shift already moves both fields it knows about;
+what it did not have was a test that could see the second field go, because the payload could not hold one.
+`[27]`'s turn-and-save now shifts a row by three and asserts all three levels, **including the one on a step
+left switched off**, against where they were written: 0.3, 94.0 and 1.3 of a MIDI step on the old code, 0 on
+the new. When 4.2 adds a probability byte and 4.3 a microtiming byte, `stepRecordBytes` in
+`Source/PluginProcessor.cpp` is the one constant that changes, the length check follows the grid rather than a
+literal, and this check is where a field that does not travel gets caught. What a new field *will* still need is
+a line in the two loops of `shiftChannelRow` — the enumeration is not yet impossible to forget, only
+impossible to forget silently.
+
+*Superseded by 4.2 on the width:* `stepRecordBytes` is gone, and one constant would not have been enough. The
+reader's question is "how wide is a step in **this** record", and the answer differs between the generations a
+build can read — a v2 session has no probability to carry — so it is now `strideForCodec (int)` in the same
+file, taken from the payload's own tag. A narrower known width is a format, not a defect; only `stride == 0`,
+a codec this build cannot name, still means "keep it, do not repair it".
+
+Two harness faults cost more time than the feature and are written up in `AGENTS.md`: the smoke target needed
+`/STACK:16000000` because a 23 KB processor × dozens of locals in one `main` dies with
+`STATUS_STACK_OVERFLOW` **printing nothing**, and `loadSession` was handing `setStateInformation` bare XML,
+which `getXmlFromBinary` answers with `nullptr` — so eight checks had been measuring a load that never
+happened. A third, found while A/B-ing: `Copy-Item` preserves the source's mtime, so restoring a file by copy
+left MSVC free to skip the TU, and the "green" run was a stale link. Both scripts now refuse to run a binary
+older than any source file, and the A/B below was re-run after that check existed.
+
+A/B, same test file both sides (`out/ab-41.ps1`, which swaps only the three codec sources):
+
+| Build | result |
+|---|---|
+| `out/smoke-41-oldcodec.txt` — HEAD's `pushPatternToState`/`applyPatternFromState` | **252 checks, 12 failures**, exit 1 |
+| `out/smoke-41-gate.txt` — as shipped | **252 checks, 0 failures**, exit 0 |
+
+Ten of the twelve are the format and the fields. The two in `[19]` are the record probe following the format it
+probes: the behaviour they gate — an undo moving the string *and* the engine together — was green before and is
+green after.
+
+Run at the close of 4.1: **252 smoke checks / 0 failures**, **82 layout / 0 problems**, `RtPathGuard.ps1` exit
+0, and a full `cmake --build build-new --config Release` (VST3 + Standalone + both console apps) clean.
+`launch/` still waits for Live and the standalone to be closed.
+
+Found on the way, **not fixed**: a shift is two stores per cell, so shifting a row *while playing* can let the
+audio thread read a half-rotated bar for one block — one hit duplicated or missing, then self-correcting. It is
+a pre-existing property of the atomics rather than something 4.1 introduced, it cannot corrupt a session, and
+the fix (a shadow grid behind an atomic index) is a different change than a payload format.
+
+
+**4.2 — a seeded probability per step, and one knob for how much of it happens (core done 2026-11-16; the
+top-bar half is open).** The plan asked for *"seeded per-step probability + a single 'mutate' amount. RNG keyed
+on (bar, step) so offline render equals live playback and A/B stays reproducible. Gate: at probability 1.0 the
+output is bit-identical to today's; at 0.5 across 64 bars it is deterministic"*, and both gate halves are now
+machine answers.
+
+What landed is one field, one function and two parameters. A step's third payload byte is its chance as a number
+of 255ths — `Layout::chanceLevels`, so the byte fills its field and 255 means *fires every time*, which is also
+what a step from a v2 record means and what every cell of a new session starts as; `stateVersion` is 3 and the
+tag says `v3:`, 771 characters for the grid against v2's 515. `setStepChance` snaps to the rung *before* the
+engine sees it, so the percentage on the panel is the number in the file rather than the nearest thing to it that
+survives a save. `shiftChannelRow` now carries three stores per cell where it used to carry two, and `[29]`'s
+turn-and-save is the check that catches a field that stays behind.
+
+The decision lives in exactly one place, `SequencerEngine::wouldThisHitFire (bar, step, channel)`, which
+`fireStep` calls and which the tests call too — the same function, not a model of it. A seam the audio thread
+never reached would have answered every determinism question below perfectly while playing the grid as if the
+knob did not exist, which is why `[29]` also renders: seed 7 at full variation fingerprints `AE5D8A8C366F3F9C`
+twice over, seed 8 is `DC37925D3C3F0D1C`, and a grid whose every cell is certain is `507E5F3650B7D274` — the
+fingerprint of the same machine with the knob shut, to the bit.
+
+The arithmetic is `1 - mutate * (1 - chance)`: the drop-out can only grow from zero and never past what the cell
+itself asked for, so opening the knob is a promise the grid can be read back from rather than a second pattern
+drawn somewhere else. Two gates short-circuit before any generator is consulted — variation shut, or a cell that
+fires every time — and that is why the closed knob is bit-inert instead of merely quiet: nothing that decides a
+sample is even looked at. The key is splitmix64 over the seed and the bar, step and lane of the hit, and the top
+24 bits of the answer are the draw, so the question is a bijection of *where the hit is*: no counter of rolls, no
+clock, nothing to reset on a seek. The bar comes from `onsetPositionInSteps (step)`, the same arithmetic that
+decided to schedule the onset, so a hit that arrives a sample late after a host seek is still keyed to the bar it
+is in.
+
+`Mutate` (0–1, default 0) and `Seed` (0–999999) are ordinary parameters — 114 now, 6 global + 12 × 9 — so a host
+can ramp variation over time and a take can be named by a number you write down. Getting them to the engine
+re-caught the oldest trap in `AGENTS.md`: `allParameterIds` had a fourth hand-written half, so both new
+parameters were created, offered to the host and read on restore with **nothing listening for them**, and only a
+test that writes every id could see the engine never moved. It is derived from `Params::globalIds()` and
+`Params::laneTargets()` now, with the length baked into the array type so forgetting a row is a compile error.
+
+Measurements from `[29]` — 64 bars × 16 steps × 4 lanes = 4096 cells, every step painted, every chance at
+128/255:
+
+| question | answer |
+|---|---|
+| knob shut | **4096 of 4096 fire** — the roll is not consulted at all |
+| knob open | 2127 fire (0.5193), against the 0.50196 the cell asked for |
+| the ladder at 0 / .25 / .5 / .75 / 1 | 4096 → 3636 → 3158 → 2646 → 2127, **0 cells reappear** |
+| half the knob, asked of the formula | 0.7710 fired against **0.75098** asked; band **0.0495** |
+| seed 7 against seed 8 | 2062 of 4096 cells move (0.5034) |
+| order | forward and reverse walks agree cell for cell, on two machines prepared at 512 and 256 |
+| asking twice | the same hash — nothing advances |
+| a reroll | a new seed inside the range, all 64 lit cells and every chance byte where they were, about half the answers moved (2048, 2055, 2068 on three runs) |
+
+The band in the fourth row is the interesting one, because the first version was wrong in a way that only shows
+up in the margin. It was four standard deviations of a *fair coin* over 4096 cells — 0.0271 — and the take came
+out 0.0200 from the expectation: inside, by six thousandths. One legitimate change of the key would have gone red
+on correct DSP. A hash is not a coin, and the spread of a hash over neighbouring seeds is a property of it that
+can simply be measured, so the shipped limit takes three times the worst departure from their mean over **31
+other seeds** (mean 0.7499, worst 0.0165) with seed 7 deliberately out of that sample — a limit drawn around the
+point it then gates is a tautology. The comparison target is the engine's own formula re-evaluated, not a rounded
+saying of it. Both lessons are in `AGENTS.md` with the two other harness faults this step found: a triple loop
+whose forward direction started one past its own end condition and ran **zero times** — seven reds against a
+correct engine, and three *greens* on an empty answer, because `added == 0` and `== 0 fire` are both satisfied by
+nothing — and `MemoryOutputStream` reporting the allocation rather than the payload until it is flushed, which
+made a 576-byte record read as 832 bytes and made `[19]`'s lower-bound probe look like it had never noticed
+anything.
+
+A/B, one line of the engine (`out/smoke-42-ab-seedblind.txt`, key built without the seed): **291 checks, 4
+failures**, exit 1 — `a different seed is a different take`, `neighbouring seeds disagree about about half of it`,
+`the take moves with it` and, in the audio, `a new seed is a new two bars`. What stayed green is what the change
+does not touch: the knob-shut precondition, the subset law, the bit-inert gate and the same-seed render again. The
+seed is load-bearing and nothing else moved.
+
+**Not done — the panel half.** `Mutate` and `Seed` are host parameters today and a VST3 host will show both, but
+the Groovebox window has no slider for either, no *Chance* toggle and no *Reroll* button, so on this plugin's own
+panel the probability is invisible and uneditable. `StepGridComponent` is ready — `Overlay::chance`,
+`setChanceMode`, and one shared `paintValueOverlay` that grows a bar from the bottom for velocity and hangs one
+from the top for chance so the two cannot be confused — and nothing calls `setChanceMode` yet. `resetChances` has
+no caller at all. `README.md` therefore says nothing about a Chance button: it was rewritten for v3 and for the
+take, and the panel copy goes in with the controls. Next in this step: the two toggles and the slider in
+`TransportBar`, `onChanceModeChanged` beside the existing `onVelocityModeChanged` in
+`Source/PluginEditor.cpp`, and the bounds of
+every new control in `LayoutTest`.
+
+Run at the close of 4.2's core: **291 smoke checks / 0 failures**, **82 layout checks / 0 problems**, staleness
+guard 0 on both, `Tests/RtPathGuard.ps1` exit 0, and a full `cmake --build build-new --config Release` (VST3 +
+Standalone + both console apps) exit 0. `[28]`'s golden fingerprint is still `4BC3AA231178C071` after the codec
+bump and two new parameters, which is the "bit-identical at probability 1.0" half of the gate answered on the
+whole 161280-sample take rather than on two bars. `launch/` still waits for Live and the standalone to be closed.
+
+Still open from 4.1 and unchanged by this: a shift is two stores per cell, so shifting a row *while playing* can
+let the audio thread read a half-rotated bar for one block. The probability now makes it three.

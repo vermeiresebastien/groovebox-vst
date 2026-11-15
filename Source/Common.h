@@ -193,6 +193,45 @@ namespace Layout
     inline constexpr double maxPitchDropSemitones = 12.0;
     inline constexpr double pitchDropSweepSeconds = 0.030;
     inline constexpr double pitchDropTimeConstants = 5.0;
+
+    /**
+        Which generation of the saved record this build writes.
+
+        The number goes on the root of the state as `stateVersion`, and the step
+        payload also carries the same number as its own `v<n>:` tag. That is
+        deliberately two places for one fact: the root says what generation the whole
+        record belongs to, the tag says what codec the string in front of the reader
+        is in, and the tag is the one that has to be trusted, because a payload can
+        travel on its own — through an undo, a preset the user edited by hand, or a
+        session this build only half-read.
+
+        Version 1 was rows of two digits a step, with no version anywhere: a session's
+        shape was its only label, so a row of sixteen characters meant one digit a
+        step and a row of thirty-two meant two. Those rows still load. Version 2 is
+        two bytes a step behind the tag, which is what lets a step keep a level while
+        it is switched off and lets a level be a MIDI number rather than a hundredth.
+        Version 3 is three: the third byte is how often the step is allowed to fire, as
+        a number of 255ths, so 255 means every time and is what every cell written
+        before this feature came back from reads as. A v2 record therefore needs no
+        migration — the probability of a step it does not mention is one, which is
+        exactly what a v2 machine played — but it does come back short of the grid this
+        build writes, and the length of a payload is a fact the tests care about.
+
+        A record whose tag this build cannot name is not decoded, not repaired and not
+        re-encoded until something changes the grid, so opening a newer session in an
+        older plugin costs the user the pattern rather than the file.
+    */
+    inline constexpr int stateVersion = 3;
+
+    /**
+        How many rungs a step's probability has, both in the saved record and on the
+        grid: the byte a cell is written as is a number of these, so 255 is a step that
+        fires every time and 0 is one that never does.
+
+        255 rather than 100 because a byte is the field, and a lattice that fills it is
+        one the record cannot round. The panel still says it as a percentage.
+    */
+    inline constexpr int chanceLevels = 255;
 }
 
 /** Palette lifted from the Earworm Studio drum page. */

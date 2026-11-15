@@ -16,6 +16,7 @@
 #include <cmath>
 #include <cstdio>
 #include <thread>
+#include <tuple>
 #include <vector>
 
 using namespace gb;
@@ -340,6 +341,52 @@ int firstDifference (const std::vector<float>& a, const std::vector<float>& b, i
             return (int) i;
 
     return -1;
+}
+
+/** One step of FNV-1a, 64 bits. */
+juce::uint64 fnv1a (juce::uint64 hash, const void* data, size_t numBytes)
+{
+    const auto* bytes = static_cast<const juce::uint8*> (data);
+
+    for (size_t i = 0; i < numBytes; ++i)
+        hash = (hash ^ bytes[i]) * 0x100000001b3ull;
+
+    return hash;
+}
+
+/**
+    A fingerprint of a whole render: the length, then the exact bits of both channels.
+
+    One number that stands for an entire pass through the machine, so that a change
+    which *claims* not to touch the audio path can be checked instead of argued. It is
+    a hash and not a peak because the claim it has to answer — "these samples are the
+    same ones" — is about every sample, including the ones nobody thought to look at.
+
+    The length goes in first so that a render which stops early cannot match one that
+    does not, and the float bits are hashed raw: no rounding, no tolerance, nothing
+    that would let a slowly accumulating difference hide inside a digit.
+*/
+juce::uint64 fingerprintOf (const RenderResult& result)
+{
+    juce::uint64 hash = 0xcbf29ce484222325ull;
+
+    const int numSamples = (int) result.left.size();
+    const auto numBytes = (size_t) numSamples * sizeof (float);
+
+    hash = fnv1a (hash, &numSamples, sizeof (numSamples));
+    hash = fnv1a (hash, result.left.data(), numBytes);
+    hash = fnv1a (hash, result.right.data(), numBytes);
+
+    return hash;
+}
+
+/** The fingerprint printed the way it was recorded, so the two can be compared by eye. */
+juce::String hexOf (juce::uint64 value)
+{
+    char text[24];
+    std::snprintf (text, sizeof (text), "%016llX", (unsigned long long) value);
+
+    return { text };
 }
 
 /**
@@ -2622,32 +2669,72 @@ int main()
 
         check (processor.isStepOn (0, 3), "the edit itself happened");
 
-        // The cell as the *stored state* sees it: two characters, 00 for off.
-        const auto storedCell = [&processor] (int channel, int step)
+        // The cell as the *stored record* sees it: the step's own bytes, pulled out of
+        // the payload rather than read back through the processor's decoder.
+        // Comparing the string against the grid is the whole point of the section, and
+        // re-using the production reader would only be the same code agreeing with
+        // itself.
+        //
+        // The stride is derived from the prefix the way a decoder has to derive it, in
+        // test-local arithmetic: a section that hard-coded v2's two bytes would agree
+        // with a build that still wrote two bytes and say nothing about one that does
+        // not. What is fixed here is the expectation, not the width.
+        struct StoredStep { bool on = false; int level = -1; int chance = 255; };
+
+        auto storedStep = [&processor] (int channel, int step) -> StoredStep
         {
             const auto pattern = processor.getValueTreeState().state
                                      .getProperty ("pattern").toString();
-            const auto from = channel * (Layout::numSteps * 2 + 1) + step * 2;
-            return pattern.substring (from, from + 2);
+
+            const auto stride = pattern.startsWith ("v3:") ? 3
+                              : pattern.startsWith ("v2:") ? 2 : 0;
+
+            if (stride == 0)
+                return {};
+
+            juce::MemoryBlock bytes;
+            juce::MemoryOutputStream sink (bytes, false);
+
+            const auto body = pattern.fromFirstOccurrenceOf (":", false, false);
+            const auto at = (size_t) (channel * Layout::numSteps + step) * (size_t) stride;
+
+            if (! juce::Base64::convertFromBase64 (sink, body)
+                || bytes.getSize() < at + (size_t) stride)
+                return {};
+
+            const auto* raw = static_cast<const juce::uint8*> (bytes.getData());
+
+            return { raw[at] != 0, (int) raw[at + 1],
+                     stride > 2 ? (int) raw[at + 2] : 255 };
         };
 
-        check (storedCell (0, 3) != "00", "the edit is in the stored pattern too");
+        check (storedStep (0, 3).on && storedStep (0, 3).level == 127,
+               "the edit is in the stored pattern too",
+               "the record holds " + juce::String ((int) storedStep (0, 3).on) + "/"
+                   + juce::String (storedStep (0, 3).level));
 
         const auto undid = processor.getUndoManager().undo();
 
         check (undid, "undo reports that it did something");
-        check (storedCell (0, 3) == "00", "undo takes the stored pattern back",
-               "stored cell is \"" + storedCell (0, 3) + "\"");
+        check (! storedStep (0, 3).on, "undo takes the stored pattern back",
+               "the record still has the step switched on");
         check (! processor.isStepOn (0, 3), "undo takes the engine's pattern back too",
                "the cell is cleared in the state but still fires");
 
         processor.getUndoManager().redo();
         check (processor.isStepOn (0, 3), "redo puts the step back on in the engine",
-               "stored cell \"" + storedCell (0, 3) + "\"");
+               "the record has " + juce::String ((int) storedStep (0, 3).on));
 
         // An undo must not disturb the neighbouring edit either: step 0 predates the
-        // transaction, so it stays on through both.
+        // transaction, so it stays on through both — and at the level it was set to,
+        // which is the half of the record the old two-digit rows could not hold apart
+        // from the flag.
         check (processor.isStepOn (0, 0), "the step from before the transaction survives it");
+
+        check (storedStep (0, 0).on && std::abs (storedStep (0, 0).level - 64) <= 1,
+               "and keeps the level it was given, in the record and not only on the panel",
+               juce::String ((int) storedStep (0, 0).on) + "/" + juce::String (storedStep (0, 0).level)
+                   + " against the 0.5 it was set to");
     }
 
     //======================================================================
@@ -3102,6 +3189,8 @@ int main()
         write (Params::swingId, 0.42f);
         write (Params::swingGridId, 2.0f);
         write (Params::tempoId, 137.0f);
+        write (Params::mutateId, 0.5f);
+        write (Params::seedId, 12345.0f);
 
         for (int channel = 0; channel < Layout::numChannels; ++channel)
         {
@@ -3156,8 +3245,11 @@ int main()
         // The count is derived, not remembered. A hardcoded number was the only
         // thing that said how many parameters there were, so it went stale in
         // silence when the choke group joined them; this pair says the table has
-        // what it claims and that nothing was left out of the table.
-        constexpr int expectedParams = 4 + Params::numLaneTargets;
+        // what it claims and that nothing was left out of the table. The global half
+        // comes from `Params::globalIds()`, whose size is part of its type, so a
+        // control that joins the layout has to be written into both lists or the two
+        // checks below disagree instead of passing.
+        const auto expectedParams = (int) Params::globalIds().size() + Params::numLaneTargets;
         const auto hostedParams = (int) processor.getParameters().size();
 
         check (missing == 0, "all " + juce::String (expectedParams) + " parameters are present",
@@ -3172,6 +3264,13 @@ int main()
                juce::String (processor.getSwingGrid()));
         check (near (processor.getMasterGainDb(), -6.5f), "the master trim reaches the bus",
                juce::String (processor.getMasterGainDb(), 3));
+
+        // Both of these read the engine's own atom rather than a panel value, so the
+        // pair proves the whole route: parameter -> parameterChanged -> SequencerState.
+        check (near (processor.getMutate(), 0.5f), "mutate reaches the engine",
+               juce::String (processor.getMutate(), 4));
+        check (processor.getSeed() == 12345, "the seed reaches the engine",
+               juce::String (processor.getSeed()));
 
         // Tempo has no getter of its own — the engine reads it as it runs — so it is
         // checked through one rendered block.
@@ -4174,7 +4273,7 @@ int main()
         */
         auto throughBus = [] (const std::vector<float>& signal, int chunk, double rate)
         {
-            struct Result { float samplePeak; float truePeak; float worstTouched; };
+            struct Result { float samplePeak; float truePeak; float worstTouched; bool clipped; };
 
             gb::MasterBus bus;
 
@@ -4188,6 +4287,7 @@ int main()
             auto touched = 0.0f;
             auto bar = 0.0f;
             auto tick = 0.0f;
+            auto latched = false;
             const auto total = (int) signal.size();
 
             for (int start = 0; start < total; start += chunk)
@@ -4209,6 +4309,7 @@ int main()
                 // decay rather than the level the block reached.
                 bar = juce::jmax (bar, bus.getPeak (0));
                 tick = juce::jmax (tick, bus.getTruePeak (0));
+                latched = latched || bus.isClipping (0);
 
                 for (int i = 0; i < n; ++i)
                     touched = juce::jmax (touched,
@@ -4216,19 +4317,36 @@ int main()
                                                         - signal[(std::size_t) (start + i)]));
             }
 
-            return Result { bar, tick, touched };
+            return Result { bar, tick, touched, latched };
         };
 
-        /** A sine at `frequency` and `amplitude`, with a phase offset. */
-        auto sine = [] (double frequency, float amplitude, int length, double rate, double phase)
+        /** A sine at `frequency` and `amplitude`, with a phase offset.
+
+            Faded in over the first 64 samples, and that fade is load-bearing: a tone
+            whose first sample is at full amplitude is a step, and the band-limited
+            reconstruction of a step rings above the wave's own crest for as long as
+            the kernel is wide. Unfaded, a 0.8 tone at 441 Hz put its tick at 0.9042 on
+            sample 12 — 13 % over the crest, from nothing but its own start, at every
+            frequency in the sweep. The ring is real, and the square wave further down
+            checks it on purpose; left in here it would read as meter error.
+        */
+        auto sine = [fadeIn = 64] (double frequency, float amplitude, int length,
+                                   double rate, double phase)
         {
             std::vector<float> data ((std::size_t) length);
 
             for (int i = 0; i < length; ++i)
+            {
+                const auto envelope = i < fadeIn
+                    ? 0.5f - 0.5f * (float) std::cos (juce::MathConstants<double>::pi
+                                                        * (double) i / (double) fadeIn)
+                    : 1.0f;
+
                 data[(std::size_t) i]
-                    = amplitude
-                          * (float) std::sin (2.0 * juce::double_Pi * frequency * (double) i / rate
-                                                + phase);
+                    = amplitude * envelope
+                        * (float) std::sin (2.0 * juce::double_Pi * frequency * (double) i / rate
+                                              + phase);
+            }
 
             return data;
         };
@@ -4253,7 +4371,8 @@ int main()
 
         std::printf ("        tones whose samples straddle the crest, at amplitude %.2f:\n",
                      (double) toneLevel);
-        std::printf ("            f(Hz)   bar      bar should be   tick     crest error    gap\n");
+        std::printf ("            f(Hz)   bar      bar should be   tick     crest error    "
+                     "gap    gap should be\n");
 
         auto worstBarError = 0.0f;
         auto worstCrestError = 0.0f;
@@ -4262,6 +4381,7 @@ int main()
         {
             const auto expectedBar = toneLevel
                                        * (float) std::cos (juce::double_Pi / (double) periodSamples);
+            const auto expectedGap = 1.0f / (float) std::cos (juce::double_Pi / (double) periodSamples);
             const auto read = throughBus (straddling (periodSamples, toneLevel, 8192, sampleRate),
                                           256, sampleRate);
 
@@ -4271,11 +4391,12 @@ int main()
             worstBarError = juce::jmax (worstBarError, barError);
             worstCrestError = juce::jmax (worstCrestError, crestError);
 
-            std::printf ("          %7.0f   %.4f   %.4f          %.4f   %+.4f         %.4f\n",
+            std::printf ("          %7.0f   %.4f   %.4f          %.4f   %+.4f         %.4f   %.4f\n",
                          (double) (sampleRate / (double) periodSamples),
                          (double) read.samplePeak, (double) expectedBar, (double) read.truePeak,
                          (double) (read.truePeak / toneLevel - 1.0f),
-                         (double) (read.truePeak / juce::jmax (1.0e-9f, read.samplePeak)));
+                         (double) (read.truePeak / juce::jmax (1.0e-9f, read.samplePeak)),
+                         (double) expectedGap);
         }
 
         std::printf ("        worst across the sweep: bar off by %.5f, tick off by %.5f\n",
@@ -4285,46 +4406,47 @@ int main()
                "the bar is the sample peak, to the cos(pi/N) the sampling says it must be",
                "worst " + juce::String (worstBarError, 5) + " over the seven tones");
 
-        check (worstCrestError < 0.02f,
+        check (worstCrestError < 0.005f,
                "and the tick is the level of the wave itself, at every one of them",
                "worst " + juce::String (worstCrestError, 5)
-                   + "; a 24-tap kernel is at 0.02 of the crest by a quarter of the sample rate");
+                   + "; reading a quarter of a sample past each one costs a 24-tap kernel "
+                     "nothing it cannot resolve");
 
-        // A third of the sample rate is the row the envelope answer gets wrong. The
-        // samples land at 0 and at amplitude x sqrt(3)/2, so the bar reads 0.6928 of
-        // the wave and the gap an ideal interpolator would report is 1.1547 (+1.25 dB)
-        // by construction. What this kernel reports is more, because the same three
-        // samples stand just as well for a tone at two thirds of the sample rate and a
-        // 24-tap Hamming kernel has its transition band sitting right above Nyquist, so
-        // it answers to both. That is the honest limit of a filter this short used as a
-        // peak meter, and the row is here to keep it a measured limit rather than a
-        // surprise: it over-reads near the top of the band, it does not under-read.
+        // A third of the sample rate, where the answer is exact on the back of an
+        // envelope and there is no fade to blame for anything: the samples land at 0
+        // and at amplitude x sqrt(3)/2, so the bar reads 0.866 of the wave and the gap
+        // the reconstruction has to report is 1 / (sqrt(3)/2) = 1.1547, +1.25 dB.
+        // This is the row that used to read 1.2220, and the reason it did was the start
+        // step described above, not the kernel: the same three samples stand just as
+        // well for a tone at two thirds of the sample rate, and a 24-tap Hamming kernel
+        // was expected to answer to both. Measured with a tone that begins as a tone,
+        // it answers to neither, and gets the ideal number to three ten-thousandths.
         const auto thirdRate = sine (sampleRate / 3.0, toneLevel, 4096, sampleRate, 0.0);
         const auto third = throughBus (thirdRate, 256, sampleRate);
         const auto thirdWide = throughBus (thirdRate, 2048, sampleRate);
 
         const auto expectedThirdSamples = toneLevel * (float) (std::sqrt (3.0) / 2.0);
+        const auto idealThirdGap = 1.0f / (float) (std::sqrt (3.0) / 2.0);
         const auto thirdGap = third.truePeak / juce::jmax (1.0e-9f, third.samplePeak);
 
         std::printf ("        a 0.8 sine at a third of the sample rate: bar %.4f (the sampling lands "
-                     "on %.4f), tick %.4f, gap %.4f against the ideal 1.1547\n",
+                     "on %.4f), tick %.4f, gap %.4f against the ideal %.4f\n",
                      (double) third.samplePeak, (double) expectedThirdSamples,
-                     (double) third.truePeak, (double) thirdGap);
+                     (double) third.truePeak, (double) thirdGap, (double) idealThirdGap);
 
         check (std::abs (third.samplePeak - expectedThirdSamples) < expectedThirdSamples * 0.01f,
                "the bar reads the level the sampling actually lands on",
                "bar " + juce::String (third.samplePeak, 4) + " against the "
                    + juce::String (expectedThirdSamples, 4) + " of a 0.8 wave at three samples a period");
 
-        check (thirdGap > 1.1547f,
-               "the tick never reads less inter-sample level than the wave has",
-               "gap " + juce::String (thirdGap, 4) + " against the 1.1547 the fixture is built to be");
+        check (std::abs (third.truePeak / toneLevel - 1.0f) < 0.005f,
+               "the tick finds the crest the samples missed, at the level the wave is",
+               juce::String (third.truePeak, 4) + " for a " + juce::String (toneLevel, 2) + " sine");
 
-        check (std::abs (third.truePeak / toneLevel - 1.0f) < 0.07f,
-               "and its over-read, where the kernel meets its own image, stays under what was measured",
-               "tick " + juce::String (third.truePeak, 4) + " for a " + juce::String (toneLevel, 2)
-                   + " wave: " + juce::String (juce::Decibels::gainToDecibels (third.truePeak / toneLevel), 2)
-                   + " dB over the crest");
+        check (std::abs (thirdGap / idealThirdGap - 1.0f) < 0.01f,
+               "and it reports the gap the fixture is built to have, which is all of it and no more",
+               "gap " + juce::String (thirdGap, 4) + " against the "
+                   + juce::String (idealThirdGap, 4) + " that sqrt(3)/2 implies");
 
         check (thirdWide.truePeak == third.truePeak && thirdWide.samplePeak == third.samplePeak,
                "and the same signal reads the same at a 2048-sample block",
@@ -4396,6 +4518,21 @@ int main()
                    + juce::String (edged.truePeak / juce::jmax (1.0e-9f, edged.samplePeak), 4)
                    + " against Gibbs' 1.179 for a square with no band limit at all");
 
+        // The claim the README makes for the editor: the tick is a report. Here it is
+        // the case that makes the difference visible rather than merely asserted -- a
+        // signal whose reconstruction is over 0 dBFS while not one of its samples
+        // gets there. If the latch ever followed the tick, this is where it shows.
+        std::printf ("        that square: tick %.4f is past 0 dBFS while the bar at %.4f is not; "
+                     "clip latch %s\n",
+                     (double) edged.truePeak, (double) edged.samplePeak,
+                     edged.clipped ? "LATCHED" : "clear");
+
+        check (edged.truePeak > 1.0f && edged.samplePeak < 1.0f && ! edged.clipped,
+               "a true peak over 0 dBFS with no sample there latches nothing",
+               "tick " + juce::String (edged.truePeak, 4) + ", bar "
+                   + juce::String (edged.samplePeak, 4) + ", latch "
+                   + (edged.clipped ? "set" : "clear"));
+
         // Report, not guard: none of this touches the samples. At a 0 dB trim the
         // smoother is already exactly at target, so anything other than zero here is
         // the meter changing what the user mixed.
@@ -4451,6 +4588,1379 @@ int main()
 
             click.deleteFile();
         }
+    }
+
+    //======================================================================
+    std::printf ("\n[27] the step payload describes a step, not a digit\n");
+    {
+        /** Flushes the grid through the save path and hands back what the tree holds.
+            `getStateInformation` pushes the pattern first, so this is exactly the
+            payload that would go to disk. */
+        auto payloadOf = [] (GrooveboxProcessor& p)
+        {
+            juce::MemoryBlock blob;
+            p.getStateInformation (blob);
+            return p.getValueTreeState().state.getProperty ("pattern").toString();
+        };
+
+        /** Feeds a hand-written session the way a host would.
+
+            The bytes go through `copyXmlToBinary` rather than being typed as XML:
+            `getXmlFromBinary` only recognises that helper's own eight-byte header —
+            a magic number and a length in front of the text — and answers bare XML
+            with nullptr, which `setStateInformation` treats as a session that does
+            not exist and acts on not at all. */
+        auto loadSession = [] (GrooveboxProcessor& p, const juce::String& payload, int version = 0)
+        {
+            juce::ValueTree tree ("GROOVEBOX");
+
+            if (version > 0)
+                tree.setProperty ("stateVersion", version, nullptr);
+
+            tree.setProperty ("pattern", payload, nullptr);
+
+            if (auto xml = tree.createXml())
+            {
+                juce::MemoryBlock blob;
+                juce::AudioProcessor::copyXmlToBinary (*xml, blob);
+                p.setStateInformation (blob.getData(), (int) blob.getSize());
+            }
+        };
+
+        /** v1 rows: two digits per step, 0 meaning off, rows comma-separated. */
+        auto v1Rows = [] (int channel, int step, int level)
+        {
+            juce::StringArray rows;
+
+            for (int ch = 0; ch < Layout::numChannels; ++ch)
+            {
+                juce::String row;
+
+                for (int st = 0; st < Layout::numSteps; ++st)
+                    row += juce::String (ch == channel && st == step ? level : 0).paddedLeft ('0', 2);
+
+                rows.add (row);
+            }
+
+            return rows;
+        };
+
+        auto v1Set = [] (juce::StringArray& rows, int channel, int step, int level)
+        {
+            const auto at = step * 2;
+
+            rows.getReference (channel) = rows[channel].substring (0, at)
+                                    + juce::String (level).paddedLeft ('0', 2)
+                                    + rows[channel].substring (at + 2);
+        };
+
+        auto saveAndLoad = [] (GrooveboxProcessor& from, GrooveboxProcessor& to)
+        {
+            juce::MemoryBlock blob;
+            from.getStateInformation (blob);
+            to.setStateInformation (blob.getData(), (int) blob.getSize());
+        };
+
+        /**
+            A session as the build before this one wrote it: two bytes a step, the
+            flag and the 7-bit level, and no room at all for a probability.
+
+            The layout is spelled out here rather than handed back by the codec under
+            test, because the claim being made is about a *reader*. Only the base64 is
+            borrowed, and the alphabet is not what moved between these two builds — the
+            width of a step is.
+        */
+        auto v2Payload = [] (std::initializer_list<std::tuple<int, int, int>> hits)
+        {
+            std::array<juce::uint8, (size_t) Layout::numChannels * Layout::numSteps * 2> bytes {};
+
+            for (const auto& [channel, step, level] : hits)
+            {
+                const auto at = (size_t) (channel * Layout::numSteps + step) * 2;
+                bytes[at] = 1;
+                bytes[at + 1] = (juce::uint8) level;
+            }
+
+            return "v2:" + juce::Base64::toBase64 (bytes.data(), bytes.size());
+        };
+
+        /** One MIDI step of velocity, which is what a 7-bit level is worth. */
+        constexpr auto stepOfOne = 1.0 / 127.0;
+
+        GrooveboxProcessor processor;
+        processor.prepareToPlay (sampleRate, blockSize);
+        clearAllSteps (processor);
+
+        const auto payload = payloadOf (processor);
+        const auto& state = processor.getValueTreeState().state;
+
+        std::printf ("        this build writes %d characters of payload: %.32s...\n",
+                     (int) payload.length(), payload.toRawUTF8());
+
+        check (state.hasProperty ("stateVersion"),
+               "the root state says which format it is, instead of leaving a reader to guess",
+               juce::String ("the saved tree holds no stateVersion at all, so a compatibility "
+                              "decision has to be made from what the string looks like"));
+
+        // Both numbers are written down rather than read back from `Layout::stateVersion`
+        // and the codec's own stride. A gate that derived its expectation from the code
+        // under test could not disagree with it, and a format change is exactly the kind
+        // of thing this section exists to make expensive: these two lines are the edit.
+        check ((int) state.getProperty ("stateVersion") == 3,
+               "and the version it names is the one this build writes",
+               "got " + juce::String ((int) state.getProperty ("stateVersion")));
+
+        check (payload.startsWith ("v3:"),
+               "the payload names its own codec, so a length cannot be mistaken for a version",
+               "starts with " + payload.substring (0, 4));
+
+        // v3 is three bytes a step: the flag, the 7-bit level and the chance the step
+        // gets, as 255ths. Base64 of 192 steps is 4 characters per 3 bytes, rounded up.
+        // Naming the width here is the point - a payload that quietly changes size
+        // changes what every session means.
+        constexpr int stepBytes = 3;
+        const auto expectedLength = 3
+            + ((Layout::numChannels * Layout::numSteps * stepBytes + 2) / 3) * 4;
+
+        check (payload.length() == expectedLength,
+               "and it is exactly wide enough for " + juce::String (stepBytes)
+                   + " bytes a step, no wider",
+               juce::String (payload.length()) + " against " + juce::String (expectedLength));
+
+        //======================================================================
+        // Resolution: a step's velocity is a MIDI number, and 128 of them have to
+        // survive being written down. The v1 rows hold 0..99, so most of these were
+        // never expressible at all.
+        {
+            GrooveboxProcessor wide, wideBack;
+            wide.prepareToPlay (sampleRate, blockSize);
+            wideBack.prepareToPlay (sampleRate, blockSize);
+            clearAllSteps (wide);
+
+            for (int k = 0; k < 128; ++k)
+            {
+                wide.setStep (k / Layout::numSteps, k % Layout::numSteps, true);
+                wide.setStepVelocity (k / Layout::numSteps, k % Layout::numSteps, (float) k / 127.0f);
+            }
+
+            saveAndLoad (wide, wideBack);
+
+            auto lost = 0;
+            auto worst = 0.0f;
+
+            for (int k = 0; k < 128; ++k)
+            {
+                const auto channel = k / Layout::numSteps;
+                const auto step = k % Layout::numSteps;
+                const auto want = (float) k / 127.0f;
+
+                if (! wideBack.isStepOn (channel, step))
+                {
+                    ++lost;
+                    continue;
+                }
+
+                const auto error = std::abs (wideBack.getStepVelocity (channel, step) - want);
+                worst = juce::jmax (worst, error);
+
+                if (error > 1.0e-6f)
+                    ++lost;
+            }
+
+            std::printf ("        all 128 velocities k/127 across eight lanes: %d wrong, worst off by %.6f\n",
+                         lost, (double) worst);
+
+            check (lost == 0,
+                   "every velocity a MIDI number can name comes back exactly",
+                   juce::String (lost) + " of 128 come back elsewhere, worst by "
+                       + juce::String (worst, 6) + " ("
+                       + juce::String (worst / (float) stepOfOne, 3) + " MIDI steps)");
+        }
+
+        //======================================================================
+        // A step that is off still carries the level it will come back at - the
+        // engine header has said so all along, and the grid paints velocity on off
+        // cells - so the payload has to keep the two fields apart rather than encode
+        // off as "zero velocity".
+        {
+            GrooveboxProcessor quiet, quietBack;
+            quiet.prepareToPlay (sampleRate, blockSize);
+            quietBack.prepareToPlay (sampleRate, blockSize);
+            clearAllSteps (quiet);
+
+            quiet.setStep (5, 9, false);
+            quiet.setStepVelocity (5, 9, 64.0f / 127.0f);
+
+            saveAndLoad (quiet, quietBack);
+
+            std::printf ("        an off step at 64/127: on %d, velocity %.6f\n",
+                         (int) quietBack.isStepOn (5, 9),
+                         (double) quietBack.getStepVelocity (5, 9));
+
+            check (! quietBack.isStepOn (5, 9), "an off step comes back off",
+                   juce::String ((int) quietBack.isStepOn (5, 9)));
+
+            check (std::abs (quietBack.getStepVelocity (5, 9) - 64.0f / 127.0f) < 1.0e-6f,
+                   "and keeps the level it was given while it was off",
+                   "left at 64/127, came back at " + juce::String (quietBack.getStepVelocity (5, 9), 6)
+                       + " -- " + juce::String ((quietBack.getStepVelocity (5, 9) - 64.0f / 127.0f) * 127.0f, 1)
+                       + " of a MIDI step away from it");
+        }
+
+        //======================================================================
+        // The other half of that, through the two operations a drummer actually
+        // uses: turning a row and saving it. A shift that moved only the lit cells
+        // would look right in the grid and quietly drop the levels waiting behind
+        // them, and a payload that cannot hold a level for an off step would do the
+        // same on the way to disk. So the row is shifted first and the round trip
+        // is what is measured.
+        {
+            GrooveboxProcessor moved, movedBack;
+            moved.prepareToPlay (sampleRate, blockSize);
+            movedBack.prepareToPlay (sampleRate, blockSize);
+            clearAllSteps (moved);
+
+            moved.setStep (7, 2, true);
+            moved.setStepVelocity (7, 2, 100.0f / 127.0f);
+            moved.setStepVelocity (7, 3, 33.0f / 127.0f);
+            moved.setStep (7, 15, true);
+            moved.setStepVelocity (7, 15, 1.0f);
+
+            moved.shiftChannelRow (7, 3);
+
+            saveAndLoad (moved, movedBack);
+
+            std::printf ("        a row turned by 3 and saved back: (7,5)=%d@%.4f (7,6)=%d@%.4f (7,2)=%d@%.4f\n",
+                         (int) movedBack.isStepOn (7, 5), (double) movedBack.getStepVelocity (7, 5),
+                         (int) movedBack.isStepOn (7, 6), (double) movedBack.getStepVelocity (7, 6),
+                         (int) movedBack.isStepOn (7, 2), (double) movedBack.getStepVelocity (7, 2));
+
+            check (movedBack.isStepOn (7, 5) && movedBack.isStepOn (7, 2) && ! movedBack.isStepOn (7, 6),
+                   "a shifted row comes back with its steps where the turn put them",
+                   "from 2, 3 and 15 by three, got " + juce::String ((int) movedBack.isStepOn (7, 5))
+                       + juce::String ((int) movedBack.isStepOn (7, 6))
+                       + juce::String ((int) movedBack.isStepOn (7, 2)));
+
+            const auto offBy = [&movedBack] (int step, float want)
+            {
+                return std::abs (movedBack.getStepVelocity (7, step) - want) * 127.0f;
+            };
+
+            const auto travel = offBy (5, 100.0f / 127.0f) + offBy (6, 33.0f / 127.0f) + offBy (2, 1.0f);
+
+            check (travel < 1.0e-4f,
+                   "and every step's level travelled with it, including the one left off",
+                   "steps 5, 6 and 2 came back " + juce::String (offBy (5, 100.0f / 127.0f), 1) + ", "
+                       + juce::String (offBy (6, 33.0f / 127.0f), 1) + " and "
+                       + juce::String (offBy (2, 1.0f), 1) + " of a MIDI step away from where they were left");
+        }
+
+        //======================================================================
+        // Back, not just forward. Sessions already on this machine are v1 rows of
+        // digits and v0 rows of ones and zeros; both have to keep loading, and the
+        // rules the plan flagged - a short row invents nothing, a long row cannot
+        // spill into the next channel - have to stay rules rather than accidents.
+        {
+            GrooveboxProcessor old, oldBack;
+            old.prepareToPlay (sampleRate, blockSize);
+            oldBack.prepareToPlay (sampleRate, blockSize);
+            clearAllSteps (old);
+
+            auto rows = v1Rows (0, 0, 75);
+            v1Set (rows, 0, 5, 5);
+            v1Set (rows, 2, 15, 99);
+            loadSession (oldBack, rows.joinIntoString (","));
+
+            std::printf ("        a v1 session: (0,0)=%.4f (0,5)=%.4f (2,15)=%.4f\n",
+                         (double) oldBack.getStepVelocity (0, 0),
+                         (double) oldBack.getStepVelocity (0, 5),
+                         (double) oldBack.getStepVelocity (2, 15));
+
+            check (oldBack.isStepOn (0, 0) && oldBack.isStepOn (0, 5) && oldBack.isStepOn (2, 15),
+                   "a session of v1 digits still loads",
+                   "got " + juce::String ((int) oldBack.isStepOn (0, 0)) + juce::String ((int) oldBack.isStepOn (0, 5))
+                       + juce::String ((int) oldBack.isStepOn (2, 15)));
+
+            // Half a MIDI step, because a v1 level lives on a lattice of hundredths:
+            // what is being promised is that the new format is finer than the old one,
+            // not that it can hold a hundredth exactly.
+            const auto v1Tolerance = 0.5f / 127.0f;
+
+            check (std::abs (oldBack.getStepVelocity (0, 0) - 0.75f) <= v1Tolerance,
+                   "at the level its own digits said, to half the new format's step",
+                   juce::String (oldBack.getStepVelocity (0, 0), 6) + " against the 0.75 of '75'");
+
+            check (std::abs (oldBack.getStepVelocity (0, 5) - 0.05f) <= v1Tolerance,
+                   "including the quiet end, where a hundredth is nearly half a step",
+                   juce::String (oldBack.getStepVelocity (0, 5), 6) + " against the 0.05 of '05'");
+
+            check (std::abs (oldBack.getStepVelocity (2, 15) - 0.99f) <= v1Tolerance,
+                   "and the last step of the last row, where a shift or an off-by-one shows",
+                   juce::String (oldBack.getStepVelocity (2, 15), 6) + " against the 0.99 of '99'");
+
+            check (! oldBack.isStepOn (1, 1) && ! oldBack.isStepOn (11, 0),
+                   "and the cells the digits left at zero are still off");
+
+            // v2, the codec one generation behind this one. It is not a hypothetical:
+            // it is what every session saved since 4.1 holds. What it lacks is not a
+            // field but a *width*, so a reader that indexed the payload by one
+            // compile-time stride — the constant this build replaced with
+            // `strideForCodec` — has no answer for it, and the answer it needs is
+            // "a step that never mentioned a probability is rolled every time", not
+            // "that byte was zero, so the lane is silent".
+            {
+                GrooveboxProcessor fromV2;
+                fromV2.prepareToPlay (sampleRate, blockSize);
+                clearAllSteps (fromV2);
+
+                loadSession (fromV2, v2Payload ({ { 0, 4, 100 }, { 3, 15, 64 }, { 11, 0, 127 } }), 2);
+
+                std::printf ("        a v2 session: (0,4)=%.4f@%.4f  (11,0)=%.4f@%.4f chance %.4f/%.4f\n",
+                             (double) fromV2.isStepOn (0, 4), (double) fromV2.getStepVelocity (0, 4),
+                             (double) fromV2.isStepOn (11, 0), (double) fromV2.getStepVelocity (11, 0),
+                             (double) fromV2.getStepChance (0, 4), (double) fromV2.getStepChance (11, 0));
+
+                check (fromV2.isStepOn (0, 4) && fromV2.isStepOn (3, 15) && fromV2.isStepOn (11, 0)
+                           && ! fromV2.isStepOn (0, 5) && ! fromV2.isStepOn (11, 1),
+                       "a session written by the previous build still loads, last lane included",
+                       "got " + juce::String ((int) fromV2.isStepOn (0, 4))
+                           + juce::String ((int) fromV2.isStepOn (3, 15))
+                           + juce::String ((int) fromV2.isStepOn (11, 0)));
+
+                const auto levelOffBy = [&fromV2] (int channel, int step, int want)
+                {
+                    return std::abs (fromV2.getStepVelocity (channel, step)
+                                      - (float) want / 127.0f) * 127.0f;
+                };
+
+                const auto levelsTravelled = levelOffBy (0, 4, 100) + levelOffBy (3, 15, 64)
+                                               + levelOffBy (11, 0, 127);
+
+                check (levelsTravelled < 1.0e-4f,
+                       "at the levels its own bytes named, to a thousandth of a MIDI step",
+                       "off by " + juce::String (levelOffBy (0, 4, 100), 4) + ", "
+                           + juce::String (levelOffBy (3, 15, 64), 4) + " and "
+                           + juce::String (levelOffBy (11, 0, 127), 4));
+
+                auto neverRolled = 0;
+
+                for (int channel = 0; channel < Layout::numChannels; ++channel)
+                    for (int step = 0; step < Layout::numSteps; ++step)
+                        if (fromV2.getStepChance (channel, step) != 1.0f)
+                            ++neverRolled;
+
+                check (neverRolled == 0,
+                       "and every step it says nothing about is rolled every time",
+                       juce::String (neverRolled)
+                           + " step(s) came in with a probability that is not 1.0");
+            }
+
+            // v0: one character per step, 1 meaning on at full velocity.
+            GrooveboxProcessor v0;
+            v0.prepareToPlay (sampleRate, blockSize);
+            clearAllSteps (v0);
+
+            juce::String v0Rows;
+
+            for (int channel = 0; channel < Layout::numChannels; ++channel)
+            {
+                v0Rows += (channel == 3 ? juce::String ("0000001000000000")
+                                         : juce::String ("0000000000000000"));
+
+                v0Rows += channel < Layout::numChannels - 1 ? ',' : ' ';
+            }
+
+            loadSession (v0, v0Rows.trim());
+
+            check (v0.isStepOn (3, 6) && ! v0.isStepOn (3, 5),
+                   "a v0 session of bare ones and zeros still loads",
+                   "got " + juce::String ((int) v0.isStepOn (3, 6)));
+
+            check (std::abs (v0.getStepVelocity (3, 6) - 1.0f) < 1.0e-6f,
+                   "and its steps come in at full velocity, as they always did",
+                   juce::String (v0.getStepVelocity (3, 6), 6));
+
+            // Short row, long row. The truncation is the behaviour; what matters is
+            // that it is bounded and cannot reach into a neighbouring channel.
+            GrooveboxProcessor ragged, spilled;
+            ragged.prepareToPlay (sampleRate, blockSize);
+            spilled.prepareToPlay (sampleRate, blockSize);
+            clearAllSteps (ragged);
+            clearAllSteps (spilled);
+
+            auto shortRows = v1Rows (0, 0, 75);
+            shortRows.getReference (0) = "75";
+            shortRows.getReference (1) = v1Rows (1, 3, 50).getReference (1);
+
+            loadSession (ragged, shortRows.joinIntoString (","));
+
+            check (ragged.isStepOn (0, 0) && ! ragged.isStepOn (0, 1) && ! ragged.isStepOn (0, 15),
+                   "a row shorter than the grid leaves the steps it does not reach off",
+                   "got " + juce::String ((int) ragged.isStepOn (0, 1)) + " "
+                       + juce::String ((int) ragged.isStepOn (0, 15)));
+
+            check (ragged.isStepOn (1, 3),
+                   "and the next row is read from where the short one stopped",
+                   "row 1 step 3 came back " + juce::String ((int) ragged.isStepOn (1, 3)));
+
+            auto longRows = v1Rows (0, 0, 75);
+            longRows.getReference (0) += "5060708090";
+
+            loadSession (spilled, longRows.joinIntoString (","));
+
+            auto stray = 0;
+
+            for (int step = 1; step < Layout::numSteps; ++step)
+                if (spilled.isStepOn (0, step))
+                    ++stray;
+
+            check (stray == 0 && spilled.isStepOn (0, 0),
+                   "and a row longer than the grid is truncated at the edge, not spliced into it",
+                   juce::String (stray) + " step(s) beyond step 0 in a row that holds one");
+        }
+
+        //======================================================================
+        // Forward. A payload from a newer build than this one has fields this code
+        // cannot name, and there is exactly one safe answer to that: leave it alone.
+        {
+            GrooveboxProcessor future;
+            future.prepareToPlay (sampleRate, blockSize);
+            clearAllSteps (future);
+            future.setStep (0, 3, true);
+
+            const auto ours = payloadOf (future);
+
+            loadSession (future, "v99:" + ours.substring (3), 99);
+
+            const auto afterLoad = payloadOf (future);
+
+            check (afterLoad == "v99:" + ours.substring (3),
+                   "a payload from a newer build passes straight back out, untouched",
+                   "came in as v99 and left as " + afterLoad.substring (0, 4));
+
+            // The header of the record agrees with the payload inside it: stamping 2 on
+            // top of a v99 pattern would describe a record this build did not write.
+            check ((int) future.getValueTreeState().state.getProperty ("stateVersion") == 99,
+                   "and the version on the root is left at what came in",
+                   "the root now says "
+                       + juce::String ((int) future.getValueTreeState().state.getProperty ("stateVersion")));
+
+            // What the machine plays while it is holding one is nothing at all. The
+            // README claims an unreadable session comes back silent rather than as the
+            // pattern that happened to be on screen before the load, so the step that
+            // was lit a moment ago has to be out.
+            check (! future.isStepOn (0, 3) && ! future.isStepOn (1, 1),
+                   "and a build that cannot read it plays nothing it did not read",
+                   "the grid still holds a step from before the load");
+
+            future.setStep (1, 1, true);
+
+            check (payloadOf (future).startsWith ("v3:"),
+                   "and painting one cell takes the row over in this build's own format",
+                   "after an edit it writes " + payloadOf (future).substring (0, 4));
+        }
+    }
+
+    //======================================================================
+    std::printf ("\n[28] a render has a fingerprint\n");
+    {
+        /**
+            What the kit below sounds like, recorded as one number.
+
+            A baseline, not a threshold: captured from this file on the tree before the
+            variation features and printed on every run, so a red line names both halves
+            of the hash that moved. What makes it a gate rather than a figure somebody
+            re-records whenever it is inconvenient is the pair of checks around it — the
+            same kit rendered twice has to give the same bits, a session saved and
+            loaded back has to give the same bits, and one level changed has to give
+            different ones. A fingerprint that could not tell those apart would be
+            measuring nothing, whatever it matched.
+
+            Recorded from `out/smoke-42-fingerprint.txt`: peak 0.68136, 161280 samples,
+            on the tree that ships the v2 step payload and no variation features. It is
+            pinned to this machine and this runtime, as every exact-sample claim in
+            this file is.
+        */
+        constexpr juce::uint64 goldenFingerprint = 0x4BC3AA231178C071ull;
+
+        const auto noiseSamples = makeNoiseSamples (30000);
+        const auto noiseWav = makeNoiseWav ("fingerprint-noise", noiseSamples, sampleRate);
+        const auto toneWav  = makeToneWav ("fingerprint-tone", 997.0, 22050, sampleRate);
+        const auto clickWav = makeClickWav ("fingerprint-click", 2048, sampleRate);
+
+        /**
+            A bar that touches every part of the path on purpose.
+
+            Four lanes rather than one, because this number has to stand for the whole
+            machine: a sustained lane pitched up, which is the resampler's higher cutoff
+            band and a tail that runs across the bar boundary; a lane dropped an octave,
+            which is the glide and the renormalisation at the end of the source; two
+            lanes in a choke group, which is the fade of a hit that is not the one being
+            struck; and hits on the off-beats under 1/16 swing, so the sub-sample
+            timings are in the bits rather than only in the transport.
+
+            Every velocity is `k / 127`. Not a stylistic choice: the saved record stores
+            a level as a 7-bit number, so an arbitrary float comes back on the nearest
+            rung of that lattice and the render moves by up to half a MIDI step — which
+            is what [27] measures. A fingerprint that intends to say "the session that
+            came back is the machine that went in" has to start from levels the record
+            can actually hold.
+
+            `step0Level` is the one value the sensitivity check moves.
+        */
+        auto armKit = [&] (GrooveboxProcessor& p, int step0Level)
+        {
+            p.prepareToPlay (sampleRate, blockSize);
+
+            juce::String error;
+            const auto loaded = p.loadSampleIntoChannel (0, noiseWav, error)
+                                  && p.loadSampleIntoChannel (1, toneWav, error)
+                                  && p.loadSampleIntoChannel (2, clickWav, error)
+                                  && p.loadSampleIntoChannel (3, noiseWav, error);
+
+            if (! loaded)
+                std::printf ("        !! the kit did not load: %s\n", error.toRawUTF8());
+
+            clearAllSteps (p);
+
+            // Every value below is a dyadic fraction on purpose. The pattern codec has
+            // a 7-bit lattice spelled out in the comment above; the parameters are
+            // floats written into the state as text, and a number like 0.95 would put
+            // this check at the mercy of that text round trip for no reason except that
+            // somebody liked the sound of the digit.
+            for (int channel = 0; channel < 4; ++channel)
+            {
+                p.setChannelLevel (channel, 1.0f - 0.25f * (float) channel);
+                p.setChannelPitch (channel, channel == 1 ? 7 : -2 * channel);
+                p.setChannelAttack (channel, channel == 1 ? 0.25f : 0.0f);
+                p.setChannelDecay (channel, 0.25f + 0.125f * (float) channel);
+                p.setChannelSustain (channel, channel == 1 ? 0.5f : 0.125f);
+                p.setChannelRelease (channel, 0.125f + 0.125f * (float) channel);
+            }
+
+            p.setChannelPitchDrop (3, 12);
+            p.setChannelChokeGroup (2, 1);
+            p.setChannelChokeGroup (3, 1);
+
+            struct Hit
+            {
+                int channel, step, level;
+            };
+
+            const Hit hits[] = { { 0, 0, step0Level }, { 0, 6, 79 },   { 0, 10, 108 },
+                                 { 1, 2, 114 },  { 1, 7, 70 },    { 1, 11, 127 },   { 1, 14, 44 },
+                                 { 2, 0, 95 },   { 2, 4, 127 },   { 2, 8, 63 },     { 2, 12, 114 },
+                                 { 3, 3, 88 },   { 3, 5, 50 },    { 3, 9, 127 },    { 3, 13, 76 } };
+
+            for (const auto& hit : hits)
+            {
+                p.setStep (hit.channel, hit.step, true);
+                p.setStepVelocity (hit.channel, hit.step, (float) hit.level / 127.0f);
+            }
+
+            p.setManualTempo (132.0);
+            p.setSwingGrid (2);   // the 1/16s: every off-beat step then lands off-grid
+            p.setSwing (0.25f);
+            p.setMasterGainDb (-3.5f);
+        };
+
+        /** Just over two bars at 132, so a leak per onset has room to add up. */
+        constexpr int fingerprintBlocks = 630;
+        const int fingerprintSamples = fingerprintBlocks * blockSize;
+
+        /**
+            One render, from a processor somebody else armed.
+
+            The trim arrives through a 20 ms smoother, so it is given silent blocks to
+            converge in before the transport is armed. Without that the fingerprint
+            records the ramp rather than the kit, and a change to the smoothing moves
+            it for a reason that has nothing to do with the sound.
+        */
+        auto take = [&] (GrooveboxProcessor& p, int numBlocks)
+        {
+            {
+                juce::AudioBuffer<float> settle (2, blockSize);
+                juce::MidiBuffer silent;
+
+                for (int i = 0; i < 32; ++i)
+                {
+                    settle.clear();
+                    p.processBlock (settle, silent);
+                }
+            }
+
+            p.resetTransport();
+            p.setPlaying (true);
+
+            auto out = render (p, numBlocks * blockSize, blockSize, sampleRate);
+            p.setPlaying (false);
+
+            return out;
+        };
+
+        GrooveboxProcessor processor;
+        armKit (processor, 127);
+        const auto taken = take (processor, fingerprintBlocks);
+        const auto stamp = fingerprintOf (taken);
+
+        GrooveboxProcessor again;
+        armKit (again, 127);
+        const auto repeat = fingerprintOf (take (again, fingerprintBlocks));
+
+        GrooveboxProcessor softer;
+        armKit (softer, 64);
+        const auto moved = take (softer, fingerprintBlocks);
+
+        GrooveboxProcessor halved;
+        armKit (halved, 127);
+        const auto shortStamp = fingerprintOf (take (halved, fingerprintBlocks / 2));
+
+        std::printf ("        fingerprint %s over %d samples, peak %s, rms %s\n",
+                     hexOf (stamp).toRawUTF8(), (int) taken.left.size(),
+                     juce::String (peakOf (taken.left), 5).toRawUTF8(),
+                     juce::String (rmsOf (taken.left), 5).toRawUTF8());
+
+        // The precondition every claim under it rests on: a fingerprint of silence is
+        // one number, and silence would reproduce it perfectly.
+        check (peakOf (taken.left) > 0.1f && peakOf (taken.right) > 0.1f,
+               "the kit is playing, so there is something to fingerprint",
+               "peak " + juce::String (peakOf (taken.left), 5) + " / "
+                   + juce::String (peakOf (taken.right), 5));
+
+        // Energy in the second bar: a render that only holds the first one would let a
+        // fingerprint of two samples pass as one of two bars.
+        check (peakFrom (taken.left, fingerprintSamples / 2) > 0.05f,
+               "and it is still playing in the second bar",
+               "nothing above 0.05 after sample " + juce::String (fingerprintSamples / 2));
+
+        check (stamp == repeat,
+               "the same kit, armed the same way and rendered twice, is the same bits",
+               hexOf (stamp) + " against " + hexOf (repeat));
+
+        /**
+            The claim the variation features have to answer.
+
+            4.2 adds a per-step probability and one mutate amount, and promises that at
+            a probability of one it changes nothing about what the engine renders. That
+            promise is this line. It is checked against a number recorded from the tree
+            before the feature, not against a tolerance invented afterwards, so
+            "structurally untouched" is either true in the bits or it is red.
+        */
+        check (stamp == goldenFingerprint,
+               "and the render is the one recorded before the variation features",
+               "got " + hexOf (stamp) + ", recorded " + hexOf (goldenFingerprint)
+                   + "; if the DSP moved on purpose, re-capture from a run you have read");
+
+        check (fingerprintOf (moved) != stamp,
+               "one level changed does change it, so the gate can see what it claims",
+               "the first kick at 64 instead of 127 fingerprinted back as "
+                   + hexOf (fingerprintOf (moved)));
+
+        // The difference has to start where the change is, not eventually: a hash that
+        // only disagreed in the last few samples would be recording the tails of a
+        // render nobody could have heard a difference in.
+        check (firstDifference (taken.left, moved.left, 0, fingerprintSamples) >= 0
+                 && firstDifference (taken.left, moved.left, 0, fingerprintSamples)
+                      < fingerprintSamples / 4,
+               "and it parts company in the first bar, on the hit that was changed",
+               "first difference at sample "
+                   + juce::String (firstDifference (taken.left, moved.left, 0, fingerprintSamples)));
+
+        check (shortStamp != stamp,
+               "the length is folded in, so a render that stops early is not this record",
+               hexOf (shortStamp));
+
+        /**
+            A session that comes back is the machine that went in.
+
+            This earns its place by going through the save path and the audio rather
+            than through getters. Every check in [27] reads the grid back through an
+            accessor, so none of them can see a step that reads correctly and does not
+            fire — and a field a codec forgets to carry, which is exactly what the
+            probability of 4.2 risks, is one lane gone silent and nothing else.
+
+            The two halves belong together: the record has to come back cell for cell,
+            and the kit has to sound like it did. The first is the precondition, and
+            without it a red line here would not say which of the two moved.
+        */
+        {
+            juce::MemoryBlock blob;
+            processor.getStateInformation (blob);
+
+            GrooveboxProcessor restored;
+            restored.prepareToPlay (sampleRate, blockSize);
+            restored.setStateInformation (blob.getData(), (int) blob.getSize());
+
+            auto cells = 0;
+
+            for (int channel = 0; channel < Layout::numChannels; ++channel)
+                for (int step = 0; step < Layout::numSteps; ++step)
+                    if (processor.isStepOn (channel, step) != restored.isStepOn (channel, step)
+                          || processor.getStepVelocity (channel, step)
+                               != restored.getStepVelocity (channel, step))
+                        ++cells;
+
+            check (cells == 0,
+                   "the saved record comes back cell for cell, on the lattice it stores",
+                   juce::String (cells) + " step(s) read back different");
+
+            const auto roundTrip = take (restored, fingerprintBlocks);
+            const auto tripStamp = fingerprintOf (roundTrip);
+
+            std::printf ("        restored %s, first difference at sample %d\n",
+                         hexOf (tripStamp).toRawUTF8(),
+                         firstDifference (taken.left, roundTrip.left, 0, fingerprintSamples));
+
+            check (tripStamp == stamp,
+                   "and saving the kit, loading it back and playing it gives the same bits",
+                   "restored as " + hexOf (tripStamp) + " against " + hexOf (stamp)
+                       + ", first difference at sample "
+                       + juce::String (firstDifference (taken.left, roundTrip.left, 0, fingerprintSamples)));
+        }
+
+        noiseWav.deleteFile();
+        toneWav.deleteFile();
+        clickWav.deleteFile();
+    }
+
+    //======================================================================
+    /**
+        4.2's other half, and the half the plan actually named.
+
+        [28] answers "did adding a probability change what a certain grid renders" —
+        it is a baseline and it is a no-op proof. This section answers the question a
+        listener would ask next: is a take a *take*. Two claims, both of which a naive
+        `juce::Random` in the audio loop would fail — a counter that advances per roll
+        makes every pass different, and a draw that reads the wall clock makes a bounce
+        disagree with the live pass it came from.
+
+        Everything here asks the engine's own `wouldThisHitFire`, which is the only
+        thing that decides whether a painted step sounds, rather than a model of it in
+        the test. The audio checks at the bottom are what tie the seam to the samples:
+        a seam that was never called by `fireStep` would answer every question below
+        perfectly and still play the grid as if the knob did not exist.
+    */
+    std::printf ("\n[29] a probability is a take, not a shimmer\n");
+    {
+        /** Sixteen bars is the plan's sixty-four, at the resolution this needs: every
+            bar's own key must appear, and the aggregate has to be long enough that a
+            generator which is not avalanching shows up in the fraction. */
+        constexpr int rollBars = 64;
+        constexpr int rollLanes = 4;
+        constexpr int rollCells = rollBars * Layout::numSteps * rollLanes;
+
+        const auto clickWav = makeClickWav ("roll-click", 1200, sampleRate);
+
+        /**
+            The grid every question below is asked against.
+
+            Every step of four lanes painted on, so a drop can only ever come from the
+            roll and never from a hole in the pattern, and every velocity at 127 so the
+            hits are the same ones wherever they survive. The lanes are the machine's,
+            not the test's: the knob and the seed go in through the parameters the host
+            would use.
+        */
+        auto armGrid = [&] (GrooveboxProcessor& p, int forBlockSize)
+        {
+            p.prepareToPlay (sampleRate, forBlockSize);
+
+            juce::String error;
+            for (int channel = 0; channel < rollLanes; ++channel)
+                p.loadSampleIntoChannel (channel, clickWav, error);
+
+            clearAllSteps (p);
+
+            for (int channel = 0; channel < rollLanes; ++channel)
+                for (int step = 0; step < Layout::numSteps; ++step)
+                {
+                    p.setStep (channel, step, true);
+                    p.setStepVelocity (channel, step, 1.0f);
+                }
+
+            p.setManualTempo (132.0);
+            p.setSwingGrid (2);
+            p.setSwing (0.25f);
+            p.setMasterGainDb (-3.5f);
+        };
+
+        auto setEveryChance = [&] (GrooveboxProcessor& p, float chance)
+        {
+            for (int channel = 0; channel < rollLanes; ++channel)
+                for (int step = 0; step < Layout::numSteps; ++step)
+                    p.setStepChance (channel, step, chance);
+        };
+
+        /**
+            The whole take, as one byte per cell.
+
+            Every cell goes into the slot that names it — bar, then step, then lane —
+            and the walk itself can run either direction. That is the point: an answer
+            that depends on what was asked before it lands in different slots when the
+            grid is walked backwards, and a vector built by `push_back` would hide that
+            behind a difference in order. Indexed, the two walks have to agree cell for
+            cell or something in the roll is remembering.
+        */
+        auto decisions = [&] (GrooveboxProcessor& p, bool backwards)
+        {
+            std::vector<juce::uint8> cells ((size_t) rollCells, 0);
+
+            const auto slot = [&] (int bar, int step, int lane)
+            {
+                return (size_t) ((bar * Layout::numSteps + step) * rollLanes + lane);
+            };
+
+            /**
+                The walk, mirrored rather than written twice.
+
+                The first version of this counted down from `numSteps - (backwards ? 1
+                : 0)`, which in the forward direction starts the counter one *past* its
+                own end condition: the body ran zero times, every cell kept the zero it
+                was allocated with, and seven checks went red against a machine that had
+                been answering correctly all along. Worse are the three that went green —
+                `no cell comes back as the knob opens` and `a cell that says never is
+                never kept` are both satisfied by an empty answer, which is the same
+                harness fault AGENTS.md already records for a load that never happened.
+                Mirroring one index makes the two walks the same shape, so the only thing
+                they can differ in is the answers themselves.
+            */
+            const auto atIndex = [backwards] (int count, int i) { return backwards ? count - 1 - i : i; };
+
+            for (int i = 0; i < rollBars; ++i)
+                for (int j = 0; j < Layout::numSteps; ++j)
+                    for (int k = 0; k < rollLanes; ++k)
+                    {
+                        const auto bar  = atIndex (rollBars, i);
+                        const auto step = atIndex (Layout::numSteps, j);
+                        const auto lane = atIndex (rollLanes, k);
+
+                        cells[slot (bar, step, lane)] = p.wouldThisStepHit (bar, step, lane) ? 1 : 0;
+                    }
+
+            return cells;
+        };
+
+        auto hashOf = [] (const std::vector<juce::uint8>& cells)
+        {
+            return fnv1a (0xcbf29ce484222325ull, cells.data(), cells.size());
+        };
+
+        auto firedOf = [] (const std::vector<juce::uint8>& cells)
+        {
+            auto fired = 0;
+
+            for (const auto cell : cells)
+                fired += cell != 0 ? 1 : 0;
+
+            return fired;
+        };
+
+        /**
+            One render of about two bars, so a bar's key is exercised more than once.
+            The same settle-before-arming as [28]: the trim has to be still when the
+            first onset happens, or the fingerprint records a ramp.
+        */
+        auto takeRoll = [&] (GrooveboxProcessor& p)
+        {
+            {
+                juce::AudioBuffer<float> settle (2, blockSize);
+                juce::MidiBuffer silent;
+
+                for (int i = 0; i < 32; ++i)
+                {
+                    settle.clear();
+                    p.processBlock (settle, silent);
+                }
+            }
+
+            p.resetTransport();
+            p.setPlaying (true);
+
+            auto out = render (p, 320 * blockSize, blockSize, sampleRate);
+            p.setPlaying (false);
+
+            return out;
+        };
+
+        /** A probability a cell can be set to, on the 1/255 lattice the record holds. */
+        const auto half = 128.0f / (float) Layout::chanceLevels;
+
+        GrooveboxProcessor machine;
+        armGrid (machine, blockSize);
+        machine.setSeed (7);
+        setEveryChance (machine, half);
+        machine.setMutate (1.0f);
+
+        GrooveboxProcessor mirror;
+        armGrid (mirror, 256);
+        mirror.setSeed (7);
+        setEveryChance (mirror, half);
+        mirror.setMutate (1.0f);
+
+        const auto forward = decisions (machine, false);
+        const auto reverse = decisions (mirror, true);
+
+        GrooveboxProcessor shut;
+        armGrid (shut, blockSize);
+        shut.setSeed (7);
+        setEveryChance (shut, half);
+        shut.setMutate (0.0f);
+
+        const auto closed = decisions (shut, false);
+
+        std::printf ("        %d cells at mutate 1: %d fire (%.4f of them), "
+                     "at mutate 0: %d fire, seed 7 forward %s\n",
+                     rollCells, firedOf (forward), (float) firedOf (forward) / (float) rollCells,
+                     firedOf (closed), hexOf (hashOf (forward)).toRawUTF8());
+
+        // The precondition: a take that dropped everything, or nothing, would let every
+        // claim under it pass on a degenerate answer.
+        check (firedOf (closed) == rollCells,
+               "with variation shut every cell the grid claims is rolled through",
+               juce::String (firedOf (closed)) + " of " + juce::String (rollCells));
+
+        check (firedOf (forward) > 0 && firedOf (forward) < rollCells,
+               "and with it open some cells drop and some do not",
+               juce::String (firedOf (forward)) + " of " + juce::String (rollCells) + " fire");
+
+        check (hashOf (forward) == hashOf (reverse),
+               "the same seed and the same grid give the same take, walked in either order",
+               hexOf (hashOf (forward)) + " against " + hexOf (hashOf (reverse))
+                   + ", on a second machine prepared at a 256-sample block");
+
+        // The plan's phrase, made checkable: nothing in the answer is a clock. A bar
+        // asked for twice on one machine is the same answer twice, and no cell knows
+        // what was asked before it.
+        check (hashOf (decisions (machine, false)) == hashOf (forward),
+               "and asking the same machine twice does not advance anything",
+               hexOf (hashOf (decisions (machine, false))) + " against " + hexOf (hashOf (forward)));
+
+        GrooveboxProcessor otherSeed;
+        armGrid (otherSeed, blockSize);
+        otherSeed.setSeed (8);
+        setEveryChance (otherSeed, half);
+        otherSeed.setMutate (1.0f);
+
+        const auto reseeded = decisions (otherSeed, false);
+
+        auto disagreed = 0;
+
+        for (size_t i = 0; i < (size_t) rollCells; ++i)
+            if (forward[i] != reseeded[i])
+                ++disagreed;
+
+        std::printf ("        seed 7 against seed 8: %d of %d cells move (%.4f)\n",
+                    disagreed, rollCells, (float) disagreed / (float) rollCells);
+
+        check (hashOf (reseeded) != hashOf (forward),
+               "a different seed is a different take", hexOf (hashOf (reseeded)));
+
+        // Half the cells moving is what the avalanche is for. Below a fifth, a neighbour
+        // of the seed leaves most of the grid where it was — a multiply that does not
+        // mix; above four fifths, one step changes every answer — a key that is not
+        // keyed on the cell at all.
+        check (disagreed > rollCells / 5 && disagreed < rollCells * 4 / 5,
+               "and neighbouring seeds disagree about about half of it, cell by cell",
+               juce::String ((float) disagreed / (float) rollCells, 4) + " of cells move");
+
+        /**
+            Opening the knob can only ever take hits away.
+
+            The draw is a function of the cell alone, and the threshold it is compared
+            against falls as the knob opens, so the fired set at one setting has to be a
+            subset of the fired set at every setting below it. That is a law about the
+            vectors, not a tolerance on a count: a single cell that comes back when the
+            knob opened further is the whole failure.
+        */
+        std::vector<std::vector<juce::uint8>> ladder;
+
+        for (int rung = 0; rung <= 4; ++rung)
+        {
+            GrooveboxProcessor m;
+            armGrid (m, blockSize);
+            m.setSeed (7);
+            setEveryChance (m, half);
+            m.setMutate ((float) rung * 0.25f);
+
+            ladder.push_back (decisions (m, false));
+        }
+
+        auto added = 0;
+
+        for (size_t rung = 1; rung < ladder.size(); ++rung)
+            for (size_t i = 0; i < (size_t) rollCells; ++i)
+                if (ladder[rung][i] != 0 && ladder[rung - 1][i] == 0)
+                    ++added;
+
+        std::printf ("        mutate ladder at 0, .25, .5, .75, 1: %d fire",
+                     firedOf (ladder[0]));
+
+        for (size_t rung = 1; rung < ladder.size(); ++rung)
+            std::printf (" then %d", firedOf (ladder[rung]));
+
+        std::printf ("\n");
+
+        check (added == 0,
+               "and no setting of the knob lets a hit through that a lower one dropped",
+               juce::String (added) + " cell(s) appear as the knob opens");
+
+        /**
+            The discount the knob is supposed to be applying.
+
+            A cell at 128/255 with the knob half open asks for `1 - 0.5 * (1 - 128/255)`
+            = 0.75098 — so the number it is compared against is the engine's own formula
+            re-evaluated, not a rounded saying of it.
+
+            The band is measured, not assumed. The first version here used four standard
+            deviations of a fair coin over these 4096 cells — 0.0271 — and the take this
+            seed actually gives sits 0.0200 from the expectation, inside by six thousandths
+            of a cell. That is the same mistake as typing a constant: a hash is not a coin,
+            and the spread of a hash over neighbouring seeds is a property of the hash that
+            can simply be measured. So the band is three times the largest departure from
+            their mean over 31 *other* seeds — seed 7 stays out of the sample, because a
+            limit drawn around the point it then gates is a tautology — and it still leaves
+            the nearest wrong discount, a quarter of the range away, far outside it.
+        */
+        constexpr int spreadSeeds = 31;
+
+        GrooveboxProcessor spreader;
+        armGrid (spreader, blockSize);
+        setEveryChance (spreader, half);
+        spreader.setMutate (0.5f);
+
+        std::array<float, spreadSeeds> fractions {};
+
+        for (int i = 0; i < spreadSeeds; ++i)
+        {
+            // Well-spaced seeds, not neighbours: this is measuring the generator's
+            // spread over the space a reroll can actually land in.
+            spreader.setSeed (1000 + i * 7717);
+
+            fractions[(size_t) i] = (float) firedOf (decisions (spreader, false))
+                                      / (float) rollCells;
+        }
+
+        auto total = 0.0f;
+
+        for (const auto fraction : fractions)
+            total += fraction;
+
+        const auto mean = total / (float) spreadSeeds;
+
+        auto radius = 0.0f;
+
+        for (const auto fraction : fractions)
+            radius = juce::jmax (radius, std::abs (fraction - mean));
+
+        const auto want = 1.0f - 0.5f * (1.0f - half);
+        const auto band = 3.0f * radius;
+        const auto halfOpen = (float) firedOf (ladder[2]) / (float) rollCells;
+
+        std::printf ("        half the knob on a half-chance cell: %.4f fired against %.4f asked;"
+                     " %d other seeds mean %.4f, worst %.4f off it, band %.4f\n",
+                     halfOpen, want, spreadSeeds, mean, radius, band);
+
+        check (std::abs (halfOpen - want) <= band,
+               "half the knob on a cell that wants three quarters fires about three quarters",
+               juce::String (halfOpen, 4) + " fired against " + juce::String (want, 4)
+                   + " asked, band +" + juce::String (band, 4) + " measured over "
+                   + juce::String (spreadSeeds) + " other seeds");
+
+        GrooveboxProcessor always;
+        armGrid (always, blockSize);
+        always.setSeed (7);
+        setEveryChance (always, 1.0f);
+        always.setMutate (1.0f);
+
+        check (firedOf (decisions (always, false)) == rollCells,
+               "a cell that says every time is never dropped, even with the knob wide open");
+
+        GrooveboxProcessor never;
+        armGrid (never, blockSize);
+        never.setSeed (7);
+        setEveryChance (never, 0.0f);
+        never.setMutate (1.0f);
+
+        check (firedOf (decisions (never, false)) == 0,
+               "and a cell that says never is never kept");
+
+        //======================================================================
+        // The seam, tied to the samples.
+        {
+            GrooveboxProcessor base;
+            armGrid (base, blockSize);
+            setEveryChance (base, half);
+            base.setMutate (0.0f);
+            base.setSeed (7);
+
+            GrooveboxProcessor open1;
+            armGrid (open1, blockSize);
+            setEveryChance (open1, half);
+            open1.setMutate (1.0f);
+            open1.setSeed (7);
+
+            GrooveboxProcessor open1Again;
+            armGrid (open1Again, blockSize);
+            setEveryChance (open1Again, half);
+            open1Again.setMutate (1.0f);
+            open1Again.setSeed (7);
+
+            GrooveboxProcessor open2;
+            armGrid (open2, blockSize);
+            setEveryChance (open2, half);
+            open2.setMutate (1.0f);
+            open2.setSeed (8);
+
+            GrooveboxProcessor certain;
+            armGrid (certain, blockSize);
+            setEveryChance (certain, 1.0f);
+            certain.setMutate (1.0f);
+            certain.setSeed (7);
+
+            GrooveboxProcessor barred;
+            armGrid (barred, blockSize);
+            setEveryChance (barred, 0.0f);
+            barred.setMutate (1.0f);
+            barred.setSeed (7);
+
+            const auto baseRender = takeRoll (base);
+            const auto baseStamp  = fingerprintOf (baseRender);
+            const auto openStamp  = fingerprintOf (takeRoll (open1));
+            const auto againStamp = fingerprintOf (takeRoll (open1Again));
+            const auto twoStamp  = fingerprintOf (takeRoll (open2));
+            const auto sureStamp = fingerprintOf (takeRoll (certain));
+            const auto noneRender = takeRoll (barred);
+
+            std::printf ("        two bars: shut %s, seed 7 %s, seed 7 again %s, seed 8 %s, "
+                         "certain %s, barred peak %s\n",
+                         hexOf (baseStamp).toRawUTF8(), hexOf (openStamp).toRawUTF8(),
+                         hexOf (againStamp).toRawUTF8(), hexOf (twoStamp).toRawUTF8(),
+                         hexOf (sureStamp).toRawUTF8(),
+                         juce::String (peakOf (noneRender.left), 6).toRawUTF8());
+
+            // The precondition every claim under it rests on: two bars of this kit with
+            // nothing dropped is audible. A silent arming would let the roll look like
+            // it reached the samples because everything else vanished.
+            check (peakOf (baseRender.left) > 0.1f && peakOf (baseRender.right) > 0.1f,
+                   "the shut machine is audible over two bars, so there is something to drop",
+                   "peak " + juce::String (peakOf (baseRender.left), 5) + " / "
+                       + juce::String (peakOf (baseRender.right), 5));
+
+            check (openStamp != baseStamp,
+                   "the roll reaches the samples, not only the seam",
+                   "seed 7 at full variation fingerprinted back as the shut machine: "
+                       + hexOf (openStamp));
+
+            check (againStamp == openStamp,
+                   "and the same seed renders the same take twice, in the bits",
+                   hexOf (againStamp) + " against " + hexOf (openStamp));
+
+            check (twoStamp != openStamp,
+                   "a new seed is a new two bars, not the same one again",
+                   hexOf (twoStamp));
+
+            check (sureStamp == baseStamp,
+                   "with every cell certain the knob is invisible in the output",
+                   hexOf (sureStamp) + " against " + hexOf (baseStamp)
+                       + " -- the gate the plan asked for, at two bars");
+
+            check (peakOf (noneRender.left) == 0.0f && peakOf (noneRender.right) == 0.0f,
+                   "and with every cell barred the machine is silent",
+                   "peak " + juce::String (peakOf (noneRender.left), 6));
+        }
+
+        //======================================================================
+        // The new field travels, and it is the third byte.
+        {
+            GrooveboxProcessor held;
+            held.prepareToPlay (sampleRate, blockSize);
+            clearAllSteps (held);
+
+            held.setStep (2, 7, true);
+            held.setStepVelocity (2, 7, 64.0f / 127.0f);
+            held.setStepChance (2, 7, 100.0f / (float) Layout::chanceLevels);
+
+            held.shiftChannelRow (2, 3);
+
+            check (! held.isStepOn (2, 7) && held.isStepOn (2, 10)
+                       && held.getStepChance (2, 10) == 100.0f / (float) Layout::chanceLevels,
+                   "turning a row carries the probability with the step it belongs to",
+                   "(2,7) " + juce::String (held.getStepChance (2, 7), 4)
+                       + ", (2,10) " + juce::String (held.getStepChance (2, 10), 4));
+
+            held.setStepChance (2, 10, 0.5f);
+
+            check (held.getStepChance (2, 10)
+                       == 128.0f / (float) Layout::chanceLevels,
+                   "and a probability is held on the rung of 255 the record can store",
+                   "half became " + juce::String (held.getStepChance (2, 10), 6)
+                       + ", which is " + juce::String (held.getStepChance (2, 10)
+                                                          * (float) Layout::chanceLevels, 3)
+                       + " of 255");
+
+            juce::MemoryBlock blob;
+            held.getStateInformation (blob);
+
+            GrooveboxProcessor back;
+            back.prepareToPlay (sampleRate, blockSize);
+            back.setStateInformation (blob.getData(), (int) blob.getSize());
+
+            check (back.getStepChance (2, 10) == held.getStepChance (2, 10)
+                       && back.getStepChance (2, 7) == held.getStepChance (2, 7),
+                   "it survives a save and a load on the same rung",
+                   "went in at " + juce::String (held.getStepChance (2, 10), 6)
+                       + ", came back at " + juce::String (back.getStepChance (2, 10), 6));
+
+            // The byte itself, read out of the payload the way [19]'s probe does: a
+            // codec that carries the number through the accessors but writes it to the
+            // wrong offset is the failure this rules out, and no accessor can see it.
+            const auto pattern = held.getValueTreeState().state.getProperty ("pattern").toString();
+            juce::MemoryBlock bytes;
+            juce::MemoryOutputStream sink (bytes, false);
+
+            const auto at = (size_t) (2 * Layout::numSteps + 10) * 3;
+            const auto wantBytes = (size_t) Layout::numChannels * Layout::numSteps * 3;
+
+            /**
+                The sink is flushed before the block is measured, and the pointer taken
+                after that — not before.
+
+                Until the flush, `bytes` is holding the *allocation*, which a
+                MemoryOutputStream rounds up as it grows: 832 bytes for a 576-byte
+                payload. [19]'s probe only ever asks for a lower bound, so it never
+                noticed, but a check that a field lands at the right offset has to say how
+                wide the record is, and that number only exists once the writer says it is
+                done. Taking `raw` before the flush would be worse still: shrinking the
+                block can move it, and the bytes would then be read from freed memory.
+            */
+            const auto tagged = pattern.startsWith ("v3:");
+
+            const auto flushed = tagged
+                                   && juce::Base64::convertFromBase64 (
+                                          sink, pattern.fromFirstOccurrenceOf (":", false, false));
+
+            sink.flush();   // void, and only shrinks the block's size to what was written
+
+            const auto decoded = (size_t) bytes.getSize();
+
+            const auto* raw = static_cast<const juce::uint8*> (bytes.getData());
+
+            /**
+                A byte of the decoded payload, or -1 when there is no such byte.
+
+                Reading `raw[at]` unguarded would index past the block on exactly the
+                build this check exists to catch — a payload that decoded short — and the
+                detail line would then be reporting whatever was in the allocator's tail
+                as if it were the record. Same reason the size is in the message: the
+                first version of this check printed three correct bytes next to a failure
+                and said nothing about which term was false.
+            */
+            const auto byteAt = [&] (size_t i) -> int
+            {
+                return flushed && i < decoded ? (int) raw[i] : -1;
+            };
+
+            check (flushed && decoded == wantBytes
+                       && byteAt (at) == 1 && byteAt (at + 1) == 64 && byteAt (at + 2) == 128,
+                   "the third byte of a step is its chance, and the first two are still itself",
+                   (flushed ? juce::String ("v3 tag, ") : juce::String ("not a decodable v3 tag, "))
+                       + juce::String ((int) decoded) + " of "
+                       + juce::String ((int) wantBytes) + " bytes decoded, and at byte "
+                       + juce::String ((int) at) + ": flag " + juce::String (byteAt (at))
+                       + ", level " + juce::String (byteAt (at + 1))
+                       + ", chance " + juce::String (byteAt (at + 2)) + " of 255");
+
+            // An undo has to reach the third field too, and the record with it.
+            GrooveboxProcessor undoer;
+            undoer.prepareToPlay (sampleRate, blockSize);
+            clearAllSteps (undoer);
+            undoer.setStep (0, 0, true);
+            undoer.setStepChance (0, 0, 1.0f);
+
+            undoer.beginTransaction ("open the chance");
+            undoer.setStepChance (0, 0, 0.25f);
+
+            check (undoer.getStepChance (0, 0) == 64.0f / (float) Layout::chanceLevels,
+                   "the chance edit lands");
+
+            undoer.getUndoManager().undo();
+
+            check (undoer.getStepChance (0, 0) == 1.0f,
+                   "and undo takes the probability back with the step, not only the step",
+                   "back to " + juce::String (undoer.getStepChance (0, 0), 4));
+        }
+
+        //======================================================================
+        // Reroll: a new number, the same grid.
+        {
+            /**
+                A reroll asked of a grid where every cell is actually rolled.
+
+                The first version of this armed one step and gave the other 191 cells
+                their default chance of 1.0, so 4095 of the 4096 answers did not consult
+                the seed at all and the only cell that did had a coin-flip's chance of
+                landing on the same side twice. The check was really `will I get lucky`,
+                which is not a gate. Here every cell of the four lanes is at half, so a
+                new seed has to move about half the take, and how many cells moved is the
+                number the line reports.
+            */
+            GrooveboxProcessor panel;
+            armGrid (panel, blockSize);
+            setEveryChance (panel, half);
+            panel.setMutate (1.0f);
+            panel.setSeed (7);
+
+            const auto before = decisions (panel, false);
+            const auto oldSeed = panel.getSeed();
+            const auto newSeed = panel.rerollSeed();
+            const auto after = decisions (panel, false);
+
+            auto litBefore = 0;
+            auto litAfter = 0;
+
+            for (int channel = 0; channel < Layout::numChannels; ++channel)
+                for (int step = 0; step < Layout::numSteps; ++step)
+                {
+                    litBefore += panel.isStepOn (channel, step) ? 1 : 0;
+                    litAfter += panel.isStepOn (channel, step) ? 1 : 0;
+                }
+
+            auto moved = 0;
+
+            for (size_t i = 0; i < (size_t) rollCells; ++i)
+                if (before[i] != after[i])
+                    ++moved;
+
+            std::printf ("        reroll: seed %d -> %d, grid %d cells both ways, %d of %d "
+                         "answers move\n",
+                         oldSeed, newSeed, litAfter, moved, rollCells);
+
+            check (newSeed != oldSeed
+                       && newSeed >= Params::seedMin && newSeed <= Params::seedMax,
+                   "a reroll hands back a different seed inside the range",
+                   juce::String (oldSeed) + " -> " + juce::String (newSeed));
+
+            // armGrid paints the first four lanes, so a cell outside them is off by
+            // construction — the first version of this asserted (5,4), which the old
+            // hand-armed one-step grid had lit and this one does not.
+            check (litBefore == litAfter && litBefore == rollLanes * Layout::numSteps
+                       && panel.isStepOn (3, 5) && panel.getStepChance (3, 5) == half
+                       && ! panel.isStepOn (5, 4),
+                   "and does not touch the grid it rerolled",
+                   juce::String (litBefore) + " cells before, " + juce::String (litAfter)
+                       + " after, " + juce::String (rollLanes * Layout::numSteps)
+                       + " armed, (3,5) at " + juce::String (panel.getStepChance (3, 5), 4));
+
+            // Half the take moving is the same avalanche the seed check above asks for,
+            // from the other end: this one does not get to choose the new number.
+            check (newSeed == oldSeed
+                       || (moved > rollCells / 5 && moved < rollCells * 4 / 5),
+                   "the take moves with it",
+                   juce::String (moved) + " of " + juce::String (rollCells)
+                       + " cells changed hands, " + juce::String (firedOf (before))
+                       + " fired before and " + juce::String (firedOf (after)) + " after");
+        }
+
+        clickWav.deleteFile();
     }
 
     //======================================================================
