@@ -14,6 +14,25 @@ namespace
     /** Where 0 dBFS falls on the meter's scale, so the fill goes hot from there. */
     constexpr float unityFraction = (0.0f - MasterMeter::floorDb)
                                     / (MasterMeter::ceilingDb - MasterMeter::floorDb);
+
+    /**
+        Puts one of the two grid overlays away, and tells whoever is listening.
+
+        The bar enforces this rather than leaving it to the grid. The grid can only edit
+        one number at a time and closes the other one for itself, but only the bar can
+        see both buttons, and a button still lit for an overlay that has been closed is
+        a panel that lies about what a drag is going to write.
+    */
+    void closeOverlay (juce::TextButton& button, std::function<void (bool)>& callback)
+    {
+        if (! button.getToggleState())
+            return;
+
+        button.setToggleState (false, juce::dontSendNotification);
+
+        if (callback != nullptr)
+            callback (false);
+    }
 }
 
 //==============================================================================
@@ -135,6 +154,12 @@ TransportBar::TransportBar (GrooveboxProcessor& processorToUse)
     swingSlider.setRange (0.0, 1.0, 0.01);
     swingSlider.setDoubleClickReturnValue (true, 0.0);
     swingSlider.setTooltip ("Swing amount");
+
+    // Named, because three of the bar's faders now run 0..1 and two of them run in
+    // dB, and a control that is identified by its range is identified by a number it
+    // happens to share with someone else. The layout test used to tell swing from the
+    // trim that way; it cannot tell three apart.
+    swingSlider.setName ("Swing");
     addAndMakeVisible (swingSlider);
 
     swingValueLabel.setJustificationType (juce::Justification::centredLeft);
@@ -158,15 +183,64 @@ TransportBar::TransportBar (GrooveboxProcessor& processorToUse)
 
     addAndMakeVisible (clearPatternButton);
 
-    // Velocity editing: a toggle, so it stays lit while the grid is showing bars.
-    velocityButton.setClickingTogglesState (true);
-    velocityButton.setTooltip ("Edit how hard each step hits: drag up and down inside a step");
-    velocityButton.setColour (juce::TextButton::buttonOnColourId, Colours::text);
-    velocityButton.setColour (juce::TextButton::textColourOnId, Colours::background);
-    addAndMakeVisible (velocityButton);
+    /**
+        The two numbers each step carries, one button each.
 
-    resetVelocitiesButton.setTooltip ("Put every step back to full velocity");
-    addAndMakeVisible (resetVelocitiesButton);
+        A toggle rather than a mode switch with somewhere else to go back to: the
+        grid's default gesture is the one everybody uses, so editing has to be able to
+        stop. The "on" colours invert the button, which is how the lit one reads as
+        "the grid is showing you this" from across the room.
+    */
+    for (auto* button : { &velocityButton, &chanceButton })
+    {
+        button->setClickingTogglesState (true);
+        button->setColour (juce::TextButton::buttonOnColourId, Colours::text);
+        button->setColour (juce::TextButton::textColourOnId, Colours::background);
+        addAndMakeVisible (*button);
+    }
+
+    velocityButton.setTooltip ("Edit how hard each step hits: drag up and down inside a step");
+    chanceButton.setTooltip ("Edit how often each step fires: drag down inside a step to drop some of them");
+
+    // The reset belongs to whichever of the two is open, so its tooltip says which
+    // before you click it rather than after. refresh() keeps it in step.
+    resetValuesButton.setTooltip ("Put every step back to full velocity");
+    addAndMakeVisible (resetValuesButton);
+
+    /**
+        Variation: how much of the grid's probabilities the machine may use.
+
+        Shut, the pattern is law — what you drew is what plays, whatever the cells say
+        about probability, and the knob costs nothing. Open, each step is rolled against
+        its own chance. Double-click returns it to shut, which is the state that cannot
+        surprise anyone.
+    */
+    mutateSlider.setSliderStyle (juce::Slider::LinearHorizontal);
+    mutateSlider.setTextBoxStyle (juce::Slider::NoTextBox, false, 0, 0);
+    mutateSlider.setRange (0.0, 1.0, 0.01);
+    mutateSlider.setDoubleClickReturnValue (true, 0.0);
+    mutateSlider.setTooltip ("Mutate: how much of each step's probability the machine may use."
+                             " Shut, the grid is law.");
+    mutateSlider.setName ("Mutate");
+    addAndMakeVisible (mutateSlider);
+
+    mutateValueLabel.setJustificationType (juce::Justification::centredLeft);
+    mutateValueLabel.setColour (juce::Label::textColourId, Colours::text);
+    mutateValueLabel.setFont (captionFont());
+    addAndMakeVisible (mutateValueLabel);
+
+    rerollButton.setTooltip ("Take a new seed: a different set of drops, the same grid");
+    addAndMakeVisible (rerollButton);
+
+    // The number is the take's name. Without it a good drop is unreproducible, which
+    // is the difference between a machine that deals and one that shimmers.
+    seedLabel.setJustificationType (juce::Justification::centredLeft);
+    seedLabel.setColour (juce::Label::textColourId, Colours::text);
+    seedLabel.setFont (captionFont());
+    seedLabel.setMinimumHorizontalScale (0.6f);
+    seedLabel.setTooltip ("Seed: same number, same grid, same drops. Reroll picks a new one.");
+    seedLabel.setName ("Seed"); // the same naming rule as the faders, so a test can ask for it
+    addAndMakeVisible (seedLabel);
 
     // The trim is in dB, which is already the scale the ear works in, so it needs
     // no skew: half the travel is half the range. Double-click returns it to the
@@ -176,6 +250,7 @@ TransportBar::TransportBar (GrooveboxProcessor& processorToUse)
     masterSlider.setRange (Layout::minMasterGainDb, Layout::maxMasterGainDb, 0.1);
     masterSlider.setDoubleClickReturnValue (true, Layout::defaultMasterGainDb);
     masterSlider.setTooltip ("Master output trim");
+    masterSlider.setName ("Master");
     addAndMakeVisible (masterSlider);
 
     masterValueLabel.setJustificationType (juce::Justification::centredLeft);
@@ -204,7 +279,9 @@ TransportBar::TransportBar (GrooveboxProcessor& processorToUse)
     };
     clearPatternButton.onClick = [this] { handleClearPatternClicked(); };
     velocityButton.onClick    = [this] { handleVelocityClicked(); };
-    resetVelocitiesButton.onClick = [this] { handleResetVelocitiesClicked(); };
+    chanceButton.onClick      = [this] { handleChanceClicked(); };
+    resetValuesButton.onClick = [this] { handleResetValuesClicked(); };
+    rerollButton.onClick      = [this] { handleRerollClicked(); };
 
     // Written straight through, for the same reason as the channel faders: an
     // earlier version skipped the write while a drag was in progress and relied
@@ -214,6 +291,17 @@ TransportBar::TransportBar (GrooveboxProcessor& processorToUse)
     swingSlider.onValueChange = [this]
     {
         processor.setSwing ((float) swingSlider.getValue());
+    };
+
+    // Same straight-through rule as swing: the knob is what a drag is for, and a
+    // value that only committed on release would be pulled back by this bar's own
+    // 200 ms refresh halfway through the gesture.
+    mutateSlider.onValueChange = [this]
+    {
+        processor.setMutate ((float) mutateSlider.getValue());
+
+        mutateValueLabel.setText (juce::String (juce::roundToInt (mutateSlider.getValue() * 100.0)) + "%",
+                                  juce::dontSendNotification);
     };
 
     masterSlider.onValueChange = [this]
@@ -263,6 +351,18 @@ void TransportBar::refresh()
     masterSlider.setValue ((double) processor.getMasterGainDb(), juce::dontSendNotification);
     masterValueLabel.setText (GrooveboxProcessor::formatMasterGain (processor.getMasterGainDb()),
                               juce::dontSendNotification);
+
+    mutateSlider.setValue ((double) processor.getMutate(), juce::dontSendNotification);
+    mutateValueLabel.setText (juce::String (juce::roundToInt (processor.getMutate() * 100.0f)) + "%",
+                              juce::dontSendNotification);
+    seedLabel.setText (juce::String (processor.getSeed()), juce::dontSendNotification);
+
+    // The shared reset follows the overlay that is open, so the hover text names the
+    // number it is about to overwrite. With neither open it does velocities, which is
+    // what the button said before there was a choice — and what the tooltip says.
+    resetValuesButton.setTooltip (chanceButton.getToggleState()
+                                      ? "Put every step back to firing every time"
+                                      : "Put every step back to full velocity");
 }
 
 void TransportBar::resized()
@@ -308,12 +408,28 @@ void TransportBar::resized()
     swingSixteenthButton.setBounds (swingArea.removeFromLeft (40).withSizeKeepingCentre (40, 22));
     area.removeFromLeft (8);
 
+    // Variation sits next to swing, because both of them bend what was drawn rather
+    // than what is stored: swing moves the hits in time, this one drops some of them.
+    auto variationArea = area.removeFromLeft (272);
+    variationCaptionArea = variationArea.removeFromTop (12); // drawn in paint()
+    variationArea.removeFromTop (2);
+    mutateSlider.setBounds (variationArea.removeFromLeft (96).withSizeKeepingCentre (96, 22));
+    variationArea.removeFromLeft (6);
+    mutateValueLabel.setBounds (variationArea.removeFromLeft (42).withSizeKeepingCentre (42, 18));
+    variationArea.removeFromLeft (6);
+    rerollButton.setBounds (variationArea.removeFromLeft (58).withSizeKeepingCentre (58, 24));
+    variationArea.removeFromLeft (6);
+    seedLabel.setBounds (variationArea.withSizeKeepingCentre (variationArea.getWidth(), 18));
+    area.removeFromLeft (8);
+
     clearPatternButton.setBounds (area.removeFromLeft (108).withSizeKeepingCentre (108, 24));
     area.removeFromLeft (8);
 
     velocityButton.setBounds (area.removeFromLeft (76).withSizeKeepingCentre (76, 24));
     area.removeFromLeft (4);
-    resetVelocitiesButton.setBounds (area.removeFromLeft (52).withSizeKeepingCentre (52, 22));
+    chanceButton.setBounds (area.removeFromLeft (76).withSizeKeepingCentre (76, 24));
+    area.removeFromLeft (4);
+    resetValuesButton.setBounds (area.removeFromLeft (46).withSizeKeepingCentre (46, 22));
 }
 
 //==============================================================================
@@ -321,6 +437,7 @@ void TransportBar::paint (juce::Graphics& g)
 {
     paintCaption (g, "Tempo", tempoCaptionArea);
     paintCaption (g, "Swing", swingCaptionArea);
+    paintCaption (g, "Variation", variationCaptionArea);
     paintCaption (g, "Master", masterCaptionArea);
 
     // Subtle rule along the bottom edge.
@@ -405,18 +522,63 @@ void TransportBar::handleClearPatternClicked()
 
 void TransportBar::handleVelocityClicked()
 {
+    if (velocityButton.getToggleState())
+        closeOverlay (chanceButton, onChanceModeChanged);
+
     if (onVelocityModeChanged != nullptr)
         onVelocityModeChanged (velocityButton.getToggleState());
 }
 
-void TransportBar::handleResetVelocitiesClicked()
+void TransportBar::handleChanceClicked()
 {
-    processor.beginTransaction ("Reset velocities");
-    processor.resetVelocities();
+    if (chanceButton.getToggleState())
+        closeOverlay (velocityButton, onVelocityModeChanged);
+
+    if (onChanceModeChanged != nullptr)
+        onChanceModeChanged (chanceButton.getToggleState());
+}
+
+void TransportBar::handleResetValuesClicked()
+{
+    /**
+        One button, two numbers, and it does the one that is on the grid.
+
+        That is only honest because the tooltip and the lit toggle both say which it is
+        before the click; a button whose target moved silently would be the same control
+        doing something different, which is the thing this project does not do to a
+        number the user is watching.
+
+        Either way it is one gesture, so it is one transaction: without
+        `beginTransaction` a hundred and ninety-two cell writes land as a hundred and
+        ninety-two undoes.
+    */
+    const auto editingChance = chanceButton.getToggleState();
+
+    processor.beginTransaction (editingChance ? "Reset probabilities" : "Reset velocities");
+
+    if (editingChance)
+        processor.resetChances();
+    else
+        processor.resetVelocities();
 
     if (processor.onStateChanged != nullptr)
         processor.onStateChanged();
 
+    refresh();
+}
+
+void TransportBar::handleRerollClicked()
+{
+    /**
+        A new seed, and nothing else.
+
+        The grid does not move and no probability is re-drawn: what changes is which of
+        the hits the machine is allowed to drop. That is also why this is not an undo —
+        an undo of a reroll would put back a *number*, and the take the user heard is
+        not recoverable from that anyway once the knob has moved. The seed is displayed
+        for exactly this reason: write it down instead of undoing it.
+    */
+    processor.rerollSeed();
     refresh();
 }
 

@@ -86,6 +86,21 @@ Press "Velocity" in the top bar and drag up or down inside a step to set how
 hard that step hits; the bar that rises shows the value. Steps keep their own
 level, so a pattern can have accents.
 
+Press "Chance" for the other number every step carries: how often it is allowed
+to fire. The same drag sets it, and the bar hangs from the top of the cell, so
+the gap underneath is the part that gets dropped. Only one of the two is ever on
+the grid -- pressing one puts the other away -- and "100%" next to them resets
+whichever number you are looking at. A reset or a drag across the cells is one
+edit, so one undo takes the whole grid back rather than a step at a time.
+
+The "Variation" knob decides how much of all that the machine is allowed to use.
+At 0% the pattern plays exactly as drawn, whatever the cells say; at 100% every
+step answers to its own probability. Which hits get dropped comes from the
+number shown beside "Reroll": the same seed and the same grid drop the same hits
+on the same steps every time round the loop, and Reroll deals a new take without
+moving the pattern you drew. Write the number down if you want that take back --
+it is a parameter, not an edit, so there is nothing to undo.
+
 Each strip's A D S R rows shape that channel: drag a row up or down, double-click
 to reset just that one. Sustain 0 (the default) makes the channel a one-shot --
 raise it and the sound holds until you release the note.

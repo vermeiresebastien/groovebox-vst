@@ -57,6 +57,16 @@ public:
     /** Called when the velocity toggle changes, so the editor can tell the grid. */
     std::function<void (bool)> onVelocityModeChanged;
 
+    /**
+        Called when the probability toggle changes, so the editor can tell the grid.
+
+        The two toggles are mutually exclusive *here*, in the bar that owns them: the
+        grid can only edit one number per cell at a time, so a bar that let both stay
+        lit would be showing a mode it is not in, and the drag would write the field the
+        dimmer button says is off.
+    */
+    std::function<void (bool)> onChanceModeChanged;
+
     void paint (juce::Graphics& g) override;
     void resized() override;
 
@@ -68,7 +78,13 @@ private:
     void handleTempoPlus();
     void handleClearPatternClicked();
     void handleVelocityClicked();
-    void handleResetVelocitiesClicked();
+    void handleChanceClicked();
+
+    /** Puts every step's *current* overlay value back to full. */
+    void handleResetValuesClicked();
+
+    void handleRerollClicked();
+
     void paintCaption (juce::Graphics& g, const juce::String& text, juce::Rectangle<int> area) const;
 
     static constexpr int swingRadioGroupId = 1;
@@ -88,7 +104,18 @@ private:
 
     /** Switches the grid into velocity editing; toggles, so it stays lit. */
     juce::TextButton velocityButton { "Velocity" };
-    juce::TextButton resetVelocitiesButton { "100%" };
+
+    /** The same, for the probability. */
+    juce::TextButton chanceButton { "Chance" };
+
+    /** Resets whichever of the two numbers above the grid is currently being edited. */
+    juce::TextButton resetValuesButton { "100%" };
+
+    /** How much of the variation the machine is allowed to use, and which take it is. */
+    juce::Slider mutateSlider;
+    juce::Label mutateValueLabel;
+    juce::TextButton rerollButton { "Reroll" };
+    juce::Label seedLabel;
 
     /** The master trim and its meter, at the right-hand end of the bar. */
     juce::Slider masterSlider;
@@ -98,6 +125,7 @@ private:
     // Caption strips filled in by resized() and drawn by paint().
     juce::Rectangle<int> tempoCaptionArea;
     juce::Rectangle<int> swingCaptionArea;
+    juce::Rectangle<int> variationCaptionArea;
     juce::Rectangle<int> masterCaptionArea;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (TransportBar)

@@ -16,12 +16,12 @@ sample you drag onto its row, and which also plays from MIDI notes.
 | **Pitch drop** | **0–12 semitones per channel: the hit starts that far above the note and glides down onto it over 30 ms — kick bloom you cannot get from Live's sample page. It is a parameter like the rest, never something the plugin decides for you** |
 | **ADSR per channel** | **Attack, Decay, Sustain and Release for every channel, so a hit can be tightened or turned into a sustained sound** |
 | **Choke groups** | **Three per lane. A hit in a group cuts every other hit in that group short, ramped over 20 ms — put the closed hat in the same group as the open one and it stops it instead of stacking on it** |
-| **Step probability** | **Every step says how often it is allowed to fire, 0–100 %. What actually happens is that wish discounted by the *Mutate* knob, and the same grid with the same seed drops the same hits every time** |
+| **Step probability** | **Every step says how often it is allowed to fire, 0–100 %. Hit *Chance* in the top bar and drag inside a step. The *Variation* knob — parameter **Mutate** — decides how much of that the machine may use: shut, the grid is law** |
 | Swing | 0–100 % on either a 1/8 or 1/16 grid |
 | Tempo | Follows the host project tempo; in the standalone build it has its own transport and tempo |
 | Mix | Per-channel level and mute, plus a "clear row" button |
 | **Master trim & meter** | **A −24 to +6 dB master trim you can see and reach, a bar for the sample peak with a tick for the true peak hiding between the samples, and a clip latch on the output** |
-| **Automation** | **Levels, pitches, pitch drops, envelopes, mutes, choke groups, swing, swing grid, tempo, the master trim, the variation amount and the seed are host parameters — automate them, and the panel follows what the host drew** |
+| **Automation** | **Levels, pitches, pitch drops, envelopes, mutes, choke groups, swing, swing grid, tempo, the master trim, Mutate and Seed are host parameters — automate them, and the panel follows what the host drew** |
 | Row editing | Click a cell to toggle it; drag across cells to paint a run |
 | **Shift a row** | **The ← and → buttons in a channel strip turn that whole row one step earlier or later, and every step's velocity goes with it** |
 | Persistence | Pattern, per-step velocity and probability, pitch, levels, mutes, names, colours, seed and sample paths are saved in the session; a session saved before the parameter migration is read in and its values carried over |
@@ -39,7 +39,9 @@ high the pointer is in the row, so the bar follows the pointer.
 - **The step's on/off state is left alone.** You can set a level on a step that is
   switched off, and dragging to nothing never switches a step off. An on step is
   never stored as "off", so a quiet hit stays a hit.
-- **Press 100%** next to the toggle to put every step back to full velocity.
+- **Press 100%** to put every step back to full velocity. It is the same button the
+  probability overlay uses and it does whichever of the two is on the grid; the
+  tooltip says which before you click, and one undo takes the whole grid back.
 - **Shifting a row moves its velocities too.** The ← and → buttons in a channel
   strip turn that row one step earlier or later, and each step carries its velocity
   with it, so an accented pattern stays accented after it moves. The last step
@@ -69,6 +71,49 @@ at 1.9 dB of peak at 25 % velocity and 4.0 dB at 6 %, which is the worst case, s
 a sample with a body keeps most of its energy below those corners. The fader, by
 contrast, moves level only: the same quarter of a gain by the fader leaves the tone
 exactly where it was, and both of those are checked by name in the test suite.
+
+## Step probability, and the take
+
+Every step also says how *often* it is allowed to fire. That is the other half of a
+pattern: not how hard the hit is, but whether it is there this time round.
+
+Press **Chance** in the top bar to put that number on the grid. The same drag sets it,
+and the bar hangs from the top of the cell instead of rising from the bottom: the gap
+underneath is the part that gets dropped, which is the one reading that still holds up
+when you look away and back. As with velocity, the step's on/off state is left alone,
+and the exact number sits under the pointer.
+
+**Where it shows:** only while **Chance** is open. Outside it, a step's colour carries
+its velocity as before, so a hit that fires three times in four looks like a certain one
+until you press the button.
+
+**The *Variation* knob decides how much of all that the machine is allowed to use.** The
+parameter behind it is **Mutate**, 0–100 %, and the two ends are the whole design:
+
+| Knob | What plays |
+|---|---|
+| 0 % | the grid exactly as drawn, whatever the cells say. Nothing is dropped |
+| 50 % | half of each step's wish is given back: a step that wants 75 % fires 87.5 % of the time |
+| 100 % | every step answers to its own probability |
+
+Shut, the knob costs nothing at all: with it at 0 the engine never reaches for a random
+number, so a grid with no probabilities on it comes out bit for bit the grid it always
+was. That is what makes it safe to leave on the panel.
+
+**Which hits get dropped is a *take*, not a shimmer.** The drops come from the **Seed**
+readout beside the **Reroll** button, keyed on bar, step and channel: the same seed and
+the same grid drop the same hits on the same steps every time round the loop, and it is
+the same take tomorrow. **Reroll** deals a new seed and touches nothing else — the grid
+does not move and no probability is re-drawn — so the number in the readout is the one
+to write down if you want this take back.
+
+- **What is stored is the step's own wish**, not the machine's, and in 255ths: what the
+  panel shows is what the session keeps. Automating the knob re-scales every
+  probability at once, and closing it takes them all back.
+- **Reroll is not an edit.** It moves a parameter, so there is nothing to undo — which
+  is why the number is on the panel rather than hidden behind a history.
+- Probabilities ride in the saved session with the pattern; the knob and the seed come
+  back through the host, like every other parameter.
 
 ## The envelope
 
@@ -111,7 +156,8 @@ milliseconds, seconds or percent.
 The channels answer **C1 upwards** — C1 plays channel 0, C#1 channel 1, and so on
 to B1 for channel 11. That is the range a General MIDI drum map uses for its first
 twelve pieces, and what most pad controllers send out of the box, so a kick pad
-plays the kick without any setup. The note range is shown in the top bar.
+plays the kick without any setup. The note range is written along the top of the
+window, beside the drag-a-sample note.
 
 - **A played note takes its own velocity**, both in level and in tone, so a pad or
   keyboard plays dynamically. The step grid takes the velocity written on the step —
@@ -168,8 +214,8 @@ what you mixed.
 Every continuous control is a proper host parameter, so it can be drawn as
 automation instead of only moved by hand: per-channel level, pitch, pitch drop,
 A/D/S/R, mute and choke group (9 parameters × 12 channels), plus master trim,
-swing, swing grid and tempo — 112 in total, grouped per lane so a host lists them
-sensibly.
+swing, swing grid, tempo, Mutate and Seed — 114 in total, grouped per lane so a
+host lists them sensibly.
 
 The pattern is deliberately **not** in the parameter list. 192 cells as 192
 parameters would swamp a host's automation list, and it is not what anyone
@@ -191,8 +237,11 @@ and leaves it alone.
 
 ## Layout
 
-- **Top bar** — transport, tempo, swing and grid, master trim and meter, and
-  "Clear pattern".
+- **Top bar** — one row: transport, tempo, swing and its grid, the **Variation** group
+  (the knob, **Reroll** and the seed readout), "Clear pattern", the **Velocity** and
+  **Chance** toggles with the shared **100%** reset, and the master trim and meter. The
+  window's minimum width is what this row needs to lay every control out at its own
+  size, so the bar never has to give room up to fit the window.
 - **Middle** — the 16 × 12 step grid. Channel 11 is the top row and channel 0 the
   bottom, matching the web app, which reverses its lane list.
 - **Bottom** — one strip per channel: name (double-click to rename), colour
@@ -438,7 +487,7 @@ It asserts, among other things, that:
   first, is a no-op over a whole bar, and leaves every other row alone;
 - a value written into a **parameter** the way a host writes it — normalised,
   straight through `setValueNotifyingHost`, without touching any of the
-  processor's own setters — reaches the engine and changes the audio, so all 112
+  processor's own setters — reaches the engine and changes the audio, so all 114
   parameters are genuinely automatable rather than merely listed.
 
 `GrooveboxLayoutTest` builds the real editor and inspects it. A control laid out
@@ -453,7 +502,11 @@ It reports the bounds of every control, flags any with no size or outside their
 parent, and drives the level fader with synthetic mouse events to confirm the
 change actually reaches the processor. It also goes the other way: it writes a
 parameter as a host would and checks that the strip's fader, mute button, pitch
-readout and envelope rows all catch up to it.
+readout and envelope rows all catch up to it. The step-value overlays are driven
+through the real buttons too, because an audio test cannot tell a drag that wrote
+a velocity from one that meant to write a probability — and it checks that the
+shared 100% reset does the number that is on the grid, in both directions, and
+that Reroll moves the take without moving the pattern.
 
 Run both after any change to the editor or the engine. Both have already caught
 real bugs: swing that was computed but never applied, a step that fired early
@@ -476,7 +529,8 @@ Source/
   StepGridComponent.{h,cpp}  the grid, and the file drag-and-drop target
   ChannelStrip.{h,cpp}      one channel's controls
   EnvelopeControls.{h,cpp}  the A/D/S/R rows inside a strip
-  TransportBar.{h,cpp}      transport, tempo, swing, master trim and meter
+  TransportBar.{h,cpp}      transport, tempo, swing, variation, the step-value
+                            toggles, master trim and meter
   LookAndFeel.{h,cpp}       the flat dark theme
 Tests/
   SmokeTest.cpp         the headless engine test

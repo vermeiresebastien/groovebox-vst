@@ -326,13 +326,24 @@ touches the velocity law. No step here is allowed to be reported as better becau
   browser. Partly blocked by path-only sample refs (`:824-837`). ~16-24 h.
 - **5.5** Pattern → MIDI clip export by drag. `juce::MidiFile` is already linked; the drag idiom exists in
   `skulpt/Source/SequenceView.cpp:507` and `redrum/Source/PluginProcessor.cpp:3502-3545`. ~4-8 h.
-- **5.6** Fit a laptop: editor floor is 1240×830 (`PluginEditor.cpp:9-10`) which does not fit 1366×768 with
-  Live's chrome; extend `LayoutTest` to min **and** max size, **all 12** strips (it checks one size at `:301`
-  and the first strip only at `:322`, so `ChannelStrip.cpp:197-209`'s `tight` branch is never executed), and
-  assert the velocity chip drawn at `cell.getY() − 12` (`StepGridComponent.cpp:376`) is not clipped on the
-  top row. ~4-6 h.
+- **5.6** Fit a laptop. The floor moved under this step: `PluginEditor.cpp`'s `editorWidth`
+  and `editorHeight` are **1520×844** now — both the default and the minimum, since the
+  transport bar is one row and 4.2's panel half filled it — which does not fit 1366×768 with
+  Live's chrome at all. Trimming heights cannot win that; the row has to wrap to two lines
+  below some width, and then the bar needs a layout rule for which group moves down. That,
+  plus extending `LayoutTest` past its current single size: it lays out at the editor's own
+  preferred width/height only, checks one strip out of twelve (so the `tight` branch in
+  `ChannelStrip::resized` is never executed), and should assert that the
+  hover readout `StepGridComponent::paintValueOverlay` draws at `cell.getY() − 12` is not
+  clipped on the top row. ~4-6 h.
+- **5.7** Tell people the two gestures exist. Undo and redo are wired, tested and named in
+  `LayoutTest` — `Ctrl/Cmd+Z`, `Ctrl+Y`, one press per *gesture* — and appear in **neither**
+  README, while drag-a-sample-to-load does get a line in the header. A host that keeps its
+  own Ctrl+Z is the reason the claim has to be worded carefully rather than big: check what
+  Live actually forwards to a focused plugin window before printing a shortcut table, and
+  say what was measured. ~1 h, mostly wording.
 
-*Phase 5 total ≈ 44-68 h. Longest phase, least urgent; it is for when you want other people to use it.*
+*Phase 5 total ≈ 45-70 h. Longest phase, least urgent; it is for when you want other people to use it.*
 
 ### E6 — Phase 6: shipping and housekeeping
 
@@ -638,7 +649,7 @@ stack array filled before the loop, `scratchWeights` is filled on the stack insi
 fall onto it. `Params::pitchDropId` (`chNPitchDrop`, `AudioParameterInt` 0..12, default 0) is the only way in:
 nothing in the engine picks a drop by itself, so the plan's "visible per-lane amount parameter only, never
 automatic" is the whole feature surface rather than a preference about it. The parameter count goes 100 to
-**112 (4 global + 12 x 9)**, and `[21]`'s "all 112 parameters are present" is exactly the check that would have
+**112 (4 global + 12 x 9)** — 114 since 4.2's two variation parameters — and `[21]`'s "all 112 parameters are present" is exactly the check that would have
 caught the classic failure of this kind of step — parameter created, offered to the host, restored on load, and
 nobody listening for it.
 
@@ -647,7 +658,8 @@ nominal rate exactly (`Layout::pitchDropSweepSeconds`, `pitchDropTimeConstants`,
 `Common.h:193-195`; `coefficient = exp(-5/1323) = 0.996228` at 44.1 kHz). `voice.increment` keeps its old
 meaning — the settled rate, the note — and the fall lives in two new mutable voice fields, `dropExcess` and
 `dropRemaining`, recursed once per output sample at `SequencerEngine.cpp:858`. The window cost is one more row
-per lane: `ChannelStrip.cpp:249` 205 to 219 px and the editor 830 to **844 px** at 1240 wide. The grid keeps its
+per lane: `ChannelStrip.cpp:249` 205 to 219 px and the editor 830 to **844 px** at 1240 wide (the width is
+**1520** since 4.2's panel half; the 844 still holds). The grid keeps its
 405 (`out/layout-35-final.txt`: component 1 at y=126, h=405), so the window pays the 14 at the bottom. That is
 the debt Phase 5 U5 has to pay back.
 
@@ -906,8 +918,8 @@ a pre-existing property of the atomics rather than something 4.1 introduced, it 
 the fix (a shadow grid behind an atomic index) is a different change than a payload format.
 
 
-**4.2 — a seeded probability per step, and one knob for how much of it happens (core done 2026-11-16; the
-top-bar half is open).** The plan asked for *"seeded per-step probability + a single 'mutate' amount. RNG keyed
+**4.2 — a seeded probability per step, and one knob for how much of it happens (done
+2026-11-16, engine and panel).** The plan asked for *"seeded per-step probability + a single 'mutate' amount. RNG keyed
 on (bar, step) so offline render equals live playback and A/B stays reproducible. Gate: at probability 1.0 the
 output is bit-identical to today's; at 0.5 across 64 bars it is deterministic"*, and both gate halves are now
 machine answers.
@@ -978,22 +990,72 @@ failures**, exit 1 — `a different seed is a different take`, `neighbouring see
 does not touch: the knob-shut precondition, the subset law, the bit-inert gate and the same-seed render again. The
 seed is load-bearing and nothing else moved.
 
-**Not done — the panel half.** `Mutate` and `Seed` are host parameters today and a VST3 host will show both, but
-the Groovebox window has no slider for either, no *Chance* toggle and no *Reroll* button, so on this plugin's own
-panel the probability is invisible and uneditable. `StepGridComponent` is ready — `Overlay::chance`,
-`setChanceMode`, and one shared `paintValueOverlay` that grows a bar from the bottom for velocity and hangs one
-from the top for chance so the two cannot be confused — and nothing calls `setChanceMode` yet. `resetChances` has
-no caller at all. `README.md` therefore says nothing about a Chance button: it was rewritten for v3 and for the
-take, and the panel copy goes in with the controls. Next in this step: the two toggles and the slider in
-`TransportBar`, `onChanceModeChanged` beside the existing `onVelocityModeChanged` in
-`Source/PluginEditor.cpp`, and the bounds of
-every new control in `LayoutTest`.
+**The panel half — done, in the same step.** `TransportBar` now carries the four controls
+that make the feature usable without a host:
 
-Run at the close of 4.2's core: **291 smoke checks / 0 failures**, **82 layout checks / 0 problems**, staleness
-guard 0 on both, `Tests/RtPathGuard.ps1` exit 0, and a full `cmake --build build-new --config Release` (VST3 +
-Standalone + both console apps) exit 0. `[28]`'s golden fingerprint is still `4BC3AA231178C071` after the codec
-bump and two new parameters, which is the "bit-identical at probability 1.0" half of the gate answered on the
-whole 161280-sample take rather than on two bars. `launch/` still waits for Live and the standalone to be closed.
+| control | what it writes | note |
+|---|---|---|
+| **Chance** toggle | `StepGridComponent::setChanceMode`, through the editor's `onChanceModeChanged` | beside **Velocity**; the two are exclusive by hand |
+| **100%** | `resetChances()` or `resetVelocities()` | whichever overlay is open; the tooltip says which before the click |
+| **Mutate** slider (0–100 %, double-click shut) | `GrooveboxProcessor::setMutate` | writes straight through, the same rule swing obeys |
+| **Reroll** + the **Seed** readout | `rerollSeed()` | the number is on the panel because a take you cannot name is a take you cannot get back |
+
+The exclusivity is `closeOverlay` in `TransportBar.cpp`, not a `RadioGroup`: JUCE computes
+`shouldBeOn = (radioGroupId != 0 || ! lastToggleState)`, so a grouped button lights and can
+never be clicked out again — and both overlays being off *is* the resting state. Enforcing
+it in the bar rather than leaving it to the grid is the point: `openOverlay` already keeps
+one overlay, so a bar that let both stay lit would show a mode the grid is not in, and the
+drag would write the field the dimmer button says is off.
+
+One row, and the row is now full: `editorWidth` went **1240 → 1520**, and that value is
+both the default and the minimum, because the alternative to widening the window was a
+fader too narrow to drag or a button clipped to zero width — which is precisely what the
+layout test reads as an unclickable control. This makes **5.6's laptop floor worse**, not
+better: at 1366 px the bar cannot lay out, so that step now has to give the row somewhere
+else to go rather than only trim heights. It is no longer reachable from `1240×830`, and
+it cites `PluginEditor`'s `editorWidth`/`editorHeight` rather than a line number, because
+the comment block above them just moved both.
+
+`LayoutTest` is **82 → 101 checks**. Two of the additions are dispatch, not decoration:
+the bar's three faders are now found by `getName()` — `Swing`, `Master`, `Mutate` — because
+the old `getMaximum() <= 1.01` test was two-way arithmetic and a third 0..1 fader would have
+been driven and read back against swing's parameter, i.e. red on correct code. And the
+eleven new checks are each known to bite: with the exclusivity, the reset's dispatch and the
+seed readout deliberately broken in one build, the run came back **exit 1, 4 problems** —
+
+```
+BAD  the two overlays are open at once (chance lit=1 velocity lit=1 grid chance=1 grid velocity=0)
+BAD  the reset did not do the probabilities (all full 0, velocity at 1,3 1.00)
+BAD  the grid did not go back to velocity editing (chance lit=1 grid velocity=0)
+BAD  the seed readout did not follow the take (label says , the engine is 545198)
+```
+
+(`out/layout-42-ab-panel.txt`; the shipped green run is `out/layout-42-all.txt`.) The
+dispatch is checked in both directions, because a handler that always did velocities would
+have passed the probability half by accident, and the undo half asserts that one click is
+one gesture. Reroll is checked as *not* an edit: the history is cleared first, so "nothing
+to take back" is a claim about the reroll rather than about whatever the earlier sections
+left in the manager.
+
+`README.md` gained the section the panel needed (**Step probability, and the take**), the
+100% bullet now says which number it resets, the automation row names the parameters the
+host actually lists (`Mutate`, `Seed`), and the sweep caught two counts the core commit had
+left at **112** where the code says 114.
+
+**4.2b (new, from the panel work): a probability is invisible outside its own overlay.**
+`StepGridComponent::paint` dims a cell by velocity only, so a step that fires one time in
+four looks exactly like one that fires every time until **Chance** is pressed. The fix is a
+marker, not more dimming — two numbers already say opposite things about one rectangle,
+which is why one bar rises from the bottom and the other hangs from the top — and a corner
+pip on the cells that are mutable is the version that does not touch what the colour means.
+
+Run at the close of 4.2, panel included: **291 smoke checks / 0 failures**, **101 layout
+checks / 0 problems**, staleness guard 0 on both, `Tests/RtPathGuard.ps1` exit 0
+("the parameter path is allocation-free"), and the `Groovebox` target (VST3 + Standalone)
+exit 0. `[28]`'s golden fingerprint is still `4BC3AA231178C071` after the codec bump and two
+new parameters, which is the "bit-identical at probability 1.0" half of the gate answered on
+the whole 161280-sample take rather than on two bars. `launch/` still waits for Live and the
+standalone to be closed.
 
 Still open from 4.1 and unchanged by this: a shift is two stores per cell, so shifting a row *while playing* can
 let the audio thread read a half-rotated bar for one block. The probability now makes it three.

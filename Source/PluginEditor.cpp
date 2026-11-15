@@ -6,7 +6,15 @@ namespace gb
 
 namespace
 {
-    constexpr int editorWidth = 1240;
+    /**
+        The minimum the transport bar needs to show every control at its own size.
+
+        The bar is one row, and the alternative to widening it was shrinking a fader
+        until it was too narrow to drag or letting the last button fall off the right
+        edge — which the layout test reads as a zero-width child, i.e. a control that
+        cannot be clicked. The grid takes the extra width as wider cells.
+    */
+    constexpr int editorWidth = 1520;
     constexpr int editorHeight = 844;
 
     constexpr int margin = 18;
@@ -50,11 +58,19 @@ GrooveboxEditor::GrooveboxEditor (GrooveboxProcessor& p)
         refreshAll();
     };
 
-    // The velocity toggle lives in the transport bar but changes how the grid
-    // behaves, so the editor joins the two.
+    // The two editing toggles live in the transport bar but change how the grid
+    // behaves, so the editor joins them. Each one only ever opens its own overlay:
+    // the bar has already put the other away by the time these fire, and a grid that
+    // could be told to edit two numbers at once would need a third rule to say which
+    // one a drag writes.
     transportBar.onVelocityModeChanged = [this] (bool editVelocity)
     {
         stepGrid.setVelocityMode (editVelocity);
+    };
+
+    transportBar.onChanceModeChanged = [this] (bool editChance)
+    {
+        stepGrid.setChanceMode (editChance);
     };
 
     setSize (editorWidth, editorHeight);
@@ -66,6 +82,7 @@ GrooveboxEditor::~GrooveboxEditor()
 {
     processor.onStateChanged = nullptr;
     transportBar.onVelocityModeChanged = nullptr;
+    transportBar.onChanceModeChanged = nullptr;
     setLookAndFeel (nullptr);
 }
 

@@ -112,7 +112,7 @@ build-new\GrooveboxLayoutTest_artefacts\Release\GrooveboxLayoutTest.exe # real e
 
 Both compile the plugin sources headlessly ([CMakeLists.txt:166-231](CMakeLists.txt));
 they print a check count and a problem count, and exit non-zero on failure. Last green
-run: 291 smoke checks, 82 layout checks, 0 problems.
+run: 291 smoke checks, 101 layout checks, 0 problems.
 
 - **A walk that runs zero times looks like a wrong answer, and partly like a right one.**
   Section [29] built its 4096-cell decision matrix with three mirrored loop headers --
@@ -171,6 +171,28 @@ run: 291 smoke checks, 82 layout checks, 0 problems.
   `JUCE_MODAL_LOOPS_PERMITTED` and JUCE 8 has no public single-step message pump, so the
   layout test drives `ChannelStrip::refresh()` -- the same `syncAutomatableControls()`
   path the 30 ms timer uses -- instead of pumping messages.
+- **A JUCE radio group cannot express "neither", so the two exclusive grid toggles are
+  made exclusive by hand.** `Button::internalClickCallback` computes
+  `shouldBeOn = (radioGroupId != 0 || ! lastToggleState)`: a button in a group lights and
+  never goes out when you click it again. Both overlays *can* be off -- that is the
+  resting state -- so `TransportBar` uses `clickingTogglesState` with no group and closes
+  the other button in the handler (`closeOverlay`, TransportBar.cpp). Enforcement belongs
+  there rather than in the grid: `StepGridComponent::openOverlay` already keeps one
+  overlay, but a panel with two lit buttons for one overlay is a panel that lies about
+  which field a drag is going to write, and only the bar can see both controls.
+- **Drive a headless toggle with `setToggleState (v, sendNotificationSync)`, not
+  `triggerClick()`.** `triggerClick` posts a message and this harness has no pump; the
+  former sets the state and *then* runs the click callback synchronously, so `onClick`
+  reads the new state, which is what a real press does. `sendNotificationAsync` is
+  `jassert`ed against on that path, so it is not an option either.
+- **A control identified by its range is identified by a number it shares.** The layout
+  test used to tell the bar's faders apart with `getMaximum() <= 1.01`, which was
+  two-way arithmetic: the third 0..1 fader (Mutate) would have been driven and then read
+  back against swing's parameter, and gone red on correct code. The bar now *names* its
+  controls -- `Swing`, `Master`, `Mutate`, `Seed` -- and the test asks by name. The same
+  trap as the parameter table, one layer up: a property two components happen to agree on
+  is not an identity, and the second copy of a classification is where the third control
+  gets misfiled.
 - Automatability is testable single-threaded because
   `AudioProcessorParameter::setValueNotifyingHost` notifies listeners synchronously.
 - JUCE 8 removed `AudioProcessorValueTreeState::setParameterNotifyingHost`; the one

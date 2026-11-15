@@ -187,6 +187,28 @@ void checkFadersIn (juce::Component& parent,
     }
 }
 
+/**
+    One of the transport bar's faders, found by the name the bar gives it.
+
+    These used to be told apart by range, which was fine while there were two of them:
+    swing runs 0..1, the trim runs in dB. The variation knob is a third 0..1 fader, and
+    a control identified by a number it happens to share with someone else gets checked
+    against the wrong parameter -- which is the same failure the parameter table had,
+    one list written twice.
+*/
+juce::Slider* findNamedSlider (juce::Component& parent, const juce::String& name)
+{
+    for (int i = 0; i < parent.getNumChildComponents(); ++i)
+    {
+        auto* slider = dynamic_cast<juce::Slider*> (parent.getChildComponent (i));
+
+        if (slider != nullptr && slider->getName() == name)
+            return slider;
+    }
+
+    return nullptr;
+}
+
 /** Writes a short click to a scratch wav, for the audio half of the swing check.
 
     Written beside the executable rather than to the system temp folder, which is
@@ -295,10 +317,14 @@ int main()
     }
 
     // Lay out at the size the plugin itself uses. Hard-coding it here once meant
-    // the test was laying out a size the editor never actually takes.
+    // the test was laying out a size the editor never actually takes — and the floor
+    // of 1240 that used to sit on this call became dead weight the moment the bar grew
+    // past it, since a design width written twice is a design width that gets missed
+    // on the second change.
     const auto preferredWidth = editor->getWidth();
     const auto preferredHeight = editor->getHeight();
-    editor->setSize (juce::jmax (preferredWidth, 1240), juce::jmax (preferredHeight, 790));
+
+    editor->setSize (preferredWidth, juce::jmax (preferredHeight, 790));
     std::printf ("\neditor size: %d x %d\n", editor->getWidth(), editor->getHeight());
 
     TransportBar* transportBar = nullptr;
@@ -410,51 +436,51 @@ int main()
 
         // Confirm the slider's onValueChange is actually connected: change the
         // slider's own value and see whether the callback runs.
-        for (int i = 0; i < transportBar->getNumChildComponents(); ++i)
         {
-            auto* slider = dynamic_cast<juce::Slider*> (transportBar->getChildComponent (i));
-
-            if (slider == nullptr || slider->getMaximum() > 1.01 || ! slider->isVisible())
-                continue;
-
             ++checked;
-            const auto before = processor.getSwing();
-            slider->setValue (0.75, juce::sendNotificationSync);
-            const auto after = processor.getSwing();
+            auto* swingSlider = findNamedSlider (*transportBar, "Swing");
 
-            if (std::abs (after - 0.75) < 1.0e-3)
-                pass ("swing slider onValueChange reaches the processor (" + juce::String (after, 3) + ")");
+            if (swingSlider == nullptr)
+            {
+                fail ("the transport bar has no fader named Swing");
+            }
             else
-                fail ("swing slider onValueChange did not reach the processor ("
-                        + juce::String (before, 3) + " -> " + juce::String (after, 3)
-                        + ", slider at " + juce::String (slider->getValue(), 3) + ")");
+            {
+                const auto before = processor.getSwing();
+                swingSlider->setValue (0.75, juce::sendNotificationSync);
+                const auto after = processor.getSwing();
 
-            break;
+                if (std::abs (after - 0.75) < 1.0e-3)
+                    pass ("swing slider onValueChange reaches the processor (" + juce::String (after, 3) + ")");
+                else
+                    fail ("swing slider onValueChange did not reach the processor ("
+                            + juce::String (before, 3) + " -> " + juce::String (after, 3)
+                            + ", slider at " + juce::String (swingSlider->getValue(), 3) + ")");
+            }
         }
 
-        // The bar owns two horizontal faders — swing and the master trim — and
-        // each has to be checked against its own parameter. They are told apart by
-        // their range: swing runs 0..1, the trim runs in dB.
-        for (int i = 0; i < transportBar->getNumChildComponents(); ++i)
+        // Each of the bar's three faders has to be checked against its own parameter,
+        // so each is asked for by name.
+        const auto checkBarFader = [transportBar] (const juce::String& name,
+                                                   std::function<double()> read)
         {
-            auto* slider = dynamic_cast<juce::Slider*> (transportBar->getChildComponent (i));
-
-            if (slider == nullptr || ! slider->isVisible()
-                || slider->getSliderStyle() != juce::Slider::LinearHorizontal)
-                continue;
-
-            if (slider->getMaximum() <= 1.01)
-                checkFader (*slider, "transport swing",
-                            [&processor] { return (double) processor.getSwing(); });
+            if (auto* slider = findNamedSlider (*transportBar, name))
+                checkFader (*slider, "transport " + name, read);
             else
-                checkFader (*slider, "transport master",
-                            [&processor] { return (double) processor.getMasterGainDb(); });
-        }
+                fail ("the transport bar has no fader named " + name);
+        };
 
-        // Those drags leave both parameters at the top of their range, and the
-        // audio checks below measure levels, so put them back first.
+        checkBarFader ("Swing",  [&processor] { return (double) processor.getSwing(); });
+        checkBarFader ("Master", [&processor] { return (double) processor.getMasterGainDb(); });
+        checkBarFader ("Mutate", [&processor] { return (double) processor.getMutate(); });
+
+        // Those drags leave all three parameters at the top of their range, and the
+        // audio checks below measure levels and count hits, so put them back first.
+        // The variation one matters most: a knob left open starts dropping steps, and
+        // every level check underneath would then be measuring a different pattern.
         processor.setSwing (0.0f);
         processor.setMasterGainDb (Layout::defaultMasterGainDb);
+        processor.setMutate (0.0f);
     }
 
     //======================================================================
@@ -914,6 +940,286 @@ int main()
                 fail ("the grid stayed in velocity mode");
 
             processor.setPlaying (false);
+        }
+    }
+
+    //======================================================================
+    // The variation half of the panel. An audio test cannot tell a drag that wrote a
+    // velocity from one that meant to write a probability — the samples come out the
+    // same either way if the level happens to match — so the wiring between these
+    // buttons and the field they edit is only visible from this side.
+    std::printf ("\n-- the variation controls --\n");
+
+    if (transportBar != nullptr && stepGrid != nullptr)
+    {
+        juce::TextButton* velocityButton = nullptr;
+        juce::TextButton* chanceButton = nullptr;
+        juce::TextButton* resetButton = nullptr;
+        juce::TextButton* rerollButton = nullptr;
+        juce::Label* seedLabel = nullptr;
+
+        for (int i = 0; i < transportBar->getNumChildComponents(); ++i)
+        {
+            auto* child = transportBar->getChildComponent (i);
+
+            if (auto* button = dynamic_cast<juce::TextButton*> (child))
+            {
+                const auto text = button->getButtonText();
+
+                if (text == "Velocity")       velocityButton = button;
+                else if (text == "Chance")    chanceButton = button;
+                else if (text == "100%")      resetButton = button;
+                else if (text == "Reroll")    rerollButton = button;
+            }
+            else if (auto* label = dynamic_cast<juce::Label*> (child))
+            {
+                if (label->getName() == "Seed")
+                    seedLabel = label;
+            }
+        }
+
+        // A plain click, sent the way a press sends it: setToggleState fires the click
+        // callback synchronously, which is what post-click flipping a toggle is for.
+        const auto clickToggle = [] (juce::TextButton& button, bool on)
+        {
+            button.setToggleState (on, juce::sendNotificationSync);
+        };
+
+        const auto clickButton = [] (juce::Button& button)
+        {
+            if (button.onClick != nullptr)
+                button.onClick();
+        };
+
+        // Every cell's probability, so "reset" can be proved to have reached them all
+        // rather than only the one the drag touched.
+        const auto chancesAtFull = [&processor]
+        {
+            for (int channel = 0; channel < Layout::numChannels; ++channel)
+                for (int step = 0; step < Layout::numSteps; ++step)
+                    if (std::abs (processor.getStepChance (channel, step) - 1.0f) > 0.002f)
+                        return false;
+
+            return true;
+        };
+
+        const auto velocitiesAtFull = [&processor]
+        {
+            for (int channel = 0; channel < Layout::numChannels; ++channel)
+                for (int step = 0; step < Layout::numSteps; ++step)
+                    if (std::abs (processor.getStepVelocity (channel, step) - 1.0f) > 0.002f)
+                        return false;
+
+            return true;
+        };
+
+        const auto countLit = [&processor]
+        {
+            int lit = 0;
+
+            for (int channel = 0; channel < Layout::numChannels; ++channel)
+                for (int step = 0; step < Layout::numSteps; ++step)
+                    if (processor.isStepOn (channel, step))
+                        ++lit;
+
+            return lit;
+        };
+
+        ++checked;
+
+        if (velocityButton == nullptr || chanceButton == nullptr || resetButton == nullptr
+            || rerollButton == nullptr || seedLabel == nullptr)
+        {
+            fail ("the variation controls are not all on the transport bar");
+        }
+        else
+        {
+            pass ("Chance, 100%, Reroll and the seed readout are all there");
+
+            //---- one number on the grid at a time --------------------------------
+            clickToggle (*velocityButton, true);
+            clickToggle (*chanceButton, true);
+
+            ++checked;
+
+            if (chanceButton->getToggleState() && stepGrid->isChanceMode()
+                && ! stepGrid->isVelocityMode() && ! velocityButton->getToggleState())
+                pass ("opening Chance closes Velocity, on the bar and on the grid");
+            else
+                fail ("the two overlays are open at once (chance lit="
+                        + juce::String (chanceButton->getToggleState() ? 1 : 0)
+                        + " velocity lit=" + juce::String (velocityButton->getToggleState() ? 1 : 0)
+                        + " grid chance=" + juce::String (stepGrid->isChanceMode() ? 1 : 0)
+                        + " grid velocity=" + juce::String (stepGrid->isVelocityMode() ? 1 : 0) + ")");
+
+            //---- a drag writes the field that is on screen -----------------------
+            processor.setStep (1, 3, true);
+            processor.setStepVelocity (1, 3, 1.0f);
+            processor.setStepChance (1, 3, 1.0f);
+
+            const auto cell = stepGrid->getCellBounds (1, 3);
+
+            ++checked;
+
+            if (cell.getWidth() < 6 || cell.getHeight() < 6)
+            {
+                fail ("channel 1 step 3 is too small to drag (" + juce::String (cell.getWidth())
+                        + " x " + juce::String (cell.getHeight()) + ")");
+            }
+            else
+            {
+                const auto point = juce::Point<int> (cell.getX() + 3,
+                                                     cell.getBottom() - juce::jmax (2, cell.getHeight() / 4));
+
+                stepGrid->mouseDown (makeEvent (*stepGrid, point.toFloat()));
+                stepGrid->mouseUp (makeEvent (*stepGrid, point.toFloat()));
+
+                const auto drawn = processor.getStepChance (1, 3);
+
+                ++checked;
+
+                if (drawn > 0.05f && drawn < 0.6f && processor.isStepOn (1, 3)
+                    && std::abs (processor.getStepVelocity (1, 3) - 1.0f) < 0.001f)
+                    pass ("a drag with Chance open moves the probability, not the level"
+                            " (chance " + juce::String (drawn, 2)
+                            + ", velocity " + juce::String (processor.getStepVelocity (1, 3), 2) + ")");
+                else
+                    fail ("the Chance drag did not write the probability alone (chance "
+                            + juce::String (drawn, 2) + ", velocity "
+                            + juce::String (processor.getStepVelocity (1, 3), 2) + ", step on "
+                            + juce::String (processor.isStepOn (1, 3) ? 1 : 0) + ")");
+
+                // A second cell, so the reset below has more than one thing to do.
+                processor.setStep (2, 7, true);
+                processor.setStepChance (2, 7, 0.5f);
+                processor.setStepVelocity (1, 3, 0.4f);
+                processor.setStepVelocity (2, 7, 0.6f);
+
+                //---- the shared reset follows the open overlay -------------------
+                clickButton (*resetButton);
+
+                ++checked;
+
+                if (chancesAtFull() && std::abs (processor.getStepVelocity (1, 3) - 0.4f) < 0.002f
+                    && std::abs (processor.getStepVelocity (2, 7) - 0.6f) < 0.002f)
+                    pass ("with Chance open, 100% puts every probability back and leaves the levels alone");
+                else
+                    fail ("the reset did not do the probabilities (all full "
+                            + juce::String (chancesAtFull() ? 1 : 0) + ", velocity at 1,3 "
+                            + juce::String (processor.getStepVelocity (1, 3), 2) + ")");
+
+                // One gesture, so one undo takes the whole grid back. Without the
+                // transaction in the handler this would need a hundred and ninety-two.
+                ++checked;
+
+                if (! processor.getUndoManager().undo())
+                {
+                    fail ("undo after the probability reset did nothing at all");
+                }
+                else
+                {
+                    const auto restored = processor.getStepChance (1, 3);
+
+                    ++checked;
+
+                    if (std::abs (restored - drawn) < 0.002f
+                        && std::abs (processor.getStepChance (2, 7) - 0.5f) < 0.002f)
+                        pass ("and it was one undo for the whole grid (step 1,3 back to "
+                                + juce::String (restored, 2) + ", step 2,7 back to "
+                                + juce::String (processor.getStepChance (2, 7), 2) + ")");
+                    else
+                        fail ("undo did not put the drawn probabilities back (step 1,3 is "
+                                + juce::String (restored, 2) + ", step 2,7 is "
+                                + juce::String (processor.getStepChance (2, 7), 2)
+                                + ", the drag had drawn " + juce::String (drawn, 2) + ")");
+                }
+
+                // The other way round, because a handler that always did velocities
+                // would have passed the check above by accident.
+                clickToggle (*velocityButton, true);
+
+                ++checked;
+
+                if (stepGrid->isVelocityMode() && ! stepGrid->isChanceMode()
+                    && ! chanceButton->getToggleState())
+                    pass ("opening Velocity closes Chance the same way");
+                else
+                    fail ("the grid did not go back to velocity editing (chance lit="
+                            + juce::String (chanceButton->getToggleState() ? 1 : 0)
+                            + " grid velocity=" + juce::String (stepGrid->isVelocityMode() ? 1 : 0) + ")");
+
+                const auto chanceStillDrawn = processor.getStepChance (1, 3);
+
+                clickButton (*resetButton);
+
+                ++checked;
+
+                if (velocitiesAtFull()
+                    && std::abs (processor.getStepChance (1, 3) - chanceStillDrawn) < 0.002f
+                    && std::abs (processor.getStepChance (2, 7) - 0.5f) < 0.002f)
+                    pass ("with Velocity open, the same button puts the levels back and leaves the chances");
+                else
+                    fail ("the reset did not do the velocities (all full "
+                            + juce::String (velocitiesAtFull() ? 1 : 0) + ", chance at 2,7 "
+                            + juce::String (processor.getStepChance (2, 7), 2) + ")");
+
+                //---- Reroll: a new take, the same grid ---------------------------
+                // Emptied first, because "a reroll is not an edit" can only be shown
+                // against a history that had nothing else in it.
+                processor.getUndoManager().clearUndoHistory();
+
+                const auto litBefore = countLit();
+                const auto seedBefore = processor.getSeed();
+
+                clickButton (*rerollButton);
+
+                const auto seedAfter = processor.getSeed();
+
+                ++checked;
+
+                if (seedLabel->getText() != juce::String (seedAfter))
+                    fail ("the seed readout did not follow the take (label says "
+                            + seedLabel->getText() + ", the engine is " + juce::String (seedAfter) + ")");
+                else if (seedAfter == seedBefore)
+                    pass ("the readout matches the engine (the reroll landed on the same number)");
+                else
+                    pass ("Reroll moved the seed and the readout moved with it ("
+                            + juce::String (seedBefore) + " -> " + juce::String (seedAfter) + ")");
+
+                ++checked;
+
+                if (processor.getUndoManager().undo())
+                    fail ("Reroll put something in the undo history; the seed is a parameter, not an edit");
+                else
+                    pass ("a reroll is not an edit, so there is nothing to take back");
+
+                // The grid the user painted is where it was, which is the whole point:
+                // a reroll that re-drew the pattern would be a randomise button, and
+                // a take you cannot get back to is not one you can write down.
+                ++checked;
+
+                if (litBefore > 0 && litBefore == countLit()
+                    && std::abs (processor.getStepChance (1, 3) - chanceStillDrawn) < 0.002f
+                    && std::abs (processor.getStepVelocity (1, 3) - 1.0f) < 0.002f)
+                    pass ("and the grid did not move: " + juce::String (litBefore)
+                            + " steps lit, before and after");
+                else
+                    fail ("Reroll changed the pattern as well as the take ("
+                            + juce::String (litBefore) + " steps lit before, "
+                            + juce::String (countLit()) + " after)");
+
+                clickToggle (*velocityButton, false);
+                clickToggle (*chanceButton, false);
+
+                ++checked;
+
+                if (! stepGrid->isVelocityMode() && ! stepGrid->isChanceMode())
+                    pass ("clearing both toggles leaves the grid painting steps");
+                else
+                    fail ("a toggle was cleared but the grid kept editing");
+
+                processor.setPlaying (false);
+            }
         }
     }
 
