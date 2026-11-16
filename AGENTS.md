@@ -112,7 +112,7 @@ It is fully gitignored and nothing in it is authored in place.
   gain would pass the second and fail the first.
 - Anything that reads like a spec in [README.md](README.md) or
   [installer/README.txt](installer/README.txt) must be code-verified before shipping.
-  Four false claims were caught this way, three of them about the same button: that the sound
+  Four false claims were caught this way, two of them about the same button: that the sound
   button's menu switches between loaded samples (it only opens a `FileChooser`;
   `SampleStore::getSampleIds()` has no UI caller), that the same button has a *preview* that is
   "a diagnostic" for the humanize law (it has never played a sound -- the audition is the lane's

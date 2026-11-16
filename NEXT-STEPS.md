@@ -2063,10 +2063,15 @@ old sample); and the choke arm — a tone held in block 0, a click cutting it in
 eight blocks in, the choked one under a quarter of that and under 0.005 absolute, so the ratio cannot be
 satisfied by "quieter instead of gone". **484 checks, 0 failures**, `[28]` still `4BC3AA231178C071` — that
 one is a requirement rather than a hope, because an audition that is not playing must not retune anything
-that is. LayoutTest's new section *"auditioning a lane from its name"* adds 24 checks: five geometry
-assertions at each of two window sizes, the click precondition, a twelve-lane count and a twelve-lane
-identity, a cell-click arm (edits the step, sounds nothing), a bank-priority arm, and eight dead points that
-must queue nothing. **675 checks, 0 problems.**
+that is. LayoutTest's new section *"auditioning a lane from its name"* is nineteen `expect` sites and
+twenty-four executed checks — the geometry group runs at two window sizes — counted here in the groups
+rather than left to the total: two fixture prechecks (the wav was written, all twelve lanes hold it), five
+geometry assertions at each size (own rectangle, the middle of a name, the whole inside edge, one pixel
+outside every edge, and no cell in the row auditioning), the click precondition, a twelve-lane count and a
+twelve-lane identity, the cell arm (a plain-mode precondition, the step still toggles, and a cell costs no
+voice), the bank arm (its own geometry precondition, the region does cover the mark, the mark moves, and
+the audition sharing those pixels stays silent), and the dead points (they answer no lane, and they queue
+nothing). **675 checks, 0 problems.**
 
 **Why identity reads a voice rather than a level, and why it is two expects.** The harness loads the *same*
 sample into all twelve lanes and reads `debugVoice (i).channel` after rendering one block, so a misrouted
@@ -2128,10 +2133,15 @@ mutating it dereferences a null pointer rather than reddening a gate. In the lab
 fixture prechecks (the wav was written, all twelve lanes hold it), "every lane has a name rectangle",
 "the panel is in plain mode when this arm runs", "a click on a cell still edits that cell" — which is
 4.5's editor path, gated by 4.5's own arms — and "the bank mark is laid out inside the name column at this
-size", a statement about the geometry the arm exists to make true. Five of those nine are preconditions
-whose job is to be green; four are claims that belong to a different feature's suite. That is written here
-rather than left to the table because a coverage claim that does not name its residual is the same shape
-as the check e6 just caught.
+size", a statement about the geometry the arm exists to make true. Counted as the list above enumerates them
+— three in [34], six in the label section, the latter because "the two fixture prechecks" is two checks — six
+of the nine are preconditions whose job is to be green: the ruler, the wav being written, all twelve lanes
+holding it, every lane having a name rectangle, the panel being in plain mode, and the bank mark sitting
+inside the column. The other three are not preconditions, and they are not claims about a different feature's
+suite either; they are claims discharged by a mechanism outside this arm: the producer's ordering, the null
+that `retainSampleForChannel` already returns, and 4.5's editor path, which 4.5's own arms gate. That is
+written here rather than left to the table because a coverage claim that does not name its residual is the
+same shape as the check e6 just caught.
 
 **Two harness bugs that had to die first** are in `AGENTS.md`, and they were not cosmetic: round one
 reported **BUILD FAILED** for e2-e4 because a mid-statement `// MUT` comment ate the `);` on the next line,
@@ -2148,8 +2158,10 @@ identified by its range, one layer further down — two components that share pi
 
 **A false claim discharged while writing the docs.** README's humanize section said *"the sound button's
 preview is a diagnostic"* — `ChannelStrip::handleSoundClicked` opens a `juce::FileChooser` and plays nothing
-(`previewChannel` has exactly one UI caller, `StepGridComponent.cpp:913`), which is the third claim
-`AGENTS.md` already lists as caught and which had survived into prose nobody re-read. It now says the button
+(`previewChannel` has exactly one UI caller, `StepGridComponent.cpp:913`), which makes it the second claim
+about that button in `AGENTS.md`'s list, after "the menu switches between loaded samples", and the fourth in
+the list overall — a claim the file had already contradicted once and which had survived into prose nobody
+re-read. It now says the button
 browses, and points at the lane name for the sound. `installer/README.txt` gained the matching paragraph, and
 `README.md` gained *"Hearing one lane"* between the MIDI and mix sections.
 
