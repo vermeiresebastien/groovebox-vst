@@ -417,7 +417,7 @@ touches the velocity law. No step here is allowed to be reported as better becau
   typed**, and a sixth was half right (of `:290,138` one number landed on the gain line and the other landed
   on a MIDI argument) — and one of the five points past the end of a file that did not reach that far, which
   says it was written from a dirty working copy rather than from any commit. Shifting a number that was never
-  right is arithmetic on a mistake, so they stay at HEAD's text, listed in `out/cite-pin.txt` with the reason,
+  right is arithmetic on a mistake, so they stay at the base's text, listed in `out/cite-pin.txt` with the reason,
   and the finding lives here — `out/` is gitignored and a tool's opinion is not a record. Re-check the
   sentence beside every one of them, not just the number: a faithful new figure buys confidence in prose that
   may itself have moved (row B5 — the *symbol* shifted, and the *"has no callers"* claim moved the other way
@@ -450,11 +450,11 @@ touches the velocity law. No step here is allowed to be reported as better becau
   - The table is the subset a script can judge. The audit names a symbol in 5 of these citations and
     cannot tell whether the rest point anywhere useful, because the sentence describes an effect
     ("renders the whole block twice", "silently truncated") rather than an identifier — and that blind
-    spot is a number the run itself prints, `no symbol named, so a human must judge` (49 across the four
-    docs today, every one listed), not one this entry has to keep re-typing. So sections B, C and
+    spot is a number the run itself prints -- `no symbol named, so a human must judge` -- which lists every
+    one and counts them, so this entry never has to re-type a figure a paragraph moves. So sections B, C and
     the E-plan carry the same `460b3bf` numbers as these 19 rows whether or not they appear here.
-  - A sweep shift preserves what HEAD's number pointed at — it does not repair a pointer that was already
-    wrong at HEAD. That is why section A's baseline sentence now covers A3 as well: the 4.4 sweep had moved
+  - A sweep shift preserves what the base's number pointed at — it does not repair a pointer that was
+    already wrong at the base. That is why section A's baseline sentence now covers A3 as well: the 4.4 sweep had moved
     `SequencerEngine.h:309` — right at `460b3bf`, the read of `soundingChannels` — to line 373 of that file,
     which is right at neither baseline, and the pin put it back. The rule for a doc section that names its
     tree is that its numbers belong to that tree, and a drift sweep has no business touching them. A number
@@ -467,13 +467,25 @@ touches the velocity law. No step here is allowed to be reported as better becau
   require `UNPINNED miss ... : 0`, which says every citation the audit can judge either points at its symbol
   or is excepted with a reason it prints — one of three: a range in `out/cite-pin.txt`, an indented table row
   that lists citations rather than pointing, or a sentence that names the commit its own number belongs to.
-  The last one exists because pins are HEAD coordinates and prose written this phase has no HEAD line to pin;
+  The last one exists because pins are base coordinates and prose written this phase has no base line to pin;
   it is checked *after* the symbol test so it cannot cost a passing citation, it prints every exemption, and
   both sides were measured — the sentence above about `SequencerEngine.h:309` reports `BASE`, and a copy of
   that file with the commit id struck out of the same sentence reports it as `MISS`. Both gates were proven
   able to go red on this lane's own work: a hand-broken `Source/MasterBus.h:150` came back as
   `AGENTS.md:95 ... -> :150`, and the 15 lines the audit reported as MISS before the pin list existed are
   what the pin list is for.
+- **6.7** Promote the citation tooling out of `out/`, or say plainly that the check does not ship. The four
+  files that *are* this gate — `cite-sweep.py`, `cite-audit.py`, `cite_pins.py` and the pin list
+  `cite-pin.txt` — all live in a gitignored folder, so a fresh clone inherits the rules in `AGENTS.md` with
+  no way to run them, and the `# base:` line that holds the pin list is one `git clean -xdf` from gone.
+  The owner already decided this question once, the other way: the planner gate went into
+  `CMakeLists.txt` rather than an `out/` runner script precisely because a gitignored runner "gives nothing
+  to a fresh clone" (see the CTest bullet in `AGENTS.md`). Two shapes, both about an hour and neither
+  touching `Source/`: `tools/cite/` plus a fifth `add_test` whose pass expression requires `to correct: 0`
+  and `UNPINNED miss: 0`, or the same four files tracked with no CTest entry — they need Python, not the
+  plugin build, and a `PASS_REGULAR_EXPRESSION` on a script that is absent must fail loudly rather than
+  skip. Leaving them local is defensible; drifting is not — but then the tracked prose has to say that
+  the citation gate is a local harness, the way the staleness guard already does.
 
 ---
 
@@ -1551,13 +1563,25 @@ re-read against the code, not against each other.
 **The citation sweep, and what it could not do.** `out/cite-sweep.py` renumbered 43 doc citations from
 `bcd6188` onto this tree, and a second pass finds nothing — `to correct: 0`, `unresolvable: 0`.
 `out/cite-audit.py` then asked the stronger question, does the cited line sit in the symbol the sentence
-names, and returned 15 MISSes, every one of them a citation that was **already wrong at HEAD**, in the
-sections written from the `460b3bf` audit. Shifting those would have made a bad pointer look renumbered, so
-they are pinned — restored to HEAD's text, with the reason in the pin list — and their verified current
+names, and returned 15 MISSes, every one of them a citation that was **already wrong at the base**
+(`bcd6188`, which was HEAD when this was written), in the sections written from the `460b3bf` audit.
+Shifting those would have made a bad pointer look renumbered, so they are pinned — restored to the base's
+text, with the reason in the pin list — and their verified current
 locations are recorded as **6.6**. The audit's gate is now `UNPINNED miss: 0`. One case is the argument for
 running both: section A3's `.load()` pointer had drifted from `SequencerEngine.h:309` — right at the baseline
 its own section names — to line 373 of that file, through this very sweep, which is correct arithmetic on a
 number that was stale where it started. It is back at 309, and 6.6 says where the read actually is.
+
+**And the sweep's own baseline moved under it, on the first commit.** Re-run after `0c066ad` landed, over a
+tree nothing had been edited in, the same two commands answered `122 already right, 2 to correct` and
+`UNPINNED miss: 13` instead of `43 / 0 / 0` and `miss: 0`: every pin range in `out/cite-pin.txt` was written in
+HEAD's line numbers, and this lane committing its own docs had made HEAD a different tree. No error, no
+warning — the ranges still resolved, at the wrong paragraphs. `out/cite-pin.txt` now names its baseline
+(`# base: bcd6188`), `out/cite_pins.py` is the one reader of that file for both scripts, and every label the
+runs print interpolates it (`edited-since-bcd6188 lines left alone`) so a report cannot say HEAD while
+reading another tree. Both directions were measured: with the base put back to `HEAD` the 13 misses return,
+with it left at `bcd6188` the pair is green. The rule and its reason are in `AGENTS.md`'s citation section;
+what belongs here is that the check passed for months on a name that was only ever accidentally stable.
 
 **Not done here, on purpose.** `launch/`, the installer and post-install verification stay with the shipping
 lane, and the export hashes `AGENTS.md` quotes belong to that lane's build rather than to a feature commit.
@@ -1565,3 +1589,67 @@ Item #14's three planner/panel contracts are the owner's to decide and were not 
 has no check that renders *across* a slot change with a long release: what protects a rotation that lands a
 new bar's hit on the previous bar's tail is 3.1's steal hand-off, which is general and was not written for
 this — the gap is stated under section A's table instead of being glossed over.
+
+### Verification/export handover — the `b603107` records, three corrections, and what a rebuild hash can say (2026-11-16)
+
+**What the export lane sent, and what it is evidence of.** Run records for the shipped commit `b603107`
+(Touch + row wrap), built detached at that SHA, nothing dirty, per-target staleness guard `STALE=0` on both
+exes: smoke **365 / 0 failures**, layout **374 / 0 problems**, planner **85 / 0 problems**, RT-path guard OK
+(84 `parameterChanged` lines from `PluginProcessor.cpp`, exit 0), `ctest` replay 4/4 exit 0. Payload:
+`Groovebox.exe` 7,095,296 `A3948E47B34A4ECE`, bundle binary 7,195,136 `CF3F8318C1BCD6D2` — the two values
+`AGENTS.md` quotes. Setup 5,060,477 `36EBB607509A57E7`; install exit 0 at 04:15:50 with
+`Administrative install mode: Yes` and `Install mode root key: HKEY_LOCAL_MACHINE`, VST3-folder census
+1/0/0/0, installed `README.txt` byte-equal to `installer/README.txt`; and re-checked live rather than read
+from a log — installed bundle == `launch/` bundle == `CF3F8318C1BCD6D2`, exe == `A3948E47B34A4ECE`.
+`6439f0b` (Humanize) was green before it (321/0 smoke, 115/0 layout) and is an ancestor of `b603107`, so its
+code is on the machine too.
+
+**Correction 1 — the release base is an ancestor, and the direction I had it in was inverted.** Measured
+here: `git merge-base --is-ancestor b603107 master` → yes, and likewise `4e6a7ef`, `6439f0b`, `10fabec`,
+`4724922`. `git rev-list --count b603107..master` = **6**, `4e6a7ef..master` = **10** — the export lane reads
+7 for the latter because `10fabec`, `bbd8cb1`, `fbf973c` and `bcd6188` landed after that count was taken.
+Which is the lesson worth keeping: `rev-list A..HEAD` counts *descendants* of A, which is exactly why the
+release commits appear in the set, and a bare count quoted between lanes is a snapshot of one tip that starts
+lying the moment a lane commits. Name the pair — `b603107`, 6 back from `bcd6188` — never the number.
+
+**Correction 2 — `428E5DDA…` is not somebody's stale log; it is an accurate manifest of a retired artefact.**
+It appears in exactly one place in either tree: `out/launch-pre-75fafb3/FROM.txt`, "bundle binary sha256:
+`428E5DDAE08A4C48A113F477D8787420BE9925FB2A8C9CF1E15C1B20A4203FB8`", written 00:52 when `launch/` was
+refreshed to the `75fafb3` build. Verified just now: `sha256sum` of
+`out/launch-pre-75fafb3/Groovebox.vst3/Contents/x86_64-win/Groovebox.vst3` is `428e5ddae08a4c48…` — the
+record matches the bytes it describes, so nobody mis-measured it. What mis-led was scope: a gitignored folder
+whose manifest's first word is "Outgoing", read later as a current census. Housekeeping already says a
+retired artefact keeps its hash; the missing half is that a superseded record has to say *outgoing* in the
+tracked carrier too, or the next reader re-derives a wrong install census from a true old one. Not folded into
+the run records above as the shipping lane's error, because it is not one.
+
+**Correction 3 — right conclusion, wrong mechanism, and the real mechanism makes the check stronger.**
+The claim was that a relink of identical sources cannot reproduce the installed bytes because `/RELEASE`
+folds the debug-directory hash in. Tested on this toolchain at its cheapest target — the std-only planner
+suite, one second to build: exe A `8b415ba5f896256b`, COFF stamp `1794803856`; then `touch
+Tests/PatternPlanTest.cpp` (content unchanged — `git status` clean afterwards) and the same target rebuilt →
+exe B `38fbcdd697badb59`, stamp `1794817406`, 13,550 s later. Identical length; **4 differing bytes**, at
+`0x108-0x109` and `0x2a394-0x2a395`, which parse as the COFF File Header `TimeDateStamp` (`e_lfanew` = `0x100`,
++8) and the one `IMAGE_DEBUG_DIRECTORY` entry's own `TimeDateStamp` (entry at `0x2a390`, +4). The PDB Guid and
+every byte of code are unchanged — so it is not `/OPT:REF` hashing anything, it is two clocks. Zero those two
+fields in both files and the hashes come out equal (`e2ec30d0fdf48320`), on identical sources. The rule that
+follows is sharper than the one sent: a rebuild-vs-install mismatch confined to those four bytes is a link
+time and proves nothing about the code, while a mismatch *larger* than that means the sources really do
+differ — so the comparison is usable across builds, not abandoned. Which is also why the same-build check in
+`AGENTS.md` (export hashed against the artefact tree, per file) is the one that passed and stays the gate.
+
+**No UAC click outstanding — true at `bcd6188`, and it stops being true when 4.4 is folded in.**
+`git diff --name-only b603107..master` is `AGENTS.md`, `NEXT-STEPS.md`, `README.md`: nothing under `Source/`,
+`Tests/`, `installer/` and no `CMakeLists.txt`, so the machine already carries the tip's code. `0c066ad`
+(4.4, parent `bcd6188`, fast-forward clean, `lane-44` points at it) changes six `Source/` files, both suites
+and `installer/README.txt`, so once it lands, Program Files holds `b603107`-era code while the tree holds 4.4
+— and the payload should be re-hashed against that lane's own new artefact tree, with the user answering the
+prompt. Numbers for that verification: 422 smoke / 441 layout / 85 planner checks, 0 problems, guard OK, `[28]`
+fingerprint `4BC3AA231178C071` unchanged.
+
+**Still open, and whose.** Item 14 stays with the owner: `PatternPlanner.h` and `GenrePatterns.h` still have
+no UI or state caller, only the planner suite — the three planner/panel contracts are decisions, not work to
+invent under commit pressure. 5.6's height half, 4.4 and 4.5 stay in this lane. The duplicate subject line
+(`4724922` reusing `4e6a7ef`'s text verbatim while containing two lines of `AGENTS.md`) is recorded under
+`AGENTS.md` "Commit log" conventions; amending published history another lane may have fetched is not this
+lane's to do, and the proposed replacement subject is in that section for the user to approve or drop.

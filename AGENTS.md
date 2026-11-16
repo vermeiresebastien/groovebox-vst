@@ -20,6 +20,16 @@ It is fully gitignored and nothing in it is authored in place.
   `copy_if_different` leaves an old mtime on a file that exported correctly, and rebuilds
   often coincide on size. Export shipped 2026-11-16 from `b603107`: `Groovebox.exe
   A3948E47...`, bundle binary `CF3F8318...` -- both equal in `launch/` and in Program Files.
+- **A rebuild is not the install, and the difference is four bytes on identical sources.** Measured
+  at the cheapest target in the tree (the std-only planner suite, ~1 s): `touch` one test file --
+  content unchanged -- relink, and the two exes differ in exactly 4 of 198,144 bytes, at `0x108`
+  and `0x2a394`, which are the COFF File Header `TimeDateStamp` and the `IMAGE_DEBUG_DIRECTORY`
+  entry's own stamp. Zero those two fields in both and the hashes match (`e2ec30d0fdf48320`). So
+  `/RELEASE` is not hashing the debug directory -- it is two clocks -- and the useful rule is
+  neither "hashes must match across builds" nor "hash comparison across builds is meaningless":
+  a mismatch confined to those four bytes is the link time, and **anything bigger means the sources
+  genuinely differ, which is the answer you were looking for.** Compare per file within one build
+  (the rule above, the gate); across builds, strip the stamps first, then believe the diff.
 - The bundle is **removed before being rewritten** ([CMakeLists.txt:152-163](CMakeLists.txt))
   so a file that no longer belongs to the build cannot survive in it.
 - `launch` is a **target, not a POST_BUILD step**, on purpose: a host with the plugin
@@ -424,10 +434,13 @@ gate. The two are not interchangeable and neither alone is the whole check; run 
 `README.md`, `AGENTS.md`, `NEXT-STEPS.md` and `installer/README.txt` point at code as
 `SequencerEngine.cpp:151-159`, and every phase that adds lines moves those numbers. A doc whose
 pointers land in an unrelated comment is worse than one with no pointers, because it is trusted.
-Two scripts in `out/` keep them honest, and the rules below are what each one cost to learn.
+Two scripts in `out/` keep them honest, and the rules below are what each one cost to learn. Say it once,
+up front: those scripts and their pin list live in gitignored `out/`, so this gate belongs to a working
+tree and not to a clone -- plan item **6.7** is the decision to move them, and until then nothing here is
+reproducible from `git checkout`.
 
-- **A sweep shift preserves what HEAD's number pointed at -- it cannot repair a pointer that was
-  already wrong at HEAD.** `out/cite-sweep.py` renumbered 43 citations from `bcd6188` onto the 4.4
+- **A sweep shift preserves what the base's number pointed at -- it cannot repair a pointer that was
+  already wrong at the base.** `out/cite-sweep.py` renumbered 43 citations from `bcd6188` onto the 4.4
   tree and the second pass found nothing, which is arithmetic and therefore trustworthy; the same
   pass moved a number that was stale where it was written into a number that is stale everywhere.
   Section A3's read of `soundingChannels` sat at `SequencerEngine.h:309` in `460b3bf`, the tree its own
@@ -440,12 +453,12 @@ Two scripts in `out/` keep them honest, and the rules below are what each one co
   is written: a script that invented a match there would be exactly the unfalsifiable check this file
   warns about.
 - **A rewrite has to be keyed, not incremental, or it shifts twice.** The target number is computed
-  from HEAD's own citation and applied to the line matched by its text with every digit masked out.
+  from the base's own citation and applied to the line matched by its text with every digit masked out.
   The first version added the delta it found instead, got run twice in one sitting, and moved 34
   citations a whole phase too far; the only reason that showed up is that a second dry run still
   wanted to change them. Idempotence is the evidence, so keep it as the gate, not the property.
 - **A doc section that names its own baseline keeps that baseline's numbers, and a pin must
-  *restore* HEAD's text rather than merely skip.** Skipping left A3 already-shifted: an exception
+  *restore* the base's text rather than merely skip.** Skipping left A3 already-shifted: an exception
   that only declines to act cannot undo the action it declines. `out/cite-pin.txt` carries the range
   and the reason, and the two reasons are different claims -- `pinned` (the section declares its
   tree, so moving the number falsifies the record) and `unverified` (the audit names a symbol and
@@ -453,7 +466,7 @@ Two scripts in `out/` keep them honest, and the rules below are what each one co
   afterwards, **13 of them were right where they were written** and only went stale, which is the
   honest reason a map cannot fix them. The findings, not the tool's opinion, are tracked item 6.6.
 - **A pin cannot hold prose written this phase, so its sentence has to name its tree.** Pin ranges
-  are HEAD coordinates matched by masked text, and a line that does not exist at HEAD cannot be
+  are base coordinates matched by masked text, and a line that does not exist at the base cannot be
   masked into one -- so the audit takes a third kind of exception from the prose itself: a commit id
   in backticks within 80 characters of the citation exempts it, as `baseline-qualified`. It is
   checked *after* the symbol test, so it cannot cost the audit a citation that already passes, and
@@ -461,19 +474,31 @@ Two scripts in `out/` keep them honest, and the rules below are what each one co
   them is one line, and the list is what a reader can actually police. Both sides were measured:
   the A3 sentence at the head of this section reports `BASE`, and with the `` `460b3bf` `` taken out
   of it the same citation comes back `MISS`.
-- **A pin is written in HEAD coordinates and matched on the working-copy side by masked text.**
-  The docs grow, so a range read as a working-copy index silently pins a different paragraph after
-  any edit above it -- silently, and plausibly, because documents of this shape repeat themselves.
-  One reader answers "is this line excepted" (`out/cite_pins.py`); two answers is how an exception
-  quietly becomes a shift, which is the same rule as any list written twice in this repo.
+- **A pin is written in a named base commit's coordinates, never HEAD's, and matched on the
+  working-copy side by masked text.** Two reasons, both measured. Indices: the docs grow, so a range
+  read as a working-copy index silently pins a different paragraph after any edit above it --
+  silently, and plausibly, because documents of this shape repeat themselves. Bases: both scripts
+  used to take their "before" tree from `git show HEAD:`, so the moment this lane committed its own
+  docs the same two commands over the same tree went from `43 already right, 0 to correct,
+  unresolvable: 0` and `UNPINNED miss: 0` to `122 already right, 2 to correct` and `miss: 13` --
+  thirteen of the fifteen `unverified` pins had fallen out of the slice they were written against,
+  with no error anywhere, because HEAD is a perfectly valid name for a commit that just moved.
+  `out/cite-pin.txt` now carries `# base: bcd6188`, both scripts print the base they used, and every label
+  they print interpolates it (`edited-since-bcd6188 lines left alone`), because a run that says "HEAD" while
+  reading another tree is the same defect in the report that the pin exists to prevent in the number.
+  Setting the base back to `HEAD` reproduces the 13 misses: the line is what holds the gate, not luck.
+  Advance a base deliberately, in the same pass that re-checks every range under it. One reader
+  answers "is this line excepted" (`out/cite_pins.py`, including the base); two answers is how an
+  exception quietly becomes a shift -- the sweep still had its own copy of the pin grammar lying
+  about unused, which is the same rule as any list written twice in this repo.
 - **A number quoted as a mistake loses the colon.** Write "line 373", never `` `:373` ``, when the
   prose is narrating a wrong pointer. The colon form is the grammar both scripts read as a
   citation, so a figure that exists only to be wrong gets judged, shifted and -- worst -- re-verified
   as if it were a pointer. The same reasoning makes an indented table row a listing rather than a
   claim, and the audit counts those separately instead of scoring them.
 - **New prose is hand-verified, because the sweep cannot see it.** It leaves every freshly written line
-  alone as *edited since HEAD* -- all of the 6.6 table and every bullet in this section -- since a line
-  with no HEAD context has no key to shift by, and the run prints how many it declined to touch.
+  alone as `edited since <base>` -- all of the 6.6 table and every bullet in this section -- since a line
+  with no base context has no key to shift by, and the run prints how many it declined to touch.
   Each current location in that table was therefore checked against the tree by hand,
   and two of them changed the sentence beside them: `getUndoManager` has a caller now
   (`PluginEditor.cpp:166`), so "has no callers" is false at any line number, and since 4.3b velocity
@@ -577,6 +602,32 @@ on purpose: see the two bolded rules below.
   not assumed -- and `Documents\VST3` is genuinely not scanned, which is what makes an
   orphan there harmless to a Live rescan. Do not cite a `Live 12 Suite\...\PluginManager\
   PluginScanDb.ldb` path; that file does not exist.
+
+## Commit log: a subject is an identity, and a count is a snapshot
+
+- **A reused subject is a fork in the log, and the hazard is retrieval, not taste.** Two commits in
+  this tree carry `Cut the corner of every step the take might drop`: `4e6a7ef` really is the 4.2b
+  probability mark (the notch, `StepGridComponent::isStepMutable`, the timer that had to start
+  watching `getMutate()`), and `4724922` is **two lines of `AGENTS.md`** -- an export-hash refresh
+  that borrowed the subject when it shipped the same build. So `git log --grep corner` returns a
+  feature and a doc edit that share a name, and `git show` is the only way to tell them apart, which
+  is precisely the mistake that produced a wrong "which commit is the release base" claim this
+  session. Proposed replacement for `4724922`, pending the user's approval -- rewriting published
+  history another lane may already have fetched is not any lane's to do unilaterally, and this
+  subject was disclosed and left alone on purpose: *"Move the export-hash bullet to the build it
+  now describes."* A new subject states what the diff changes, not what release it travelled with.
+- **Prove ancestry with `merge-base`; use `rev-list --count` only with its direction named.**
+  `git rev-list --count A..HEAD` counts A's *descendants*, so release commits appear in the set and
+  a number read as "how far back the base is" inverts the claim. Both `b603107` and `4e6a7ef` are
+  ancestors of this tip; the counts are 6 and 10. And a count is a snapshot: it grows the moment
+  another lane commits, which is why the handover said 7 and the same command now says 10. Record
+  the pair -- `b603107`, 6 back from `bcd6188` -- never the bare number.
+- **A retired artefact's hash stays true, so it has to be labelled outgoing in the tracked carrier
+  too.** `out/launch-pre-75fafb3/FROM.txt` records bundle `428E5DDA...`; `sha256sum` on the archived
+  file is exactly that, so the record is correct and the misreading was scope -- a gitignored folder
+  whose manifest's first word is "Outgoing", quoted later as a current census. Housekeeping already
+  says to archive rather than delete; the other half is that a superseded number needs its
+  supersession written where the next reader will find it, in the same sentence.
 
 ## Housekeeping
 
