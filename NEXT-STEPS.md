@@ -576,6 +576,18 @@ touches the velocity law. No step here is allowed to be reported as better becau
   plugin build, and a `PASS_REGULAR_EXPRESSION` on a script that is absent must fail loudly rather than
   skip. Leaving them local is defensible; drifting is not — but then the tracked prose has to say that
   the citation gate is a local harness, the way the staleness guard already does.
+  **The gitignored folder does not only withhold the gate from a clone — it changes the answer the gate
+  prints for a correct tree.** On 2026-11-16 the shipping lane ran the sequencer lane's own tool the way
+  it is designed to be run, `python out/wt-44/out/cite-audit.py <main-tree>`, against the merged `3c3f059`
+  tip and got `UNPINNED miss -- symbol named, not where it says : 22`, every one of them inside
+  `NEXT-STEPS.md`'s own history. The tree was fine. `cite_pins.load (ROOT)` and `base (ROOT)` read
+  `ROOT/out/cite-pin.txt`, which exists only in the lane that wrote it, so the 31 pinned citations fell
+  out of the exemption set and were re-reported as misses; copying the pin file into the main `out/`
+  returned the census to `20 symbol-checked / 60 judged / 31 pinned / UNPINNED miss: 0` with nothing else
+  touched. That is the worse failure mode, because the number arrives looking like a finding — so any
+  promotion has to make an absent `cite-pin.txt` a **refusal**, not an empty exemption list. The same
+  hazard now covers a second harness: the new `AGENTS.md` bullet points at `out/planbuild/verify-sha.ps1`
+  as the way to verify a peer's SHA, and a fresh clone does not have it either.
 
 ---
 
@@ -1577,7 +1589,7 @@ version; AGENTS.md the three bullets (a wrong slice, bounds needing a size, a ga
 borrow its own predicate) and the CTest correction the `ecfe76c` handover asked for. **Not done
 here, on purpose:** a feature commit ships no export — `launch/` and the export hashes AGENTS.md
 quotes belong to the shipping lane, and whoever builds it refreshes those hashes against that
-build’s SHA; the genre presets are still undocumented in the shipped README, which is 4.4’s to
+build’s SHA; the genre presets are still undocumented in `installer/README.txt`, which is 4.4’s to
 fix; and 4.4 itself stands on its own.
 
 ### Correction — the "`launch/` waits for Live" claim was an inference, and it was wrong (2026-11-16)
@@ -1603,8 +1615,13 @@ says whether it does.
 
 The plan asked for *"4-slot pattern bank per channel (four pattern strings on the tree, no file browser),
 with a bar-counter evolve option. ~6 h."*, and that is what shipped: no browser, no song mode, no slot
-change the host can automate. The genre presets that 4.3b left undocumented in the shipped README were folded
-in here, since the bank is what they finally have somewhere to go.
+change the host can automate. The genre presets that 4.3b left undocumented in `installer/README.txt`
+were said here to be folded in, since the bank is what they finally have somewhere to go — **that clause
+did not happen, and was measured against this tree rather than against the sentence.** `0c066ad` adds 47
+lines to `installer/README.txt` and none of them name a genre; `grep -c -i genre` there is 0 and has been
+since, `README.md` describes the genre *table* and its test but lists no preset, and `PatternPlanner` still
+has zero callers in `Source/` at `3c3f059`. The presets have neither a document nor a destination until
+item 14 lands, which is the honest state and is what `README.md`'s limitations row now says.
 
 **The law, in one place.** `Layout::numPatternSlots` is 4 (`Source/Common.h:34`) and slot 0 is the grid that
 already existed: the property is still `pattern`, with the same bytes, so a session written before the bank

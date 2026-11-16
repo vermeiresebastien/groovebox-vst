@@ -1078,9 +1078,11 @@ Notes on the design:
   arrangement of bars into sections, no per-section lane settings, and nothing that carries
   a pattern out of the plugin. What the bank gives you is a lane that walks its own four
   grids on a fixed period; ordering the four grids differently over time is not it.
-- The genre presets and the pattern planner exist, are tested and are documented — and have
-  **no caller in the plugin yet**. Nothing in the editor asks them for a pattern; they are
-  wired for the step that decides how a host or a button should reach them.
+- The genre presets and the pattern planner exist, are tested and are documented **in this file** —
+  `installer/README.txt`, the copy that lands in the install folder, names no genre at all. While they
+  have **no caller in the plugin yet** that is the honest reading of "documented": nothing in the editor
+  asks them for a pattern, so there is nothing for a user-facing page to describe yet, and they are
+  wired only for the step that decides how a host or a button should reach them.
 - *Humanize* is timing only, and late only: it cannot start a hit ahead of its step.
 - *Touch* is level only, and it is a deviation, not a redraw: it cannot turn a rest into
   a hit, cannot strike a step more than a quarter of its own level above or below what
