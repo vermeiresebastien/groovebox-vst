@@ -1992,8 +1992,8 @@ numbers for the next verification: **465 smoke / 651 layout / 85 planner checks,
 `[28]`'s fingerprint is the same `4BC3AA231178C071` — 4.5 was required not to move it, and did not.)*
 *(Later again — 5.6's height half, 4.5, 5.3 and the 14a seam have all landed in this lane since that
 sentence: **546 smoke / 675 layout / 85 planner checks, 0 problems, guard OK**, and the same
-`4BC3AA231178C071`. Program Files is behind the tree by every `Source/`-changing commit since `b603107`,
-and closing that gap is the owner's install step, not this lane's.)*
+`4BC3AA231178C071`. Program Files is behind the tree by two `Source/`-changing commits after the `3c3f059` —
+export — `ba7c953` and `8e49944` — and closing that gap is the owner's install step.)*
 
 **Still open, and whose.** Item 14 stays with the owner: `PatternPlanner.h` and `GenrePatterns.h` still have
 no UI or state caller, only the planner suite — the three planner/panel contracts are decisions, not work to
@@ -2303,7 +2303,7 @@ with 0 problems, `GUARD OK: the parameter path is allocation-free` and `100% tes
 — and `[28]` comes back at the same `4BC3AA231178C071` in that tree. The run is
 `out/verify-14a.console.txt`, with the per-suite logs beside it. Scope is part of the claim: that
 proves the *sources*, not the deliverable. `launch/` was not touched and no setup was built, so
-Program Files stays behind the tree by every `Source/`-changing commit since `b603107`, and closing
+Program Files stays behind the tree by two `Source/`-changing commits after the `3c3f059` export, and closing
 that gap is the owner's install step. This paragraph then lands as a docs-only commit on top of the
 tree that run was made in, touching no compiled input, so by the rule in `AGENTS.md` it is not owed
 a rebuild either.
