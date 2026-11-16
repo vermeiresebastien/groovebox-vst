@@ -628,12 +628,182 @@ int main()
 
         // A negative spare means the strip ran out of room and something below it
         // was laid out with nothing, which is how the mute button went missing.
+        // It used to be the leftover of the layout rectangle, and `Rectangle::removeFromTop`
+        // clamps, so that number was 0 on a strip 44 px short and this line could not
+        // go red. It is the plan's own deficit now.
         ++checked;
 
         if (anyStrip->getSpareHeight() >= 0)
             pass ("strip has " + juce::String (anyStrip->getSpareHeight()) + " px to spare");
         else
             fail ("strip is " + juce::String (-anyStrip->getSpareHeight()) + " px too short");
+    }
+
+    //======================================================================
+    //  The strip's height rule, asked in its own numbers.
+    //
+    //  The walk below lays out real components, which is how it catches a fader being
+    //  squeezed; it cannot catch this rule being wrong at a size no arm happens to visit.
+    //  And the rule is 5.6's remaining half on its own: what shipped was two sets of row
+    //  sizes costing 268 px and 228 px of room, and a threshold at 219 — below the cost of
+    //  both, so the compact branch had never fitted at any height, and the roomy one
+    //  stopped fitting 49 px earlier than anyone thought. Only a gate over the function
+    //  can say *for every room*, so that is what this is: every claim is arithmetic on
+    //  `Layout::stripPlan`, and none of it borrows `ChannelStrip::resized`.
+    std::printf ("\n-- the strip height rule, at every room --\n");
+    {
+        // What one layout pass actually consumes at a given room, gaps and captions
+        // included, using the sizes the plan returned rather than the ones it wanted. This
+        // is the quantity that has to stay under the room: above it, `removeFromTop`
+        // clamps and a control gets a zero-height rectangle.
+        const auto used = [] (const Layout::StripPlan& p)
+        {
+            return 5 * p.sectionGap + p.soundGap + 4 * p.caption
+                   + p.header + p.sound + p.clearRow + p.pitchRow
+                   + p.dropRow + p.level + p.envelope + p.muteRow;
+        };
+
+        // 1. The four budgets are the four costs, and each is the *smallest* room its stage
+        //    fits. Nothing here types a size: `wanted` is the plan's own sum, so a row that
+        //    changes without its budget moving shows up as a disagreement between the two.
+        const int budgets[] = { Layout::stripFullRoom, Layout::stripTightRoom,
+                                Layout::stripFloorRoom, Layout::stripBareRoom };
+
+        for (int stage = 0; stage < 4; ++stage)
+        {
+            const auto at = Layout::stripPlan (budgets[stage]);
+
+            expect (at.stage == stage && at.wanted == budgets[stage] && at.spare == 0,
+                    "budget " + juce::String (budgets[stage]) + " is exactly what stage "
+                        + juce::String (stage) + " costs",
+                    juce::String (at.wanted) + " px wanted at stage " + juce::String (at.stage)
+                        + ", spare " + juce::String (at.spare));
+
+            // The boundary, from the other side: one px less and the strip has to give
+            // something up. Stage 3 is the exception and is said next, because it has no
+            // cheaper stage to fall to.
+            if (stage < 3)
+            {
+                const auto under = Layout::stripPlan (budgets[stage] - 1);
+
+                expect (under.stage == stage + 1,
+                        "one px under it the plan takes the next stage down",
+                        juce::String (budgets[stage] - 1) + " px gives stage "
+                            + juce::String (under.stage) + ", want " + juce::String (stage + 1));
+            }
+            else
+            {
+                const auto under = Layout::stripPlan (budgets[stage] - 1);
+
+                // This is the claim that makes the whole exercise worth doing: below the
+                // cheapest stage the plan does not quietly over-allocate, it reports the
+                // shortfall, and the ADSR row is what pays for it.
+                expect (under.stage == 3 && under.spare == -1 && under.envelope == 43
+                          && used (under) == budgets[3] - 1,
+                        "and below the last budget it says so instead of lying",
+                        juce::String (budgets[3] - 1) + " px gives stage "
+                            + juce::String (under.stage) + ", spare "
+                            + juce::String (under.spare) + ", envelope "
+                            + juce::String (under.envelope));
+            }
+        }
+
+        // 2. Totality, over every room a strip can be given, including the negative side of
+        //    the boundary. `used <= room` is the whole repair: it means no row was clamped,
+        //    which is the same thing as no control being laid out with nothing.
+        auto overflowed = 0, firstOver = -1, honest = 0;
+
+        for (auto room = Layout::stripHardRoom; room <= 400; ++room)
+        {
+            const auto p = Layout::stripPlan (room);
+
+            if (used (p) > room)
+            {
+                if (firstOver < 0)
+                    firstOver = room;
+
+                ++overflowed;
+            }
+
+            // The plan spends what it is given when it can, and no more: a rule that
+            // under-used the room would pass the check above and still leave the strip
+            // shorter than it had to be.
+            if (used (p) == juce::jmin (p.wanted, room))
+                ++honest;
+        }
+
+        expect (overflowed == 0 && honest == 400 - Layout::stripHardRoom + 1,
+                "from the hard floor up, nothing is clamped and nothing is wasted",
+                juce::String (overflowed) + " of "
+                    + juce::String (400 - Layout::stripHardRoom + 1) + " rooms overflow"
+                    + (firstOver < 0 ? juce::String() : " (first at " + juce::String (firstOver) + ")")
+                    + ", " + juce::String (honest) + " spend what they are given");
+
+        // The other side of that bound, because a floor nobody derived is a wide limit. At
+        // one px below `stripHardRoom` every row is already at its own minimum, so the
+        // consumption cannot come down any further and sits on the floor itself: the
+        // number is derived, and 123 is 112 px of rows + 10 of gaps + the 1 px the envelope
+        // will squeeze to.
+        expect (used (Layout::stripPlan (Layout::stripHardRoom - 1)) == Layout::stripHardRoom
+                  && Layout::stripPlan (Layout::stripHardRoom).envelope == 1
+                  && Layout::stripPlan (Layout::stripHardRoom + 1).envelope == 2,
+                "the hard floor is the px where the envelope runs out, not a rounded guess",
+                "room " + juce::String (Layout::stripHardRoom - 1) + " needs "
+                    + juce::String (used (Layout::stripPlan (Layout::stripHardRoom - 1)))
+                    + "; envelope is " + juce::String (Layout::stripPlan (Layout::stripHardRoom).envelope)
+                    + " px there and "
+                    + juce::String (Layout::stripPlan (Layout::stripHardRoom + 1).envelope)
+                    + " one px up");
+
+        // 3. Monotone, and no control row is ever given up entirely. A taller window is not
+        //    allowed to buy a shorter button: that is the property the old two-set rule held
+        //    between stages and lost inside them, and it is what makes the walk below able to
+        //    claim the compact path is *served* rather than merely *chosen*.
+        auto backwards = 0, zeroRow = 0, halfCaption = 0;
+        Layout::StripPlan previous = Layout::stripPlan (0);
+
+        for (auto room = 1; room <= 400; ++room)
+        {
+            const auto p = Layout::stripPlan (room);
+
+            const bool shrunk = p.header < previous.header || p.sound < previous.sound
+                                || p.clearRow < previous.clearRow || p.pitchRow < previous.pitchRow
+                                || p.dropRow < previous.dropRow || p.level < previous.level
+                                || p.envelope < previous.envelope || p.muteRow < previous.muteRow
+                                || p.caption < previous.caption || p.sectionGap < previous.sectionGap
+                                || p.soundGap < previous.soundGap;
+
+            backwards += shrunk;
+            halfCaption += p.caption != 0 && p.caption != 11;
+
+            const auto smallest = juce::jmin (juce::jmin (p.header, p.sound),
+                                              juce::jmin (juce::jmin (p.clearRow, p.pitchRow),
+                                                          juce::jmin (juce::jmin (p.dropRow, p.level),
+                                                                      juce::jmin (p.envelope, p.muteRow))));
+
+            zeroRow += smallest < 1;
+            previous = p;
+        }
+
+        expect (backwards == 0 && zeroRow == 0 && halfCaption == 0,
+                "taller never means shorter, no control row is ever 0, captions are all or nothing",
+                juce::String (backwards) + " backwards, " + juce::String (zeroRow)
+                    + " with a row squeezed away, " + juce::String (halfCaption)
+                    + " with a caption at a size paintCaption would not draw");
+
+        // 4. The room the probe measured, and the two numbers a laptop has to live with.
+        //    236 px of strip is what a 500 px window gave, and it is where the old rule lost
+        //    two of seventeen controls; 280 px is the smallest strip that still gets the
+        //    layout the design asks for, which is what 5.6's height half has to buy.
+        expect (Layout::stripRoomFor (236) == 224
+                  && Layout::stripPlan (224).spare == 14 && used (Layout::stripPlan (224)) == 210
+                  && Layout::stripRoomFor (Layout::stripFullRoom + 2 * Layout::stripFrame)
+                       == Layout::stripFullRoom,
+                "the probe's room is served now, and the roomy layout starts at 280 px of strip",
+                "236 px strip -> room " + juce::String (Layout::stripRoomFor (236))
+                    + ", stage " + juce::String (Layout::stripPlan (224).stage) + ", spare "
+                    + juce::String (Layout::stripPlan (224).spare) + ", full design from "
+                    + juce::String (Layout::stripFullRoom + 2 * Layout::stripFrame) + " px");
     }
 
     //======================================================================
@@ -659,12 +829,45 @@ int main()
                 juce::String (static_cast<int> (strips.size())) + " of "
                     + juce::String (Layout::numChannels));
 
+        // How many controls a strip owns, counted at the size the design asks for rather
+        // than typed. The four section captions are painted, not child components, so the
+        // number is the same at every stage of the height rule, and a walk that only asked
+        // for `seen > 0` would be satisfied by a rule that made the mute button vanish.
+        auto stripControls = 0;
+
+        if (! strips.empty())
+        {
+            for (int i = 0; i < strips.front()->getNumChildComponents(); ++i)
+            {
+                auto* inner = strips.front()->getChildComponent (i);
+
+                if (inner != nullptr && inner->isVisible())
+                    ++stripControls;
+            }
+
+            expect (stripControls == 17, "a strip owns seventeen visible controls",
+                    juce::String (stripControls) + " at "
+                        + juce::String (strips.front()->getHeight()) + " px");
+        }
+
         const auto barSlider = [transportBar] (const juce::String& name)
         {
             return findNamedSlider (*transportBar, name);
         };
 
-        struct Size { int width, height; juce::String what; };
+        // `allowed` is whether the window may actually be this size, and it comes off the
+        // editor's own constrainer rather than from a remembered 844: 5.6's height half is
+        // about to change that number, and an arm that is quietly outside the limits should
+        // stop being excused the moment the limits reach it.
+        const auto* limits = editor->getConstrainer();
+        const auto floorHeight = limits != nullptr ? limits->getMinimumHeight() : preferredHeight;
+
+        struct Size
+        {
+            int width, height;
+            juce::String what;
+            bool allowed = true;
+        };
 
         // The bar's rule is about *bar* widths, so the arms are written in bar widths and
         // the editor's margins are measured off the running editor rather than typed in
@@ -678,9 +881,17 @@ int main()
             { TransportBar::wrappedRowWidth + barInset,   preferredHeight, "the editor's floor" },
             { 1500,                                       700,             "in between" },
             { 2200,                                       1400,            "the largest the editor allows" },
+            // Two arms below the floor, on purpose. The first is the height that used to
+            // lose two controls per strip (236 px of strip, `out/layout-tight-probe.log`)
+            // and is now the regression test for it; the second is 1832 x 399, which the
+            // arithmetic in the section above derives as room 123 -- the last height the
+            // rule can serve without a control losing its rectangle.
+            { preferredWidth,                             500, "PROBE: strips at 236 px (below the floor)", false },
+            { preferredWidth,                             399, "PROBE: strips at 135 px, the rule's own floor", false },
         };
 
-        std::printf ("  the bar sits %d px inside the window on each side\n", barInset / 2);
+        std::printf ("  the bar sits %d px inside the window on each side,"
+                     " the window may not go under %d px\n", barInset / 2, floorHeight);
 
         for (const auto& size : sizes)
         {
@@ -762,10 +973,13 @@ int main()
                     checkBounds (*transportBar, *inner, "bar child " + juce::String (i));
             }
 
-            // All twelve strips, at every size. The `tight` branch in
-            // ChannelStrip::resized is a height rule, so this is the only way the walk
-            // ever runs the code that decides whether the bottom of a strip is on screen.
-            auto shortOnes = 0;
+            // All twelve strips, at every size the walk reaches. The height rule in
+            // `ChannelStrip::resized` is the code that decides whether the bottom of a strip
+            // is on screen, and the two short arms below are in this list precisely because
+            // they reach the part of it that the reachable sizes never touch: they are
+            // smaller than the window can be, and the claim is that the rule is total anyway.
+            auto clipped = 0, outOfRule = 0, shortWhereAllowed = 0, wrongCount = 0;
+            const auto armStripHeight = strips.empty() ? 0 : strips.front()->getHeight();
 
             for (int lane = 0; lane < static_cast<int> (strips.size()); ++lane)
             {
@@ -785,29 +999,60 @@ int main()
                         ++bad;
                 }
 
-                if (strip->getHeight() < 219)
-                    ++shortOnes;
+                wrongCount += seen != stripControls || bad != 0;
+                clipped += bad;
 
-                expectQuiet (bad == 0 && seen > 0 && strip->getSpareHeight() >= 0,
+                // The strip ran the shared rule, not a private copy of it. This is the
+                // editor-and-the-bar claim, which on its own proves only that two callers
+                // agree — the numbers that make it worth anything are gated in the section
+                // above, and what this one catches is `resized()` going back to its own
+                // arithmetic while the test kept checking the plan.
+                const auto plan = Layout::stripPlan (Layout::stripRoomFor (strip->getHeight()));
+
+                outOfRule += strip->getSpareHeight() != plan.spare
+                          || strip->getLayoutStage() != plan.stage;
+
+                // Only a size the window can actually take owes anyone a usable control.
+                if (size.allowed && plan.spare < 0)
+                    ++shortWhereAllowed;
+
+                expectQuiet (bad == 0 && seen == stripControls,
                              "strip " + juce::String (lane) + " is whole",
                              juce::String (bad) + " clipped of " + juce::String (seen)
                                  + ", " + juce::String (strip->getHeight()) + " px tall, spare "
-                                 + juce::String (strip->getSpareHeight()));
+                                 + juce::String (strip->getSpareHeight()) + " at stage "
+                                 + juce::String (strip->getLayoutStage()));
             }
 
-            // A strip shorter than its wanted 219 px takes `ChannelStrip::resized`'s
-            // tight branch, and two of its seventeen visible controls land outside it.
-            // Measured rather than guessed: a probe arm at 1832 x 500 put the strips at
-            // 236 px with spare 0 and twelve BAD lines, and was then removed again -- the
-            // run is in out/layout-tight-probe.log, the fix is 5.6's remaining half. No
-            // window the user can reach is that short (the floor is 1218 x 844), so the
-            // claim here is only that the broken code stays unreachable, and it is a claim
-            // that goes red the day someone lowers the floor again.
-            expect (shortOnes == 0,
-                    "no strip is short enough to need the tight rule at this size",
-                    juce::String (strips.front() != nullptr ? strips.front()->getHeight() : 0)
-                        + " px of strip, " + juce::String (shortOnes) + " of "
-                        + juce::String (static_cast<int> (strips.size())) + " under 219");
+            expect (wrongCount == 0,
+                    "every strip keeps all of its controls inside, at every arm",
+                    juce::String (clipped) + " clipped in total, " + juce::String (wrongCount)
+                        + " of " + juce::String (static_cast<int> (strips.size()))
+                        + " strips wrong at " + juce::String (armStripHeight) + " px");
+
+            expect (outOfRule == 0,
+                    "and each one laid out by the shared rule rather than a copy of it",
+                    juce::String (outOfRule) + " strips disagree with Layout::stripPlan");
+
+            // What this arm used to assert was that nothing reaches the compact branch,
+            // because the compact branch was broken: a probe at 1832 x 500 put 2 of every
+            // strip's 17 controls outside it, at 236 px of strip with `getSpareHeight () == 0`
+            // (`out/layout-tight-probe.log`), and the arm was then deleted so the suite could
+            // go green. That claim is worth nothing now that the rule is a budget — and it was
+            // worth nothing before, since it was satisfied by the floor being too high rather
+            // than by the layout being right. The claim here is the one that survives 5.6's
+            // height half: at any size the window is allowed to be, no strip is given less
+            // than the sizes it asked for. The floor comes off the editor's own constrainer,
+            // so lowering it pulls these arms in rather than letting this line stay green.
+            expect (shortWhereAllowed == 0,
+                    "no strip the editor can show is short of what its plan asked for",
+                    juce::String (shortWhereAllowed) + " of "
+                        + juce::String (static_cast<int> (strips.size()))
+                        + " under, at " + juce::String (armStripHeight) + " px of strip, "
+                        + (size.allowed ? juce::String ("inside the ")
+                                        : juce::String ("below the "))
+                        + juce::String (floorHeight) + " px floor"
+                        + (size.allowed ? juce::String() : " on purpose"));
 
             // The number under the pointer, asked of every corner it has to survive.
             //

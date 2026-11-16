@@ -768,14 +768,22 @@ by painting the grid into an image and comparing two renders that differ in one
 probability, since it is the one part of the panel with no bounds to inspect: that
 says where the pixels moved, that they moved in only that one cell, and that a
 mark which should not appear there makes two renders of the same cell identical.
-The bar's wrap rule is checked at six window sizes — the default, exactly the width
-one row asks for, one pixel narrower, the editor's floor, one in between and the
-largest the editor allows — and at each of them the bar's height is compared with
+The bar's wrap rule is checked at eight window sizes — the default, exactly the width
+one row asks for, one pixel narrower, the editor's floor, one in between, the largest
+the editor allows, and two deliberately below the floor — and at each of them the bar's
+height is compared with
 the row rule's own numbers rather than with the predicate being tested, the
 variation band is placed by which line it overlaps, all twelve channel strips are
 walked for clipped children, and all 192 hover readouts are asked for their size as
 well as their position, since a label whose bottom edge got pulled up to the top of
 the grid stayed inside it and read as a pass at 1 px tall.
+The two sub-floor arms — a window that gives every strip 236 px, which used to put two of
+its seventeen controls off-screen, and one that gives it 135 px, the rule's own hard floor —
+are kept as permanent gates. They are excused from exactly one claim, that a strip got the
+height its plan asked for; they are still held to keeping every control inside and to having
+laid out through `Layout::stripPlan` rather than a copy of it. Which arms are excused is read
+from `editor->getConstrainer()->getMinimumHeight()`, not typed, so lowering the floor pulls
+those arms into the usability gate instead of writing them off.
 
 The pattern bank is inspected as geometry, as a click and as pixels. The rule that decides
 whether a lane's strip exists at all is walked over 301 window sizes and asked as two

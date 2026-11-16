@@ -361,6 +361,130 @@ namespace Layout
         return on || levelByte (velocity) != 127
                    || chanceByte (chance) != (juce::uint8) chanceLevels;
     }
+
+    //==========================================================================
+    // The channel strip's height rule.
+    //
+    // One strip holds seventeen controls in eight rows, and the editor hands the strip
+    // whatever the window has left after the title, the transport bar and the grid. So
+    // the rows have to give way somehow, and until now they did it by a comparison that
+    // could not be satisfied: the two sets of sizes cost 268 px and 228 px of room, and
+    // the switch between them was at 219. Above 268 the roomy set fits; in [219, 268) it
+    // does not; and below 219 the compact set is chosen, which needs 228 and so has never
+    // fitted either. There is no strip height at which the old compact branch worked,
+    // which is why a 500 px window put two of every strip's seventeen controls outside it
+    // (`out/layout-tight-probe.log`) while the check meant to catch that reported
+    // `spare 0` -- JUCE's `removeFromTop` clamps, so a row that ran out of space got a
+    // zero-height rectangle *inside* the strip and the leftover was always empty.
+    //
+    // The rule below is therefore not two sets of numbers and a guess at where one ends.
+    // It is one budget: the stage is chosen by what is actually available, so what the
+    // plan asks for is never more than the room it was computed from, and the deficit it
+    // can still report is honest. Three things give way, in the order the strip's own
+    // comment has always claimed -- space between the blocks, then the blocks themselves,
+    // and only then the painted section names, because a caption is decoration and a row
+    // at its floor is still a control you can drag.
+    inline constexpr int stripFrame = 6;   // `getLocalBounds().reduced (6)`
+
+    /** The height the rows and captions are actually laid out in. */
+    inline constexpr int stripRoomFor (int stripHeight) noexcept
+    {
+        return stripHeight - 2 * stripFrame;
+    }
+
+    /**
+        The four budgets the layout gives way at, in px of room.
+
+        Each is the summed cost of the stage it opens, so the number is not a threshold
+        someone chose: it is what that stage needs, and `stripPlan` picks the first one
+        that fits. `stripHardRoom` is the last of them, below which even the floors
+        overflow and a control loses its rectangle -- the strip cannot be made honest
+        there by any rule, only by the editor refusing to be that short.
+
+        The chain is 268 = 192 rows + 44 captions + 32 gaps, 246 with the gaps at 10,
+        210 with the rows at their 156 px floors, 166 with the captions gone, and
+        123 = 156 - 43 + 1 + 10 once the ADSR row has spent the whole of its travel.
+    */
+    inline constexpr int stripFullRoom  = 268;
+    inline constexpr int stripTightRoom = 246;
+    inline constexpr int stripFloorRoom = 210;
+    inline constexpr int stripBareRoom  = 166;
+    inline constexpr int stripHardRoom  = 123;
+
+    /** One row of one strip, at one available height. See `stripPlan`. */
+    struct StripPlan
+    {
+        int sectionGap = 0;   ///< space between two blocks, taken five times
+        int soundGap   = 0;   ///< the extra space under the sample button
+        int caption    = 0;   ///< one of the four painted section names, taken four times
+
+        int header = 0, sound = 0, clearRow = 0, pitchRow = 0;
+        int dropRow = 0, level = 0, envelope = 0, muteRow = 0;
+
+        int stage = 0;    ///< 0 full, 1 gaps in, 2 rows at their floors, 3 no captions
+        int wanted = 0;   ///< everything at the stage's own sizes, before any squeeze
+        int spare = 0;    ///< room - wanted; negative says the strip is short
+    };
+
+    /**
+        What one channel strip should do with `room` px of height.
+
+        The answer is a number per row rather than a flag, so the strip lays out from it
+        without re-deciding anything, and the layout test can ask the same function what
+        it expected at each size instead of borrowing the strip's arithmetic -- the
+        mistake AGENTS.md records for the bar's wrap rule, where a gate that compared the
+        bar's height with `heightForWidth (its width)` stayed green on a rule that had been
+        turned into `return false`.
+
+        Monotone by construction: a taller room never buys a shorter row. `envelope` is
+        where a shortfall lands, because `EnvelopeControls` divides its own height by four
+        and has no child components (`boundsFor` uses `jmax (1, height / 4)`), so it degrades
+        into a shorter drag band instead of a zero-sized control -- which is the failure this
+        rule exists to prevent. Every other row *is* a child, so squeezing one of those is
+        how the mute button went missing.
+    */
+    inline StripPlan stripPlan (int room) noexcept
+    {
+        StripPlan p;
+
+        p.stage = room >= stripFullRoom    ? 0
+                  : room >= stripTightRoom ? 1
+                  : room >= stripFloorRoom ? 2
+                                           : 3;
+
+        const auto rowsAtFloor = p.stage >= 2;
+        const auto gapsRoomy = p.stage == 0;
+
+        p.sectionGap = gapsRoomy ? 6 : 2;
+        p.soundGap = gapsRoomy ? 2 : 0;
+
+        // The caption's 11 px is not a taste: `paintCaption` draws a 12 px font into it,
+        // so it is either that or nothing, which is why it is the third thing to give and
+        // not a stage of its own.
+        p.caption = p.stage >= 3 ? 0 : 11;
+
+        p.header   = rowsAtFloor ? 16 : 20;
+        p.sound    = rowsAtFloor ? 18 : 22;
+        p.clearRow = rowsAtFloor ? 18 : 20;
+        p.pitchRow = rowsAtFloor ? 16 : 20;
+        p.dropRow  = rowsAtFloor ? 12 : 14;
+        p.level    = rowsAtFloor ? 14 : 18;
+        p.envelope = rowsAtFloor ? 44 : 56;
+        p.muteRow  = rowsAtFloor ? 18 : 22;
+
+        p.wanted = 5 * p.sectionGap + p.soundGap + 4 * p.caption
+                   + p.header + p.sound + p.clearRow + p.pitchRow
+                   + p.dropRow + p.level + p.envelope + p.muteRow;
+
+        p.spare = room - p.wanted;
+
+        // Below the bare stage's 166 the ADSR row pays for the rest, a px at a time, until
+        // it reaches `stripHardRoom` and has nothing left to give.
+        if (p.spare < 0)
+            p.envelope = juce::jmax (1, p.envelope + p.spare);
+
+        return p;
+    }
 }
 
 /** Palette lifted from the Earworm Studio drum page. */

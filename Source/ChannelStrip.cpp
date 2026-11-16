@@ -240,43 +240,33 @@ void ChannelStrip::refreshName()
 
 void ChannelStrip::resized()
 {
-    auto area = getLocalBounds().reduced (6);
+    auto area = getLocalBounds().reduced (Layout::stripFrame);
     area.removeFromLeft (2); // keep clear of the channel-colour edge
 
-    // The host editor can give the strip less height than the ideal layout, so
-    // the gaps between sections shrink first and the heights shrink after that.
-    constexpr int captionHeight = 11;
-    constexpr int wantedHeight = 219;
-
+    // One budget, asked of one function. The sizes of every row come from
+    // `Layout::stripPlan`, which picks its stage from what this strip actually has, so
+    // the arithmetic that decides whether the mute button is on screen is the same
+    // arithmetic the layout test checks — and not, as it was, a pair of size sets and a
+    // threshold (219) that sat below the cost of both of them (268 and 228).
     const auto room = area.getHeight();
-    const auto tight = room < wantedHeight;
+    const auto plan = Layout::stripPlan (room);
 
-    const int gapSize = tight ? 2 : 6;
-    const int headerHeight = tight ? 16 : 20;
-    const int soundHeight = tight ? 20 : 22;
-    const int clearRowHeight = tight ? 18 : 20;
-    const int pitchRowHeight = tight ? 18 : 20;
-    const int dropRowHeight = tight ? 12 : 14;
-    const int levelHeight = tight ? 16 : 18;
-    const int muteHeight = tight ? 20 : 22;
+    const auto gapSize = plan.sectionGap;
+    const auto captionHeight = plan.caption;
 
-    // Four ADSR rows. At 14 px each they are short but still draggable, which is
-    // what the strip's width allows.
-    const int envelopeHeight = tight ? 52 : 56;
-
-    auto header = area.removeFromTop (headerHeight);
+    auto header = area.removeFromTop (plan.header);
     colourButton.setBounds (header.removeFromLeft (16).withSizeKeepingCentre (14, 14));
     header.removeFromLeft (4);
     soundingDotArea = header.removeFromRight (8).withSizeKeepingCentre (6, 6);
     nameLabel.setBounds (header);
 
     area.removeFromTop (gapSize);
-    soundButton.setBounds (area.removeFromTop (soundHeight));
-    area.removeFromTop (2);
+    soundButton.setBounds (area.removeFromTop (plan.sound));
+    area.removeFromTop (plan.soundGap);
 
     // Clear and the two shift arrows share one row: they are all row operations,
     // and the arrows are small enough to stay clickable at this width.
-    auto rowButtons = area.removeFromTop (clearRowHeight);
+    auto rowButtons = area.removeFromTop (plan.clearRow);
     constexpr int shiftWidth = 18;
     shiftLeftButton.setBounds (rowButtons.removeFromLeft (shiftWidth));
     rowButtons.removeFromLeft (3);
@@ -286,7 +276,7 @@ void ChannelStrip::resized()
 
     area.removeFromTop (gapSize);
     pitchCaptionArea = area.removeFromTop (captionHeight); // drawn in paint()
-    auto pitchRow = area.removeFromTop (pitchRowHeight);
+    auto pitchRow = area.removeFromTop (plan.pitchRow);
 
     // 14 + 14 + 14 + 14 button widths = 56 of the 77 px available, leaving room
     // for the readout between them.
@@ -306,7 +296,7 @@ void ChannelStrip::resized()
     // The drop's own line, inside the Pitch block and directly under it: a short
     // readout and a track, no caption row of its own, because the strip has no
     // height to give and the arrow says what the number is.
-    auto dropRow = area.removeFromTop (dropRowHeight);
+    auto dropRow = area.removeFromTop (plan.dropRow);
     constexpr int dropLabelWidth = 24;
     dropValueLabel.setBounds (dropRow.removeFromLeft (dropLabelWidth).reduced (1, 0));
     dropRow.removeFromLeft (2);
@@ -314,11 +304,14 @@ void ChannelStrip::resized()
 
     area.removeFromTop (gapSize);
     levelCaptionArea = area.removeFromTop (captionHeight); // drawn in paint()
-    levelSlider.setBounds (area.removeFromTop (levelHeight));
+    levelSlider.setBounds (area.removeFromTop (plan.level));
 
     area.removeFromTop (gapSize);
     envelopeCaptionArea = area.removeFromTop (captionHeight); // drawn in paint()
-    envelope.setBounds (area.removeFromTop (envelopeHeight));
+    // Four ADSR rows in one band. The band is the plan's absorber: at 56 px each row is
+    // 14, at the 44 px floor 11, and below that whatever the strip has left, because
+    // `EnvelopeControls::boundsFor` floors its own row at 1 and owns no child components.
+    envelope.setBounds (area.removeFromTop (plan.envelope));
 
     area.removeFromTop (gapSize);
     chokeCaptionArea = area.removeFromTop (captionHeight); // drawn in paint()
@@ -326,12 +319,16 @@ void ChannelStrip::resized()
     // The choke box and the mute switch share the last row. The box takes 34 px,
     // which leaves 40 for "Mute" — the button's font is clamped to 11 px at this
     // height, and the word measures 24.
-    auto muteRow = area.removeFromTop (muteHeight);
+    auto muteRow = area.removeFromTop (plan.muteRow);
     chokeComboBox.setBounds (muteRow.removeFromLeft (34));
     muteRow.removeFromLeft (3);
     muteButton.setBounds (muteRow);
 
-    lastSpareHeight = area.getHeight();
+    // The plan's own deficit, not what is left of the rectangle: `removeFromTop` clamps,
+    // so the leftover reads 0 on a strip that is 44 px short and the check built on it
+    // could not go red. See `Layout::stripPlan`.
+    lastSpareHeight = plan.spare;
+    lastLayoutStage = plan.stage;
 }
 
 //==============================================================================

@@ -115,12 +115,15 @@ It is fully gitignored and nothing in it is authored in place.
   `Documents\VST3` (it does not -- see Host folders below).
 - **A fit claim states both axes and names the code that decides each.** 4.3b shipped that the
   wrap "lets it go down to **1218 px** — a 1366 px laptop" (README.md:440) and that the
-  "editor floor **1218×844**, which does fit 1366×768" (NEXT-STEPS.md:370) -- in the same
+  "editor floor **1218×844**, which does fit 1366×768" (NEXT-STEPS.md:370 -- the line that
+  sentence now sits on, in its corrected form, which is what the last clause of this bullet
+  says happened to it) -- in the same
   paragraph that then admitted the height half was not paid for. The width is true (1218 <=
   1366); the height is not, because [Source/PluginEditor.cpp:101](Source/PluginEditor.cpp)
   passes 844 straight to `setResizeLimits` as the editor's *minimum* while a 768 px screen has
   roughly 730 px of it -- the bottom strip sits off-screen and no resize brings it back.
-  `Tests/LayoutTest.cpp:803` prints that floor already, so this was one subtraction away rather
+  the printf of `floorHeight` at `Tests/LayoutTest.cpp:893` prints that floor already, so this was
+  one subtraction away rather
   than a measurement away: a claim that survives checking only one axis is the dangerous shape.
   Both sentences were corrected by the shipping lane in `71c04fd`.
 - **A verified number is not a verified claim.** The Touch A/B quoted `peak 1.438488 -> 1.485904`
@@ -150,7 +153,7 @@ no generated header ([CMakeLists.txt:232-335](CMakeLists.txt)), which is what ke
 second. All four entries are `add_test` cases carrying a `PASS_REGULAR_EXPRESSION` that requires a
 `, 0 ` problem count, so a run that prints nothing and a run that prints a problem both fail the
 tracked path even at process exit 0, and `-V` is the documented form because the quiet one prints no
-counts. Last green run: 422 smoke checks, 441 layout checks, 85 planner checks, 0 problems, guard OK.
+counts. Last green run: 422 smoke checks, 554 layout checks, 85 planner checks, 0 problems, guard OK.
 
 **CTest does not build.** Measured by the lane that wired it (`ecfe76c`): with `GenrePatterns.h:101`
 broken and no rebuild, `ctest` reported 4/4 passed while the sources no longer matched the binaries.
@@ -347,6 +350,32 @@ gate. The two are not interchangeable and neither alone is the whole check; run 
   The sizes are widths of the component, not of the window: the test measures the editor's inset
   off the running editor rather than typing the 18 px margin a second time, for the reason in
   the bullet above about a list written twice.
+- **A leftover rectangle is not a shortfall.** `Component::removeFromTop` clamps, so reading
+  `area.getHeight ()` after a row of them returns 0 whether the layout had 5 px to spare or ran
+  44 px short. That is what `ChannelStrip::getSpareHeight ()` was until 5.6, and the walk's
+  `shortOnes == 0` gate was built on it: it had no red state to reach. The 12 BAD lines the
+  4.3b probe arm printed came from the *bounds* check, which is the one that could still see the
+  clipping. The strip now reports `Layout::stripPlan (room).spare` -- the plan's own deficit,
+  negative when the strip cannot be served -- and that is what kills the roomy-envelope arm on
+  **12 of 12** strips at 285 px (`out/56-T.txt`). Any "how much is left" number has to be asked
+  of the code that *spends* it, not of the rectangle it spends from.
+- **Price every branch against the predicate that selects it.** The old strip rule was two size
+  sets and a threshold: roomy rows when `room >= 219`, compact rows below. Adding each set up
+  showed roomy costs **268** px and compact **228**, so roomy was chosen in [219, 268) where it
+  does not fit and compact only below 219 where its own 228 does not fit either -- the compact
+  arm had never worked at any strip height. Note what that does *not* look like: the branch was
+  not unreachable, it was reached and then overflowed, so a check for "is the tight branch ever
+  exercised" passes on it. `Layout::stripPlan` (`Source/Common.h:446`) is one budget that picks a
+  stage at exactly that stage's cost -- 268 / 246 / 210 / 166, hard floor 123 -- and the gate
+  asserts cost <= room for every room the editor can reach, one px under each boundary, and that
+  the floor is where the absorber runs out rather than a rounded guess (`LayoutTest.cpp:653`,
+  twelve checks; six mutation arms kill 28 / 10 / 7 / 2 / 1 / 4 of the suite).
+- **An arm's "this size is impossible, so skip the claim" flag is read from the code that makes
+  it impossible.** The layout test now walks eight sizes: six the window can take plus the 236 px
+  and 135 px strip probes, kept permanently, and marks the probes unreachable by comparing against
+  `editor->getConstrainer ()->getMinimumHeight ()` rather than a typed 844. Typing the number
+  would have made the two probe arms a permanent excuse the moment 5.6's remaining half lowers the
+  floor -- the gate would keep passing while the sizes it forgave stopped being forgivable.
 - **A control's colour is not its word.** Two of the bank's pixel checks -- "a lane that is
   rotating looks different" and "a full bank reports the copy mark has nowhere to go" -- were
   carried end to end by the *text* drawn beside the controls: arm p2 (the chip's lit branch

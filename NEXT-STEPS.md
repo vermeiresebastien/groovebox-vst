@@ -106,7 +106,7 @@ anywhere in `Source/`), so the engine atomics are untouched; the next edit or sa
 atomics over the undone string. Also `getUndoManager()` (`PluginProcessor.h:244`) has **no callers**: there
 is no `KeyPressMapping` / `ApplicationCommandTarget` in the repo, so undo cannot be invoked at all. A
 mis-drag that paints a run across a row (`StepGridComponent.cpp:507-520`) is unrecoverable, and "Clear
-pattern" (`TransportBar.cpp:345`) / "Clear row" (`ChannelStrip.cpp:424`) fire with no confirmation.
+pattern" (`TransportBar::handleClearPatternClicked`) / "Clear row" (`ChannelStrip::handleClearRowClicked`) fire with no confirmation.
 
 **B5 — A host-automated parameter allocates on the audio thread, and the header says it cannot.**
 `parameterChanged` parses the id with two `juce::String::substring` calls (`PluginProcessor.cpp:92,97`).
@@ -151,7 +151,7 @@ sample-exact clock invariant that test `[12]` protects.
 | **U2** | Kit workflow: multi-file drop fills lanes (`StepGridComponent.cpp`'s `filesDropped` uses `files[0]` and ignores the rest; its silence was fixed earlier, it raises the same error box the browse path does), lane menu from `getSampleIds()`, remembered folder, audition on click (B7) | 12 file dialogs → one gesture | 12-20 h | low | U3 |
 | **U3** | Live programs/kits (`getNumPrograms()==1`) = a free preset browser in Live's browser | makes the thing shareable and recallable | 16-24 h, partly blocked by path-only refs | med | — |
 | **U4** | Pattern → MIDI clip export by drag (`juce::MidiFile` already linked; `skulpt/Source/SequenceView.cpp:507` is the precedent) | gets your groove into the arranger | 4-8 h | low | — |
-| **U5** | Editor floor fits a 1366×768 laptop, all-12-strip layout test — **the row half is done** (2026-11-16, pulled into 4.3b): the bar wraps to two lines below 1774 px and the floor is **1218×844** (`TransportBar::oneRowWidth`/`wrappedRowWidth`; `editorWidth`/`editorHeight` are the *default*, not the minimum) | was: `LayoutTest.cpp` checked one size and the first strip only. Now six sizes × all twelve strips; the `tight` branch (`ChannelStrip.cpp:197-209`) is still never executed, and deliberately so — at 236 px of strip it puts 2 of 17 controls outside | ~2-3 h left | low | what is left is 5.6's height rule, not the row |
+| **U5** | Editor floor fits a 1366×768 laptop, all-12-strip layout test — **two of the three halves are done**: the row half (2026-11-16, pulled into 4.3b — the bar wraps to two lines below 1774 px, `TransportBar::oneRowWidth`/`wrappedRowWidth`) and the strip-height half (2026-11-16, 5.6 — `Layout::stripPlan` is one budget that prices four stages; the 5.6 entry below has the numbers and the gates) | was: `LayoutTest.cpp` checked one size and the first strip only. Now eight sizes × all twelve strips, two of them deliberately below the editor's own minimum, and each one asserts `0 clipped` **and** that it ran the shared rule. The floor is still **1218×844** (`editorWidth`/`editorHeight` are the default *and* the minimum) and a 768 px screen has ~730 px | ~2-3 h left | low | what is left is the **height** half: 844 px of minimum, not the strip and not the row |
 | **V1** | `verify.ps1`: build → both test exes with `$LASTEXITCODE` checked → SHA-256 manifest of `launch/` vs artefacts | today `installer/build-installer.ps1:92-105` only `Test-Path`s 5 files; nothing hashes anything | 3-4 h | low | — |
 | **V2** | RT tripwire (counting allocator armed inside `processBlock`) + click metric (max \|x[n]−x[n−1]\|) + level-matched A/B render rig | makes "sounds better" falsifiable, which is your rule | 12-16 h | med — JUCE 8.0.4 has **no** `OfflineRenderer`, BS.1770 LUFS would be hand-rolled | everything audio |
 | **M1** | Positioning: free BYO-sample in-plugin sequencer is genuinely unoccupied (Triaz Player can't load custom samples; TerminalVST is one sound per instance; Hydrogen isn't a plugin; Battery/Maschine sequence nothing in-plugin) | decide what the next 20 hours are *for* | 2 h decision | n/a | — |
@@ -257,7 +257,7 @@ own rule: a test that passes on old code proves nothing.
   every later pattern feature undoable for free. ~4-6 h.
 - **2.6** Wire undo/redo keys (`KeyPressMapping` / `ApplicationCommandTarget` — none exists in `Source/`),
   refresh the panel through the existing `onStateChanged` path, and add a confirm on "Clear pattern"
-  (`TransportBar.cpp:345`) and "Clear row" (`ChannelStrip.cpp:424`). ~3-4 h.
+  (`TransportBar::handleClearPatternClicked`) and "Clear row" (`ChannelStrip::handleClearRowClicked`). ~3-4 h.
 - **2.7** Fix B6: light the correct swing-grid button for grid 3, or make the UI write only 2/4 and stop the
   engine honouring 3 — pick one and make the comment and the code agree. ~1 h.
 - **2.8** Re-check the two claims we rejected (`SequencerEngine.h:373` atomic read; no `PresetManager`) —
@@ -364,15 +364,47 @@ touches the velocity law. No step here is allowed to be reported as better becau
   `ChannelStrip::resized` is never executed), and should assert that the
   hover readout `StepGridComponent::paintValueOverlay` draws at `cell.getY() − 12` is not
   clipped on the top row. ~4-6 h.
-  **Split as of 4.3b (2026-11-16), and now mostly discharged:** the third fader had made the
-  floor worse (**1832×844**), so the *wrap rule* and the multi-size layout test were pulled
-  forward into 4.3b and shipped there — one row at **1774 px** and wider, two lines below it,
-  editor floor **1218×844**, which fits 1366 px of *width* and not 768 px of height. What the wrap does *not* pay for is the
-  height half. The test now walks all twelve strips at six sizes and asserts `shortOnes == 0`,
-  i.e. that nothing reaches `ChannelStrip::resized`'s `tight` branch, because that branch is
-  broken: a probe arm at a 500 px window puts **2 of every strip's 17 visible controls outside
-  it**, at 236 px of strip with `getSpareHeight () == 0` — 12 BAD lines, `out/layout-tight-probe.log`.
-  The arm was removed again after measuring; 5.6 is that fix and nothing else, ~2-3 h not 4-6.
+  **Split as of 4.3b (2026-11-16), and discharged except for the height as of 5.6 the same
+  day:** the third fader had made the floor worse (**1832×844**), so the *wrap rule* and the
+  multi-size layout test were pulled forward into 4.3b and shipped there — one row at
+  **1774 px** and wider, two lines below it, editor floor **1218×844**, which fits 1366 px of
+  *width* and not 768 px of height.
+  **The strip-height half, and the defect was worse than this entry claimed.** The 4.3b
+  write-up said the `tight` branch "is broken": a probe arm at a 500 px window put **2 of
+  every strip's 17 visible controls outside it**, at 236 px of strip with
+  `getSpareHeight () == 0` — 12 BAD lines, `out/layout-tight-probe.log`. Measuring the rule
+  properly showed `219` was not a band that went unused: it was a threshold **no strip height
+  satisfies in either direction**. Roomy rows cost **268 px** of area and compact rows cost
+  **228**, so roomy was picked in [219, 268) where it does not fit and compact was picked
+  only *below* 219, where its own 228 still does not fit — the compact arm has never worked
+  at any height, and `spare` could not say so because it was `area.getHeight()` after a
+  `removeFromTop`, which clamps: a strip 44 px short leaves a rectangle of exactly 0, so the
+  check built on it had no red state to reach. Fixed as one budget-chosen rule.
+  `Layout::stripPlan (room)` (`Source/Common.h:446`) returns four stages priced at exactly
+  their own cost — **268** full / **246** gaps in / **210** rows at their floors / **166**
+  captions gone — over a hard floor of **123 px** of room, and `ChannelStrip::resized`
+  (`Source/ChannelStrip.cpp:241`) asks it for every row height instead of holding a copy of
+  the arithmetic; `spare` is now the plan's own deficit and may be negative, and the envelope
+  row is the only absorber because it is the only row with no child components. Gated twice
+  over: `LayoutTest.cpp:653` puts **twelve checks** on the rule itself — each stage's budget
+  against what the plan actually consumes, one px under each boundary, the sub-166 claim
+  stated as `spare -1 / envelope 43`, totality over all 278 rooms the editor can reach, the
+  hard floor derived rather than typed, monotonicity, and the 236 px probe resolved — and the
+  walk is now **eight** sizes rather than six: the six the window can take plus the 236 px
+  and 135 px strip arms kept permanently, with reachability read from
+  `editor->getConstrainer()->getMinimumHeight()` rather than a literal 844, so lowering the
+  floor in the next step pulls those arms into the usability gate instead of excusing them.
+  Green: **554 checks, 0 problems**. Six single-expression arms kill **28 / 10 / 7 / 2 / 1 /
+  4** of them — revert to `8a27d27`, stage-0 envelope asking 66 while the budget counts 56
+  (this is the one that reddens the walk: *12 of 12 short at 285 px*), stage-2 header at 22,
+  absorber clamped at 4 instead of 1, top boundary `>=` made `>`, and stage 2 wired to
+  `stripBareRoom` — so every gate in the new section is seen to bite by at least one arm
+  (`out/56-<arm>.txt`, `out/mut56.py` restores from `out/*.good` at the top of every run).
+  What is **not** paid for is the height: `PluginEditor.cpp:101` still hands 844 to
+  `setResizeLimits` as the *minimum* and a 768 px screen has roughly 730 px of it. Measured
+  here: the strips hold their 285 px down to a 585 px window, so the debt is the grid's 120 px
+  reserve and the wrapped bar's 96, not the strip. ~2-3 h, and it is a *different* 2-3 h than
+  the one this entry was describing.
 - **5.7** Tell people the two gestures exist. Undo and redo are wired, tested and named in
   `LayoutTest` — `Ctrl/Cmd+Z`, `Ctrl+Y`, one press per *gesture* — and appear in **neither**
   README, while drag-a-sample-to-load does get a line in the header. A host that keeps its
@@ -438,7 +470,7 @@ touches the velocity law. No step here is allowed to be reported as better becau
   | B7 | `SampleStore.h:88` (`getSampleIds`) | yes | `SampleStore.h:108`, `SampleStore.cpp:225` |
   | F1 | `PluginProcessor.cpp:673-693` (1/100-quantised velocity) | yes, and discharged by 4.1/4.2 | the codec is `slotPropertyName`/`pushPatternToState`/`applySlotFromState` at `:1136-1300` |
   | F1 | `:334-361` (`shiftChannelRow`) | yes | `PluginProcessor.cpp:522` |
-  | U5 | `ChannelStrip.cpp:197-209` (the `tight` branch) | yes | `ChannelStrip.cpp:252-265` — still unreachable, which is 5.6 |
+  | U5 | `ChannelStrip.cpp:197-209` (the `tight` branch) | yes | **discharged by 5.6** — that branch is gone: the row heights come from `Layout::stripPlan` (`Common.h:446`), which `ChannelStrip.cpp:241-332` asks once per strip |
   | E2 | `SequencerEngine.cpp:368,457` (`free()` via a refcount) | **no — no refcount, no `free` in that file, at any baseline** | the registry is append-only with dedupe-not-free; the sentence is describing a design that was rejected |
   | 3.x | `SequencerEngine.cpp:290,138` (velocity is gain only) | **half — 138 was the gain line, 290 a MIDI argument** | the gain is `SequencerEngine.cpp:337`, inside `trigger` at `:296` — and the sentence is out of date too, since 4.3b velocity is gain *and* tone |
   | 2.8 | `SequencerEngine.h:317` (the only read of `soundingChannels`) | **no — 317 was `double position = 0.0;`, the read was 309** | `SequencerEngine.h:642` |
@@ -623,7 +655,11 @@ when nothing was choked at all. That was measured, not assumed; the first versio
 The strip needed a row for the box, and there was no spare height to take it from — the layout reported 0 px
 to spare at 254 px — so `stripHeight` went 254 → **271** (`"Choke" caption 11 + gap 6 = 17`), which comes out
 of the grid's slack, not the window: at the 830 px minimum the grid is still 405 px against the 400 it was
-designed around, and the strip now reports 5 px to spare. The box is a 34 px `ComboBox` sharing the last row
+designed around, and the strip now reports 5 px to spare. *(Dated record, and the word "spare"
+changed meaning under 5.6: it used to be the leftover of the layout rectangle and is now the plan's
+own deficit. They are the same number wherever the old roomy set fitted — stage 0 is priced at that
+set — and differed only where it did not, which is where the old reading was the lie. The strip is 285
+px today, `PluginEditor.cpp:47`.)* The box is a 34 px `ComboBox` sharing the last row
 with Mute (40 px), items `0 1 2 3` at ids `1 2 3 4` because JUCE keeps 0 for "no selection"; a combo box
 rather than a popup menu because it shows the value without a click and `setSelectedId` fires synchronously,
 which is what makes both directions testable headless.
@@ -781,10 +817,13 @@ nominal rate exactly (`Layout::pitchDropSweepSeconds`, `pitchDropTimeConstants`,
 `Common.h:223-225`; `coefficient = exp(-5/1323) = 0.996228` at 44.1 kHz). `voice.increment` keeps its old
 meaning — the settled rate, the note — and the fall lives in two new mutable voice fields, `dropExcess` and
 `dropRemaining`, recursed once per output sample at `SequencerEngine.cpp:858`. The window cost is one more row
-per lane: `ChannelStrip.cpp:249` 205 to 219 px and the editor 830 to **844 px** at 1240 wide (the width is
+per lane: `ChannelStrip.cpp:299` (was `:249` before 5.6 rewrote `resized`) 205 to 219 px and the editor 830 to
+**844 px** at 1240 wide (the width is
 **1520** since 4.2's panel half, **1678** since 4.3's timing fader; the 844 still holds). The grid keeps its
 405 (`out/layout-35-final.txt`: component 1 at y=126, h=405), so the window pays the 14 at the bottom. That is
-the debt Phase 5 U5 has to pay back.
+the debt Phase 5 U5 has to pay back. *(5.6 paid the strip's half of it — that 14 is now `Layout::stripPlan`'s
+`dropRow`, 14 px in the two roomy stages and 12 in the two at floors, and the strip is 285 px; the 844 is the
+part still open.)*
 
 *What `[25]` measures.* Periods are counted from zero crossings, so the claim is about pitch and not about a
 waveform shape; the fixture tone is a known 220 Hz, hence a known 200.455-sample period.
@@ -1448,6 +1487,12 @@ inside, 11 px tall and at least 22 wide. (iv) The strip walk is all twelve strip
 quiet, with one printed exception, and it says `no strip is short enough to need the tight rule`
 because that rule is broken and unreachable: probe at 1832×500 → 236 px strips, 2 of 17 controls
 outside, spare 0, 12 BAD lines (`out/layout-tight-probe.log`). That is what is left of 5.6.
+*(Superseded the same day by 5.6, above — and the probe arm was read correctly here, it just
+understated the defect: `219` was not a band nobody reached, it was a threshold **no** strip
+height satisfies, because the compact set cost 228 and was only ever chosen below 219. The rule
+is now `Layout::stripPlan`; the walk is eight sizes with both probe arms kept as permanent gates;
+and `spare` is the plan's own deficit rather than the leftover of a clamping rectangle, which is
+the specific reason this sentence's `spare 0` could never have gone red.)*
 
 **Run.** `ctest --test-dir build-new -C Release -V` → **4/4**: 365 smoke checks / 0 failures, 374
 layout checks / 0 problems, 85 planner checks / 0 problems, `GUARD OK`. Both harnesses exited 0 on

@@ -29,8 +29,14 @@ public:
     /** Re-reads only the channel name (used when a rename is cancelled). */
     void refreshName();
 
-    /** Room left at the bottom after the last control, for the layout test. */
+    /** What `Layout::stripPlan` reported for the last layout: px to spare at the bottom,
+        or — since 5.6 — a negative number when the strip is shorter than the sizes it
+        chose. Used to be the leftover of the layout rectangle, which is always 0 once a
+        row has run out of room, so the check built on it could not go red. */
     int getSpareHeight() const noexcept { return lastSpareHeight; }
+
+    /** Which of the plan's four stages the last layout ran at, for the layout test. */
+    int getLayoutStage() const noexcept { return lastLayoutStage; }
 
     void paint (juce::Graphics& g) override;
     void resized() override;
@@ -124,6 +130,7 @@ private:
     bool isSounding = false;
 
     int lastSpareHeight = 0;
+    int lastLayoutStage = 0;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (ChannelStrip)
 };
