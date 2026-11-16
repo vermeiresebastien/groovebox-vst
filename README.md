@@ -18,10 +18,11 @@ sample you drag onto its row, and which also plays from MIDI notes.
 | **Choke groups** | **Three per lane. A hit in a group cuts every other hit in that group short, ramped over 20 ms — put the closed hat in the same group as the open one and it stops it instead of stacking on it** |
 | **Step probability** | **Every step says how often it is allowed to fire, 0–100 %. Hit *Chance* in the top bar and drag inside a step; a step that can be dropped has its corner cut off. The *Variation* knob — parameter **Mutate** — decides how much of that the machine may use: shut, the grid is law** |
 | Swing | 0–100 % on either a 1/8 or 1/16 grid |
+| **Humanize** | **0–100 %: a hit is allowed to start a little behind its step. Late only, never past a quarter of a step, and it follows the tempo rather than a fixed delay — the *Humanize* fader in the top bar, double-click to shut** |
 | Tempo | Follows the host project tempo; in the standalone build it has its own transport and tempo |
 | Mix | Per-channel level and mute, plus a "clear row" button |
 | **Master trim & meter** | **A −24 to +6 dB master trim you can see and reach, a bar for the sample peak with a tick for the true peak hiding between the samples, and a clip latch on the output** |
-| **Automation** | **Levels, pitches, pitch drops, envelopes, mutes, choke groups, swing, swing grid, tempo, the master trim, Mutate and Seed are host parameters — automate them, and the panel follows what the host drew** |
+| **Automation** | **Levels, pitches, pitch drops, envelopes, mutes, choke groups, swing, swing grid, tempo, the master trim, Mutate, Humanize and Seed are host parameters — automate them, and the panel follows what the host drew** |
 | Row editing | Click a cell to toggle it; drag across cells to paint a run |
 | **Shift a row** | **The ← and → buttons in a channel strip turn that whole row one step earlier or later, and every step's velocity goes with it** |
 | Persistence | Pattern, per-step velocity and probability, pitch, levels, mutes, names, colours, seed and sample paths are saved in the session; a session saved before the parameter migration is read in and its values carried over |
@@ -117,6 +118,66 @@ to write down if you want this take back.
   is why the number is on the panel rather than hidden behind a history.
 - Probabilities ride in the saved session with the pattern; the knob and the seed come
   back through the host, like every other parameter.
+
+## How late a hit is
+
+**The *Humanize* fader lets a hit start a little behind the step it belongs to.** It is
+one number for the whole machine — 0–100 %, in the Variation group beside the knob, shut
+again by a double-click — and it only goes one way. Nothing plays early, nothing is added
+and nothing is taken away: the hits that fire are exactly the ones the grid and the take
+already decided, they only arrive a fraction of a step after their onset.
+
+| Knob | What it does |
+|---|---|
+| 0 % | every hit is on its onset, and the engine never reaches for a random number — the output is bit for bit the straight grid |
+| 50 % | up to an eighth of a step behind, most hits far less |
+| 100 % | up to a quarter of a step behind |
+
+**Why a quarter of a step, and why not milliseconds.** The offset is a fraction of a step
+so that it follows the tempo the way swing does: a hit a quarter of a step late at 120 is
+a quarter of a step late at 240, where a fixed delay would turn into a flam as the song
+sped up. The size is arithmetic rather than taste. The closest two onsets this machine can
+put a bar at are half a step apart — that is what a swung pair costs, on the 1/8 grid and
+on the 1/16, measured at the shuffle — and half of that gap is the biggest offset that
+cannot overtake the step in front of it. A late hit can join the next one; it can never
+pass it, so the pattern you drew is still the pattern that comes out and only its feel
+moves.
+
+**Most hits barely move.** The draw is squared rather than spread evenly, and that is
+measured, not asserted: over 4096 keys the average hit sits a third of the travel behind
+its onset and half of them are inside the bottom quarter of it. A uniform draw would put
+the average halfway to the limit and the whole groove would simply read as late. Squaring
+is the shape a player makes — land on it, miss by a little, and only sometimes miss by a
+lot — which is why the knob reads as how far the *worst* hits go while the feel stays
+anchored.
+
+**It is a take, not a shimmer, and it is a separate draw from the drops.** The offset comes
+from the same seed and the same bar, step and lane, but from the other half of the hash:
+which hits fire reads the top bits, how late they are reads the bottom ones. So moving the
+timing fader cannot change which steps play — the same cells stand in the same take at 20 %
+as at 100 %, and the corner marks on the grid are not about this knob — while **Reroll**
+re-deals both together, because a new take is a new performance rather than the same one
+nudged. Offline render and live playback agree, as they do for everything keyed on the seed.
+
+**A note you play is not humanized.** The offset belongs to the sequencer: a keyboard note
+is already early or late by however you struck it, and the sound button's preview is a
+diagnostic. Only grid hits wait.
+
+**What it costs, and where the delay lives.** At 0 % nothing at all: one comparison, and
+the branch that ran before this feature existed is the branch that runs with it shut. With
+it open the hit is the same samples in the same order at the same level, only later —
+measured against the same render with the knob shut, every sample the check compares
+(from 4 up to the 1600-sample mark, each against its twin one shift later) is equal, and
+the two peaks agree to seven decimals. The wait is spent by the voice, before it reads a
+sample or touches its envelope, so
+it survives any block size: a 482-sample wait at a 64-sample block spans eight of them
+before the voice reads anything, and it starts sounding in the same block the lane light
+comes on. The clock, the playhead and the swing grid are untouched, which is why every
+sample-accuracy gate in the suite still means what it says.
+
+**A session that predates the parameter opens shut.** A parameter missing from a saved
+state takes its default rather than whatever was live when the file was written, and the
+default here is 0 %.
 
 ## The envelope
 
@@ -217,7 +278,7 @@ what you mixed.
 Every continuous control is a proper host parameter, so it can be drawn as
 automation instead of only moved by hand: per-channel level, pitch, pitch drop,
 A/D/S/R, mute and choke group (9 parameters × 12 channels), plus master trim,
-swing, swing grid, tempo, Mutate and Seed — 114 in total, grouped per lane so a
+swing, swing grid, tempo, Mutate, Humanize and Seed — 115 in total, grouped per lane so a
 host lists them sensibly.
 
 The pattern is deliberately **not** in the parameter list. 192 cells as 192
@@ -241,10 +302,10 @@ and leaves it alone.
 ## Layout
 
 - **Top bar** — one row: transport, tempo, swing and its grid, the **Variation** group
-  (the knob, **Reroll** and the seed readout), "Clear pattern", the **Velocity** and
-  **Chance** toggles with the shared **100%** reset, and the master trim and meter. The
-  window's minimum width is what this row needs to lay every control out at its own
-  size, so the bar never has to give room up to fit the window.
+  (the knob, the **Humanize** fader, **Reroll** and the seed readout), "Clear pattern",
+  the **Velocity** and **Chance** toggles with the shared **100%** reset, and the master
+  trim and meter. The window's minimum width is what this row needs to lay every control
+  out at its own size, so the bar never has to give room up to fit the window.
 - **Middle** — the 16 × 12 step grid. Channel 11 is the top row and channel 0 the
   bottom, matching the web app, which reverses its lane list.
 - **Bottom** — one strip per channel: name (double-click to rename), colour
@@ -414,6 +475,16 @@ It asserts, among other things, that:
   an awkward 333-sample block — one bar could not see a clock that drifts;
 - swing places every step on the onset the web app's formula specifies, on both
   the 1/8 and 1/16 grids;
+- **a late hit is late on purpose**: with the timing knob shut nothing is drawn off the
+  onset; open, the offsets stay inside a quarter of a step, average a third of the travel
+  and put half the hits in its bottom quarter; the same seed asked twice gives the same
+  take and is indifferent to the order it was asked in; a new seed re-draws every cell;
+  **which hits fire does not move when the timing knob moves** (measured correlation
+  between the two draws: −0.0012); the audio of a late hit is the same samples at the same
+  level with no output sample differing; a 482-sample wait at a 64-sample block starts
+  sounding on the same block the lane light comes on, at 64, 256 and 1024 alike; and the
+  bound is checked against the closest onsets the swing grid can make — 0.5000 steps at
+  the shuffle, so the knob can join a hit to the next one but never pass it;
 - an octave of pitch shortens a sample, mute silences a channel, and a lower
   level is quieter;
 - pitching a sample **up** does not fold its top end back into the audible band:
@@ -462,6 +533,9 @@ It asserts, among other things, that:
   bit for bit where it found it;
 - a mono sample stays centred;
 - pattern, pitch, names, swing and grid survive a save/load round trip;
+- a session written **before a parameter existed** opens with that parameter at its
+  default rather than at whatever was live, and keeps everything else it did store —
+  checked by deleting the timing row out of a saved state and loading what is left;
 - an incoming note plays its channel with the transport stopped, a note outside
   the mapped range stays silent, velocity scales the hit, a muted channel ignores
   its note, and a note off leaves the one-shot ringing;
@@ -490,7 +564,7 @@ It asserts, among other things, that:
   first, is a no-op over a whole bar, and leaves every other row alone;
 - a value written into a **parameter** the way a host writes it — normalised,
   straight through `setValueNotifyingHost`, without touching any of the
-  processor's own setters — reaches the engine and changes the audio, so all 114
+  processor's own setters — reaches the engine and changes the audio, so all 115
   parameters are genuinely automatable rather than merely listed.
 
 `GrooveboxLayoutTest` builds the real editor and inspects it. A control laid out
@@ -509,7 +583,10 @@ readout and envelope rows all catch up to it. The step-value overlays are driven
 through the real buttons too, because an audio test cannot tell a drag that wrote
 a velocity from one that meant to write a probability — and it checks that the
 shared 100% reset does the number that is on the grid, in both directions, and
-that Reroll moves the take without moving the pattern. The corner mark is checked
+that Reroll moves the take without moving the pattern. The timing fader is driven
+the same way — host write to fader, drag to host parameter, double-click to shut —
+because a knob the panel shows but never writes is exactly the bug that test can see
+and no audio test can. The corner mark is checked
 by painting the grid into an image and comparing two renders that differ in one
 probability, since it is the one part of the panel with no bounds to inspect: that
 says where the pixels moved, that they moved in only that one cell, and that a
@@ -607,6 +684,19 @@ Notes on the design:
   common case never reaches a generator at all: variation shut, or a step that fires
   every time, and that is what keeps a session with the knob closed bit-identical to
   the build that had no knob.
+- **How late a hit is comes off the same key, different bits.** `SequencerEngine::humanizeLateInSteps`
+  hashes seed, bar, step and lane exactly as the roll does and reads the **bottom** 24
+  bits, where `wouldThisHitFire` reads the top ones, then squares the unit so the offsets
+  pile up near the grid. Two draws from one key that share no bits are independent
+  draws — which is what makes "the timing knob cannot change which hits play" a property
+  of the generator rather than a habit. The result is a number of steps, converted to
+  output samples once, at the tempo of the bar being played; the voice then counts that
+  many samples down in `renderVoice` before it reads a sample, advances an envelope or
+  lights a lane. Deliberately not in the clock: `stepOnsetInSteps` is what the
+  sample-accuracy gates measure, and a timing knob that answered it differently would
+  move the step's own position — and, at an early offset, could put an onset behind the
+  playhead, where this engine's arithmetic answers by pushing the step a whole bar
+  forward.
 - **A record this build cannot read is kept, not repaired.** A payload whose codec tag
   names a newer generation — from a session saved by a later build, or a preset
   someone edited by hand — is not decoded, and goes back out byte for byte so that
@@ -641,6 +731,8 @@ Notes on the design:
 - Audio dropped from outside the app is decoded into memory but has no path, so
   it is not restored with the session.
 - One 16-step bar; there is no pattern chaining or song mode yet.
+- *Humanize* is timing only, and late only: it cannot start a hit ahead of its step and
+  it does not change how hard a hit lands.
 - No per-channel pan, and no group or submix routing.
 - The loaded-sample registry is capped at `SampleStore::maxSamples` per session;
   past that, a load reports an error instead of growing the list.

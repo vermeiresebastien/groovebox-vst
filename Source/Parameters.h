@@ -119,6 +119,7 @@ namespace Params
     inline constexpr const char* swingGridId  = "swingGrid";
     inline constexpr const char* tempoId      = "tempo";
     inline constexpr const char* mutateId     = "mutate";
+    inline constexpr const char* humanizeId   = "humanize";
     inline constexpr const char* seedId       = "seed";
 
     /**
@@ -132,10 +133,10 @@ namespace Params
         into the type for the same reason `numLaneControls` is — forgetting to extend
         it when a parameter joins is a compile error, not a silent stale number.
     */
-    inline const std::array<const char*, 6>& globalIds()
+    inline const std::array<const char*, 7>& globalIds()
     {
-        static const std::array<const char*, 6> ids
-            { masterGainId, swingId, swingGridId, tempoId, mutateId, seedId };
+        static const std::array<const char*, 7> ids
+            { masterGainId, swingId, swingGridId, tempoId, mutateId, humanizeId, seedId };
 
         return ids;
     }
@@ -175,6 +176,25 @@ namespace Params
     inline constexpr float mutateMin = 0.0f;
     inline constexpr float mutateMax = 1.0f;
     inline constexpr float mutateDefault = 0.0f;
+
+    /**
+        How much of the grid's timing slack the machine may use.
+
+        The same shape as `mutate`, and for the same reason: it is an amount of
+        variation rather than an amount of time, because the time it means is a
+        fraction of a step and therefore already follows the tempo. Zero is "play the
+        grid where it is drawn", which is both the default and the whole of the reason
+        a session saved before this parameter existed comes back exactly as it was —
+        there is no value that means "the old behaviour" because the old behaviour is
+        the value zero.
+
+        The top of the travel is the engine's own limit: `Layout::maxHumanizeLateSteps`
+        of a step, which is half the closest two onsets this machine can make. So a
+        host that automates this to 1.0 cannot reorder the pattern, only loosen it.
+    */
+    inline constexpr float humanizeMin = 0.0f;
+    inline constexpr float humanizeMax = 1.0f;
+    inline constexpr float humanizeDefault = 0.0f;
 
     /**
         Which sequence of rolls a session is, as a number the user can write down.
@@ -228,6 +248,17 @@ namespace Params
         // is written down actually happens.
         layout.add (std::make_unique<juce::AudioParameterFloat> (
             juce::ParameterID { mutateId, 1 }, "Mutate", mutateMin, mutateMax, mutateDefault));
+
+        // Immediately after Mutate, because the two are the same decision taken twice:
+        // one says how many of the drawn hits happen, this one says when the ones that
+        // happen land. A host listing parameters sees them as neighbours, which is how
+        // the panel sees them too. Inserting here rather than appending moves the index
+        // of every parameter after it, and that is safe in this format because the VST3
+        // id a host records automation under is a hash of the id string, not its row —
+        // see `generateVSTParamIDForParam` in the JUCE wrapper.
+        layout.add (std::make_unique<juce::AudioParameterFloat> (
+            juce::ParameterID { humanizeId, 1 }, "Humanize",
+            humanizeMin, humanizeMax, humanizeDefault));
 
         layout.add (std::make_unique<juce::AudioParameterInt> (
             juce::ParameterID { seedId, 1 }, "Seed", seedMin, seedMax, seedDefault));

@@ -129,6 +129,29 @@ public:
     }
 
     /**
+        How far behind its onset the hit at (bar, step, channel) starts, in steps.
+
+        The timing half of the same pair, and the same kind of pass-through: it is the
+        call `fireStep` makes, in the unit the draw is in. So a check of the take's
+        timing asks the machine that plays it — and because the answer is in steps it
+        does not depend on whether the transport has told the engine a tempo yet.
+    */
+    double wouldThisStepStartLate (juce::int64 bar, int step, int channel) const
+    {
+        return engine.humanizeLateInSteps (bar, step, channel);
+    }
+
+    /**
+        Where one step sits inside its bar, in steps from the top of it.
+
+        The engine's own `stepOnsetInSteps`, pass-through for the same reason as the
+        two above: the claim that a late hit cannot overtake the next one is a claim
+        about how close two onsets can get, and only this answers it. Swing moves them
+        here, so a bound written against a straight grid is not a bound at all.
+    */
+    double getStepOnsetInSteps (int step) const { return engine.getStepOnsetInSteps (step); }
+
+    /**
         Rotates one channel's row, carrying each step's velocity with it.
 
         A shift of +1 moves every step one place later, wrapping the last step back
@@ -270,6 +293,18 @@ public:
     */
     float getMutate() const noexcept;
     void setMutate (float amount);
+
+    /**
+        How much of the grid's timing slack the machine may use, 0..1.
+
+        The timing half of the same pair: closed, every hit starts on its onset; open,
+        each one is drawn late out of the same seed the drops come out of, by at most
+        `Layout::maxHumanizeLateSteps` of a step. Never early, and never enough to pass
+        the hit after it. See `SequencerEngine::humanizeLateInSamples`, which is the
+        function both this and the tests ask.
+    */
+    float getHumanize() const noexcept;
+    void setHumanize (float amount);
 
     /** Which sequence of rolls this session is. Same number, same grid, same drops. */
     int getSeed() const noexcept;

@@ -195,6 +195,33 @@ namespace Layout
     inline constexpr double pitchDropTimeConstants = 5.0;
 
     /**
+        How far behind its own grid position a humanised hit may start, in steps.
+
+        A fraction of a step rather than a number of milliseconds, for the same reason
+        swing is one: the thing being imitated is a relationship to the grid, not a
+        delay. A drummer who is 30 ms late at 120 is 15 ms late at 240 and still sounds
+        the same way, and a fixed time would turn into a flam at slow tempos.
+
+        A quarter of a step is the top because of the closest two onsets this machine
+        can ever produce. Swing puts an off-beat pair at 0, 1.5, 3, 3.5 within its
+        grid — see `swingDepth` — so two hits can be half a step apart, measured at the
+        shuffle rather than assumed: 0.5000 steps on 1/8 and on 1/16, 1.0000 straight.
+        Anything that can push one further than that gap behind itself can trade their
+        order. Half of that gap — a quarter of a step — is the largest offset that
+        cannot: a late hit can join the next one, it can never overtake it, so the
+        pattern the user drew stays the pattern that comes out and only its feel moves.
+
+        Late only, and that is a consequence of where the offset lives rather than a
+        limitation of taste. A hit that arrives *before* its onset would have to be
+        scheduled before the clock reaches it, which means a queue of pending hits and
+        an onset that can be behind the playhead — the one arithmetic path in the
+        sequencer that answers a late request by pushing the step a whole bar forward.
+        Playing slightly ahead is what the attack of a fast sample does to the perceived
+        onset anyway.
+    */
+    inline constexpr double maxHumanizeLateSteps = 0.25;
+
+    /**
         Which generation of the saved record this build writes.
 
         The number goes on the root of the state as `stateVersion`, and the step

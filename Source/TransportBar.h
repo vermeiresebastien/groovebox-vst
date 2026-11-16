@@ -114,6 +114,8 @@ private:
     /** How much of the variation the machine is allowed to use, and which take it is. */
     juce::Slider mutateSlider;
     juce::Label mutateValueLabel;
+    juce::Slider humanizeSlider;
+    juce::Label humanizeValueLabel;
     juce::TextButton rerollButton { "Reroll" };
     juce::Label seedLabel;
 

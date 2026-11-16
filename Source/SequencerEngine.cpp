@@ -204,7 +204,7 @@ double SequencerEngine::onsetPositionInSteps (int step) const
 //==============================================================================
 // Voices
 
-void SequencerEngine::trigger (int channel, float velocity, bool fromMidi)
+void SequencerEngine::trigger (int channel, float velocity, bool fromMidi, int startDelaySamples)
 {
     auto sample = samples.retainSampleForChannel (channel);
 
@@ -289,6 +289,12 @@ void SequencerEngine::trigger (int channel, float velocity, bool fromMidi)
     target->integerPlayback = drop <= 0 && std::abs (increment - 1.0) < 1.0e-12;
     target->dropExcess = dropStart - 1.0;
     target->dropRemaining = drop > 0 && pitchDropSamples > 0.0 ? pitchDropSamples : 0.0;
+
+    // The humanize offset, in output samples. Clamped here rather than at the call
+    // site because this is the one place that knows a voice is starting: a negative
+    // wait is not a thing a hit can be, and a stolen slot must not keep the wait of
+    // the hit it replaced.
+    target->startDelay = juce::jmax (0, startDelaySamples);
     target->gain = gain;
     target->velocity = juce::jlimit (0.0f, 1.0f, velocity);
 
@@ -314,7 +320,13 @@ void SequencerEngine::trigger (int channel, float velocity, bool fromMidi)
         (float) envelopeSeconds (state.release[(size_t) channel].load(), Layout::maxReleaseSeconds));
     target->envelope.noteOn();
 
-    soundingChannels[(size_t) channel].store (true);
+    // The lane lights now rather than in `renderVoice` for everything that starts
+    // without waiting, so a hit is visible on the strip in the block it was asked
+    // for. A hit inside its own wait has not started: `renderVoice` lights it on the
+    // sample it begins to read, and lighting it here would put the indicator a third
+    // of a step ahead of the sound it is supposed to be reporting.
+    if (target->startDelay <= 0)
+        soundingChannels[(size_t) channel].store (true);
 }
 
 /**
@@ -368,6 +380,13 @@ void SequencerEngine::handOffToTail (Voice& victim, double fadeSamples)
     slot->increment = victim.increment;
     slot->dropExcess = victim.dropExcess;
     slot->dropRemaining = victim.dropRemaining;
+
+    // Not carried: the wait belongs to a hit that has not begun, and a hit that has
+    // not begun is not what a steal or a choke is fading out. Every other field above
+    // describes where the read is; this one describes when it starts, and that moment
+    // has passed for anything going into the tail pool. A reused slot would otherwise
+    // inherit the previous tail's wait and swallow samples it was told to fade.
+    slot->startDelay = 0;
     slot->sincBand = victim.sincBand;
     slot->integerPlayback = victim.integerPlayback;
     slot->velocity = victim.velocity;
@@ -553,6 +572,11 @@ void SequencerEngine::fireNextOnset()
 void SequencerEngine::fireStep (int step)
 {
     const auto mutate = state.mutate.load();
+    const auto humanize = state.humanize.load();
+
+    // Either knob needs to know which bar it is, and neither of them gets asked when
+    // both are shut: the closed machine neither rolls nor draws a time, which is the
+    // whole of the "bit-identical at zero" claim in one line of arithmetic.
 
     /**
         Which bar this onset belongs to.
@@ -562,7 +586,7 @@ void SequencerEngine::fireStep (int step)
         deliberately allows after a host seek — is then still keyed to the bar it is
         in, and the same place in the song keeps rolling the same way.
     */
-    const auto bar = mutate > 0.0f
+    const auto bar = mutate > 0.0f || humanize > 0.0f
                        ? (juce::int64) std::floor (onsetPositionInSteps (step)
                                                     / (double) Layout::numSteps)
                        : (juce::int64) 0;
@@ -581,7 +605,25 @@ void SequencerEngine::fireStep (int step)
         // A grid hit carries the velocity stored against its step, so the grid has
         // the same dynamics a played note does. Muting and the sample lookup are
         // `trigger`'s business, not the grid's.
-        trigger (channel, state.velocity[(size_t) channel][(size_t) step].load(), false);
+        //
+        // So is the offset, and it is asked of the same function the tests ask: the
+        // bar above is what both draws key on, and nothing about the offset feeds back
+        // into where the onset is. That is deliberate — `onsetPositionInSteps` is the
+        // answer that the offset is derived *from*, so an offset that moved the onset
+        // would move the number it came from, and a hit could be late enough to be
+        // keyed to the next bar and then late enough again to be keyed to the one
+        // after. It cannot: the clock is untouched, and the wait belongs to the voice.
+        //
+        // The draw is in steps, which is what makes it follow the tempo the way swing
+        // does, and the conversion to samples happens here, at the one moment the
+        // engine knows both halves. Rounding rather than truncating, because a wait of
+        // 0.6 of a sample asked for by a fast hat at a slow tempo is a wait of one
+        // sample to the nearest one, and a truncating rule would put every small
+        // offset on the grid and make the bottom half of the knob do nothing.
+        const auto late = humanize > 0.0f ? humanizeLateInSteps (bar, step, channel) : 0.0;
+
+        trigger (channel, state.velocity[(size_t) channel][(size_t) step].load(), false,
+                 (int) std::lround (late * samplesPerStep));
     }
 }
 
@@ -628,21 +670,35 @@ namespace
 
         return value ^ (value >> 31);
     }
+
+    /**
+        The one number a hit is decided by.
+
+        Bar, step and lane in the low bits, seed above them, then one multiply so that
+        neighbours land in different parts of the space. Multiplying by an odd constant
+        and xoring the seed are both bijections, so two different hits can never be
+        handed the same question — which is what makes the pattern of drops a take
+        instead of a shimmer over the whole bar.
+
+        This is the whole of the take's randomness, and both of the things that read
+        it read *different bits of it*: `rollLetsHitThrough` uses the top 24, the
+        timing offset the bottom 24. That separation is the reason a hit that survives
+        the roll is not biased towards one that lands late, and the reason one seed
+        names a session in both senses at once.
+    */
+    inline juce::uint64 takeKey (juce::uint32 seed, juce::int64 bar, int step, int channel) noexcept
+    {
+        const auto where = ((juce::uint64) (bar & 0x0fffffffull) << 8)
+                           | ((juce::uint64) (step & 0xf) << 4)
+                           | (juce::uint64) (channel & 0xf);
+
+        return splitmix64 ((juce::uint64) seed ^ (where * 0x9E3779B97F4A7C15ull));
+    }
 }
 
 bool SequencerEngine::rollLetsHitThrough (juce::int64 bar, int step, int channel, float probability) const
 {
-    // Bar, step and lane in the low bits, seed above them, then one multiply so that
-    // neighbours land in different parts of the space. Multiplying by an odd constant
-    // and xoring the seed are both bijections, so two different hits can never be
-    // handed the same question — which is what makes the pattern of drops a take
-    // instead of a shimmer over the whole bar.
-    const auto where = ((juce::uint64) (bar & 0x0fffffffull) << 8)
-                       | ((juce::uint64) (step & 0xf) << 4)
-                       | (juce::uint64) (channel & 0xf);
-
-    const auto key = splitmix64 ((juce::uint64) (juce::uint32) state.seed.load()
-                                  ^ (where * 0x9E3779B97F4A7C15ull));
+    const auto key = takeKey ((juce::uint32) state.seed.load(), bar, step, channel);
 
     // 24 bits of the draw, which a float holds exactly, scaled to [0, 1). Comparing
     // that against the probability is the whole roll: no rounding of the threshold,
@@ -650,6 +706,39 @@ bool SequencerEngine::rollLetsHitThrough (juce::int64 bar, int step, int channel
     const auto unit = (float) ((double) (key >> 40) * (1.0 / 16777216.0));
 
     return unit < probability;
+}
+
+double SequencerEngine::humanizeLateInSteps (juce::int64 bar, int step, int channel) const
+{
+    const auto amount = juce::jlimit (0.0f, 1.0f, state.humanize.load());
+
+    // Shut, and nothing is asked of the generator at all — the same gate the roll has,
+    // for the same reason: the branch that ran before the feature existed has to be the
+    // branch that runs with it switched off, or "bit-identical at zero" is a claim about
+    // rounding rather than about code.
+    if (amount <= 0.0f)
+        return 0.0;
+
+    // The bottom 24 bits, which is where the roll does not look. A float again holds
+    // them exactly, so this is the same number on every machine that takes the same
+    // seed, and the sample count below is the only place tempo enters.
+    const auto key = takeKey ((juce::uint32) state.seed.load(), bar, step, channel);
+    const auto unit = (double) (key & 0xffffffull) * (1.0 / 16777216.0);
+
+    /**
+        Squared, so most hits stay near the grid.
+
+        A uniform draw puts the average hit halfway to the limit and the whole groove
+        reads as late, which is not what a drummer does: they land on it and miss by a
+        little, and only sometimes miss by a lot. Squaring the unit pulls the average to
+        a third of the travel and puts half the hits inside its bottom quarter — measured
+        at 2065 of 4096 draws — so the amount is what the *worst* hits do while the feel
+        stays anchored, and at the top of the knob the rare large offsets are what you
+        hear as the take breathing.
+    */
+    const auto skew = unit * unit;
+
+    return Layout::maxHumanizeLateSteps * (double) amount * skew;
 }
 
 void SequencerEngine::renderVoices (juce::AudioBuffer<float>& buffer, int startSample, int numSamples)
@@ -709,6 +798,40 @@ void SequencerEngine::renderVoice (Voice& voice, float* outLeft, float* outRight
     // Lit whether or not the voice survives to the end of the chunk: a one-shot
     // that finishes half way through still made a sound. A tail lit its lane for
     // the two milliseconds it is still audible, which is what sounding means.
+
+    /**
+        Spend the hit's own wait before it reads anything.
+
+        The offset is a number of output samples, and a block is split at onsets, so
+        the wait can end in the middle of the chunk it started in, or exactly at its
+        end, or in a chunk that is not the one the hit was fired in. All three are the
+        same countdown: whatever is left when the chunk runs out is what is left next
+        time, and the pointer walk that follows puts the first sample of sound on the
+        sample the wait ends on rather than on the sample the onset was.
+
+        Nothing is touched while this is positive — no read, no envelope step, no
+        lane light — which is what makes the closed knob a single comparison in the
+        hot path instead of a new pair of states to keep in step.
+    */
+    if (voice.startDelay > 0)
+    {
+        const auto waiting = juce::jmin (voice.startDelay, numSamples);
+
+        voice.startDelay -= waiting;
+
+        if (voice.startDelay > 0)
+            return;
+
+        outLeft += waiting;
+        numSamples -= waiting;
+
+        if (outRight != nullptr)
+            outRight += waiting;
+
+        if (numSamples <= 0)
+            return;
+    }
+
     soundingChannels[(size_t) voice.channel].store (true);
 
     const auto* left = source.getReadPointer (0);

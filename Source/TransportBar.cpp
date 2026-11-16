@@ -229,6 +229,33 @@ TransportBar::TransportBar (GrooveboxProcessor& processorToUse)
     mutateValueLabel.setFont (captionFont());
     addAndMakeVisible (mutateValueLabel);
 
+    /**
+        The timing half of the same pair, and the same shape on purpose: one number
+        for the whole machine, shut meaning the grid is law, double-click going back to
+        shut.
+
+        What it means is different from Mutate in one way that has to be said out loud
+        on the control: this one cannot add a hit and cannot take one away, it can only
+        start the hits that are already playing a little after their step. The limit is
+        the engine's, not this knob's — see `Layout::maxHumanizeLateSteps` — so the
+        full travel is a looseness that never blurs the order of what was drawn.
+    */
+    humanizeSlider.setSliderStyle (juce::Slider::LinearHorizontal);
+    humanizeSlider.setTextBoxStyle (juce::Slider::NoTextBox, false, 0, 0);
+    humanizeSlider.setRange (0.0, 1.0, 0.01);
+    humanizeSlider.setDoubleClickReturnValue (true, 0.0);
+    humanizeSlider.setTooltip ("Humanize: how far behind the grid a hit is allowed to start."
+                               " Late only, never past a quarter of a step, and it follows"
+                               " the tempo rather than a fixed delay. Shut, every hit is on"
+                               " its onset.");
+    humanizeSlider.setName ("Humanize");
+    addAndMakeVisible (humanizeSlider);
+
+    humanizeValueLabel.setJustificationType (juce::Justification::centredLeft);
+    humanizeValueLabel.setColour (juce::Label::textColourId, Colours::text);
+    humanizeValueLabel.setFont (captionFont());
+    addAndMakeVisible (humanizeValueLabel);
+
     rerollButton.setTooltip ("Take a new seed: a different set of drops, the same grid");
     addAndMakeVisible (rerollButton);
 
@@ -304,6 +331,17 @@ TransportBar::TransportBar (GrooveboxProcessor& processorToUse)
                                   juce::dontSendNotification);
     };
 
+    // Straight through like Mutate, for the same reason: this bar refreshes itself
+    // every 200 ms from the processor, and a knob that only committed on release would
+    // be pulled back under the drag.
+    humanizeSlider.onValueChange = [this]
+    {
+        processor.setHumanize ((float) humanizeSlider.getValue());
+
+        humanizeValueLabel.setText (juce::String (juce::roundToInt (humanizeSlider.getValue() * 100.0)) + "%",
+                                    juce::dontSendNotification);
+    };
+
     masterSlider.onValueChange = [this]
     {
         processor.setMasterGainDb ((float) masterSlider.getValue());
@@ -355,6 +393,10 @@ void TransportBar::refresh()
     mutateSlider.setValue ((double) processor.getMutate(), juce::dontSendNotification);
     mutateValueLabel.setText (juce::String (juce::roundToInt (processor.getMutate() * 100.0f)) + "%",
                               juce::dontSendNotification);
+
+    humanizeSlider.setValue ((double) processor.getHumanize(), juce::dontSendNotification);
+    humanizeValueLabel.setText (juce::String (juce::roundToInt (processor.getHumanize() * 100.0f)) + "%",
+                                juce::dontSendNotification);
     seedLabel.setText (juce::String (processor.getSeed()), juce::dontSendNotification);
 
     // The shared reset follows the overlay that is open, so the hover text names the
@@ -409,14 +451,21 @@ void TransportBar::resized()
     area.removeFromLeft (8);
 
     // Variation sits next to swing, because both of them bend what was drawn rather
-    // than what is stored: swing moves the hits in time, this one drops some of them.
-    auto variationArea = area.removeFromLeft (272);
+    // than what is stored: swing moves the hits in time, these two drop some of them
+    // and start the rest a little late. The group is two sliders wide now, and the
+    // editor grew to pay for it rather than squeezing swing or the trim — a control
+    // that got narrower to make room is a cost nobody was told about.
+    auto variationArea = area.removeFromLeft (430);
     variationCaptionArea = variationArea.removeFromTop (12); // drawn in paint()
     variationArea.removeFromTop (2);
     mutateSlider.setBounds (variationArea.removeFromLeft (96).withSizeKeepingCentre (96, 22));
     variationArea.removeFromLeft (6);
     mutateValueLabel.setBounds (variationArea.removeFromLeft (42).withSizeKeepingCentre (42, 18));
+    variationArea.removeFromLeft (10);
+    humanizeSlider.setBounds (variationArea.removeFromLeft (96).withSizeKeepingCentre (96, 22));
     variationArea.removeFromLeft (6);
+    humanizeValueLabel.setBounds (variationArea.removeFromLeft (42).withSizeKeepingCentre (42, 18));
+    variationArea.removeFromLeft (10);
     rerollButton.setBounds (variationArea.removeFromLeft (58).withSizeKeepingCentre (58, 24));
     variationArea.removeFromLeft (6);
     seedLabel.setBounds (variationArea.withSizeKeepingCentre (variationArea.getWidth(), 18));

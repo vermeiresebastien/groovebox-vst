@@ -137,7 +137,7 @@ sample-exact clock invariant that test `[12]` protects.
 | **U2** | Kit workflow: multi-file drop fills lanes (`StepGridComponent.cpp`'s `filesDropped` uses `files[0]` and ignores the rest; its silence was fixed earlier, it raises the same error box the browse path does), lane menu from `getSampleIds()`, remembered folder, audition on click (B7) | 12 file dialogs → one gesture | 12-20 h | low | U3 |
 | **U3** | Live programs/kits (`getNumPrograms()==1`) = a free preset browser in Live's browser | makes the thing shareable and recallable | 16-24 h, partly blocked by path-only refs | med | — |
 | **U4** | Pattern → MIDI clip export by drag (`juce::MidiFile` already linked; `skulpt/Source/SequenceView.cpp:507` is the precedent) | gets your groove into the arranger | 4-8 h | low | — |
-| **U5** | Editor floor fits a 1366×768 laptop (830 px min, `PluginEditor.cpp:9-10`), all-12-strip layout test | `Tests/LayoutTest.cpp:301` checks **one** size and **the first strip only**; the `tight` branch (`ChannelStrip.cpp:197-209`) is never executed | 4-6 h | low | — |
+| **U5** | Editor floor fits a 1366×768 laptop (830 px min when this was written; **1678×844** now, `PluginEditor.cpp`'s `editorWidth`/`editorHeight`), all-12-strip layout test | `Tests/LayoutTest.cpp:301` checks **one** size and **the first strip only**; the `tight` branch (`ChannelStrip.cpp:197-209`) is never executed | 4-6 h | low | — |
 | **V1** | `verify.ps1`: build → both test exes with `$LASTEXITCODE` checked → SHA-256 manifest of `launch/` vs artefacts | today `installer/build-installer.ps1:92-105` only `Test-Path`s 5 files; nothing hashes anything | 3-4 h | low | — |
 | **V2** | RT tripwire (counting allocator armed inside `processBlock`) + click metric (max \|x[n]−x[n−1]\|) + level-matched A/B render rig | makes "sounds better" falsifiable, which is your rule | 12-16 h | med — JUCE 8.0.4 has **no** `OfflineRenderer`, BS.1770 LUFS would be hand-rolled | everything audio |
 | **M1** | Positioning: free BYO-sample in-plugin sequencer is genuinely unoccupied (Triaz Player can't load custom samples; TerminalVST is one sound per instance; Hydrogen isn't a plugin; Battery/Maschine sequence nothing in-plugin) | decide what the next 20 hours are *for* | 2 h decision | n/a | — |
@@ -328,9 +328,10 @@ touches the velocity law. No step here is allowed to be reported as better becau
   browser. Partly blocked by path-only sample refs (`:824-837`). ~16-24 h.
 - **5.5** Pattern → MIDI clip export by drag. `juce::MidiFile` is already linked; the drag idiom exists in
   `skulpt/Source/SequenceView.cpp:507` and `redrum/Source/PluginProcessor.cpp:3502-3545`. ~4-8 h.
-- **5.6** Fit a laptop. The floor moved under this step: `PluginEditor.cpp`'s `editorWidth`
-  and `editorHeight` are **1520×844** now — both the default and the minimum, since the
-  transport bar is one row and 4.2's panel half filled it — which does not fit 1366×768 with
+- **5.6** Fit a laptop. The floor moved under this step twice: `PluginEditor.cpp`'s `editorWidth`
+  and `editorHeight` are **1678×844** now — both the default and the minimum, since the transport
+  bar is one row, 4.2's panel half filled it and 4.3's timing fader needed room in it — which does
+  not fit 1366×768 with
   Live's chrome at all. Trimming heights cannot win that; the row has to wrap to two lines
   below some width, and then the bar needs a layout rule for which group moves down. That,
   plus extending `LayoutTest` past its current single size: it lays out at the editor's own
@@ -651,7 +652,8 @@ stack array filled before the loop, `scratchWeights` is filled on the stack insi
 fall onto it. `Params::pitchDropId` (`chNPitchDrop`, `AudioParameterInt` 0..12, default 0) is the only way in:
 nothing in the engine picks a drop by itself, so the plan's "visible per-lane amount parameter only, never
 automatic" is the whole feature surface rather than a preference about it. The parameter count goes 100 to
-**112 (4 global + 12 x 9)** — 114 since 4.2's two variation parameters — and `[21]`'s "all 112 parameters are present" is exactly the check that would have
+**112 (4 global + 12 x 9)** — 114 since 4.2's two variation parameters, 115 since 4.3's timing one —
+and `[21]`'s "all 112 parameters are present" is exactly the check that would have
 caught the classic failure of this kind of step — parameter created, offered to the host, restored on load, and
 nobody listening for it.
 
@@ -661,7 +663,7 @@ nominal rate exactly (`Layout::pitchDropSweepSeconds`, `pitchDropTimeConstants`,
 meaning — the settled rate, the note — and the fall lives in two new mutable voice fields, `dropExcess` and
 `dropRemaining`, recursed once per output sample at `SequencerEngine.cpp:858`. The window cost is one more row
 per lane: `ChannelStrip.cpp:249` 205 to 219 px and the editor 830 to **844 px** at 1240 wide (the width is
-**1520** since 4.2's panel half; the 844 still holds). The grid keeps its
+**1520** since 4.2's panel half, **1678** since 4.3's timing fader; the 844 still holds). The grid keeps its
 405 (`out/layout-35-final.txt`: component 1 at y=126, h=405), so the window pays the 14 at the bottom. That is
 the debt Phase 5 U5 has to pay back.
 
@@ -951,7 +953,8 @@ clock, nothing to reset on a seek. The bar comes from `onsetPositionInSteps (ste
 decided to schedule the onset, so a hit that arrives a sample late after a host seek is still keyed to the bar it
 is in.
 
-`Mutate` (0–1, default 0) and `Seed` (0–999999) are ordinary parameters — 114 now, 6 global + 12 × 9 — so a host
+`Mutate` (0–1, default 0) and `Seed` (0–999999) are ordinary parameters — 114 then, 6 global +
+12 × 9, and 115 with 4.3's `Humanize` — so a host
 can ramp variation over time and a take can be named by a number you write down. Getting them to the engine
 re-caught the oldest trap in `AGENTS.md`: `allParameterIds` had a fourth hand-written half, so both new
 parameters were created, offered to the host and read on restore with **nothing listening for them**, and only a
@@ -1019,7 +1022,8 @@ it cites `PluginEditor`'s `editorWidth`/`editorHeight` rather than a line number
 the comment block above them just moved both.
 
 `LayoutTest` is **82 → 101 checks**. Two of the additions are dispatch, not decoration:
-the bar's three faders are now found by `getName()` — `Swing`, `Master`, `Mutate` — because
+the bar's three faders are now found by `getName()` — `Swing`, `Master`, `Mutate`, and
+`Humanize` joined them in 4.3 — because
 the old `getMaximum() <= 1.01` test was two-way arithmetic and a third 0..1 fader would have
 been driven and read back against swing's parameter, i.e. red on correct code. And the
 eleven new checks are each known to bite: with the exclusivity, the reset's dispatch and the
@@ -1106,3 +1110,124 @@ standalone to be closed.
 
 Still open from 4.1 and unchanged by this: a shift is two stores per cell, so shifting a row *while playing* can
 let the audio thread read a half-rotated bar for one block. The probability now makes it three.
+
+**4.3 — late on purpose (done 2026-11-16, with two deviations).** One global parameter,
+`humanize` (0–100 %, default **shut**), and every grid hit is allowed to start a little behind the
+onset it was given. The offset is drawn per hit from the same key the roll uses — seed, bar, step,
+lane — and it is a *fraction of a step*, so it follows the tempo the way swing does instead of turning
+into a flam at 240.
+
+Two claims in the plan line are not how it went, and both were decided before the code rather than
+discovered after it.
+
+- **The offset is not applied inside `stepOnsetInSteps`.** The plan asked for it there to keep the
+  ≤1-sample invariant; applying it there moves the step's *own* position, which is exactly what the
+  sample-accuracy gates in [2], [3], [4] and the many-bars runs in [12] measure, and an early offset
+  can put an onset behind the playhead — the one path in the clock that answers a late request by
+  pushing the step a whole bar forward (`firstStepAtOrAfter`). So the clock is untouched and the wait
+  lives on the voice: `Voice::startDelay` is a countdown of output samples spent at the top of
+  `renderVoice`, before the voice reads a sample, advances an envelope or lights its lane. The
+  invariant survives because the invariant was never asked about this knob; what replaced it is a
+  direct measurement that the hit arrives *drawn* samples late.
+- **Velocity jitter is deferred to 4.3b.** A timing change and a level change in one step would put two
+  sound-moving edits in the same commit, and the level half needs its own A/B — the tone law maps
+  velocity to brightness, so jittering velocity is jittering timbre, and "it is the same samples, only
+  later" cannot be the gate for both.
+
+**The bound is arithmetic, not taste.** `Layout::maxHumanizeLateSteps` is 0.25 steps because the
+closest two onsets this machine can put a bar at are **0.5000** steps apart — asked of
+`getStepOnsetInSteps` at swing 1.0 on the 1/8 grid and on the 1/16, and **1.0000** on the straight grid
+(`out/smoke-43.txt`), so the pressure is at the shuffle, not on the straight row. Half the gap is the
+largest offset that cannot overtake the step in front: a late hit can join the next one, it can never
+pass it, and the pattern the user drew stays the pattern that comes out. Two checks hold that against
+the measured gaps rather than against the constant.
+
+**The law is squared, and the number in the comment was wrong before the measurement agreed.**
+`unit * unit` on the draw puts the average hit at a third of the travel (measured **0.08202** of
+**0.25000** steps over 4096 keys) and **2065 of 4096** — half — inside the bottom quarter of it. A
+uniform draw measures 0.12367 for the same bound, which is the "whole groove reads as late" failure the
+skew is there to avoid. Two sentences written from intuition were caught by writing the gate: the code
+comment claimed "three quarters of the hits inside the quarter of the travel" (it is half) and described
+0.25 steps as "a quarter of that gap" (the gap is 0.5 steps, so the bound is *half* the gap). Both are
+now the measured numbers.
+
+**Which hits fire does not move when the timing knob moves, and that is a property of the bits.**
+The roll reads bits 40..63 of the key, the timing draw reads bits 0..23, so the two are provably
+disjoint. The gate is a point-biserial correlation over 4096 cells: **r = −0.0012** with the split, and
+arm d below (timing made to read the roll's bits) comes back **r = −0.8662**. The same section asserts
+the roll is non-degenerate first — 2085 of 4096 cells fire — because a correlation computed on a walk
+that skipped every cell is 0 and reads as a pass.
+
+**What the suite now knows.** Smoke is **291 → 321 checks**, and all thirty additions are in section
+[30] "a late hit is late on purpose": shut draws nothing off the onset; the bound, the mean and the
+half-within-a-quarter bands; the amount *scales* the draw rather than replacing it; the same seed twice
+and the order-independence; a new seed re-draws 4096 of 4096 keys and the new take obeys the same law;
+the timing/roll bit-disjointness; the bound against both swing grids; a seed searched for whose first
+hit is drawn 160–600 samples late (found: seed 2 → 482 samples, onset 483 against 1); the hit arriving
+exactly the drawn number of samples after the grid hit; **the late hit being the same samples at the
+same level — worst sample difference 0.000000000, no output sample differing**; the wait surviving a
+block boundary at 64, 256 and 1024 alike, and spanning at least three blocks at the test block so that
+check can actually go red; the lane lighting in the block the sound starts in rather than the block the
+hit was fired in (block 7 of 64-sample blocks), with the no-wait case still lighting on its own block;
+and the state half — a fresh processor starts shut, the value round-trips, the restored session draws
+the same timing, and a session written *before the parameter existed* opens shut while its grid, swing
+and seed come through. Layout is **109 → 115**: two from the bounds sweep picking up the new fader and
+its % label, one drag-to-parameter through `checkBarFader`, and three in the new section — reachability,
+a host-written 0.4 drawn back onto the fader *and* heard by the engine, and a double-click shutting
+both. The default is 0.0 and short-circuits before any generator call, so `[28]`'s fingerprint is still
+`4BC3AA231178C071`.
+
+**Two harness faults, both found by going red rather than by being predicted.** [30]d's "same samples,
+only later" came back red by 0.000415564 on a head sample 482 output samples apart, with the two peaks
+also differing (0.602598 / 0.602140) — and the engine was innocent. `MasterBus` moves its trim through
+a 20 ms one-pole that needs ~13 time constants to settle, and `arm()` set the trim *after*
+`prepareToPlay`, which had already parked the smoother at unity; the two renders were comparing the
+level at two different points on the same ramp. `currentGain` is set to the target only in
+`setSampleRate`, so the globals now go in before the prepare, and the same gate reads
+bit-identical: `worst sample difference 0.000000000 (no sample differs)`, and the level check
+now prints its two peaks on the pass as well as the fail — `level: peak 0.601509392 on the grid,
+0.601509392 late` (`out/smoke-43.txt`), because evidence that only appears when a gate is red
+cannot be re-checked by anyone later. The limit was not widened. Second: [30]e and, latently, [30]d searched 1000 seeds
+for a usable draw **with the knob shut**, where the function returns 0.0 for every key — the search
+finds nothing, the dependent checks are skipped, and the run prints a green that measured nothing. The
+knob is now opened before the scan, with the printed precondition (`darkDrawn >= 3 * watchBlock`)
+next to it. Both are in AGENTS.md with the numbers. A third, smaller one: the gate script's
+staleness guard scanned all of `Tests/`, so editing `SmokeTest.cpp` reported the *layout* exe as
+stale — true of nothing, since neither suite compiles the other's main (and
+`Tests/PatternPlanTest.cpp` is compiled by no CMake target at all). The guard now takes each
+target's own main plus `Source/**`; a guard that cries wolf on a correct build is a guard that
+gets skipped.
+
+**Nine arms, and each one bites** (`out/ab-43.ps1`, per-file backups, restore re-stamps
+`LastWriteTime`): delete the draw → 9 failures; make the bound the whole step → 4; un-square the draw →
+3; read the roll's bits for timing → 1 (r −0.8662); never spend the wait → 3 (`measured 0, drawn 482`);
+light the lane at scheduling → 1; default the parameter to 0.5 → 13, which is the honest cost of a
+non-shut default: the fingerprint, every sample-accuracy check and both grid checks go red because the
+feature was not meant to be on; fader not refreshed on a host write → 1 BAD; drag not committing → 2 BAD
+(`out/ab-43-report.txt`). Arm e needed a second run: its multi-line anchor was passed as unparenthesised
+PowerShell concatenation, so the arguments came apart and the build died on a `{` instead of the mutation
+running — the arms now parenthesise, and a mutation that does not match its anchor still refuses to run.
+
+**One line no gate can see, recorded rather than faked.** `handOffToTail` clears `slot->startDelay`
+instead of carrying it. A voice that is still waiting has not stepped its envelope, so what a steal or a
+choke captures from it is silence at level 0, and a tail that then swallowed 482 samples would be
+fading nothing — the fault is inaudible at every block size and every amount, so a check for it would be
+a check that cannot go red. The comment says what the line is for (a reused slot inheriting the previous
+tail's wait would drop samples it was told to fade); the claim is discharged by reading, not by a gate.
+
+Docs: README gained **"How late a hit is"** (the travel table, why a quarter of a step, why squared, the
+separate-bits argument, notes-you-play being excluded, and what it costs at 0 %), a feature-table row,
+the timing fader in the top-bar list, a bullet in **How it is put together** on the two halves of one
+hash key, three new Verifying bullets, and a limitation stating it is late-only and timing-only. The
+parameter count moved 114 → **115** in every place that quotes it, including the sentence in the
+installer README whose list had never mentioned Mutate or Seed at all. `installer/README.txt` got the
+plain-text version, including the old-sessions-open-shut behaviour.
+
+Run at the close of 4.3: **321 smoke checks / 0 failures**, **115 layout checks / 0 problems**, staleness
+guard 0 on both, `Tests/RtPathGuard.ps1` exit 0, `Groovebox` target exit 0. No audio changed at the
+default, and `launch/` still waits for Live (PID 43876) to be closed.
+
+Still open inside 4.3: velocity jitter (**4.3b**), and the amount is deliberately one number for the
+whole machine — per-lane timing depth is not on the parameter list, and the two ends of the fader are
+the whole design until someone needs the middle per lane.
+

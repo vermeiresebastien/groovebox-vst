@@ -117,6 +117,7 @@ void GrooveboxProcessor::parameterChanged (const juce::String& id, float value)
     if (id == Params::swingGridId)  { sequencerState.swingGrid.store (juce::roundToInt (value)); return; }
     if (id == Params::tempoId)      { sequencerState.manualTempo.store (value); return; }
     if (id == Params::mutateId)     { sequencerState.mutate.store (juce::jlimit (Params::mutateMin, Params::mutateMax, value)); return; }
+    if (id == Params::humanizeId)   { sequencerState.humanize.store (juce::jlimit (Params::humanizeMin, Params::humanizeMax, value)); return; }
 
     // The seed reaches the engine as the integer it is, because the key of a roll is
     // the number the user wrote down: letting it arrive as a fraction of a million
@@ -208,6 +209,7 @@ void GrooveboxProcessor::syncStateFromParameters()
     sequencerState.swingGrid.store (juce::roundToInt (valueOf (Params::swingGridId)));
     sequencerState.manualTempo.store (valueOf (Params::tempoId));
     sequencerState.mutate.store (valueOf (Params::mutateId));
+    sequencerState.humanize.store (valueOf (Params::humanizeId));
     sequencerState.seed.store (juce::jlimit (Params::seedMin, Params::seedMax,
                                              juce::roundToInt (valueOf (Params::seedId))));
 
@@ -809,6 +811,17 @@ void GrooveboxProcessor::setMutate (float amount)
 {
     writeParameter (Params::mutateId,
                                      juce::jlimit (Params::mutateMin, Params::mutateMax, amount));
+}
+
+float GrooveboxProcessor::getHumanize() const noexcept
+{
+    return sequencerState.humanize.load();
+}
+
+void GrooveboxProcessor::setHumanize (float amount)
+{
+    writeParameter (Params::humanizeId,
+                                     juce::jlimit (Params::humanizeMin, Params::humanizeMax, amount));
 }
 
 int GrooveboxProcessor::getSeed() const noexcept

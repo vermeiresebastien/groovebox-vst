@@ -1,7 +1,8 @@
 # Groovebox -- agent instructions
 
 JUCE 8.0.4 C++17 sample step sequencer (16 steps x 12 channels, per-channel pitch,
-ADSR, velocity and choke group, swing, master trim + peak meter). VST3 + Standalone.
+ADSR, velocity, probability and choke group, swing, late-only timing humanize, master
+trim + peak meter). VST3 + Standalone.
 Plugin manufacturer code `Eruw`, product code `Grvb`, version from
 `project(... VERSION ...)` in [CMakeLists.txt](CMakeLists.txt).
 
@@ -112,8 +113,47 @@ build-new\GrooveboxLayoutTest_artefacts\Release\GrooveboxLayoutTest.exe # real e
 
 Both compile the plugin sources headlessly ([CMakeLists.txt:166-231](CMakeLists.txt));
 they print a check count and a problem count, and exit non-zero on failure. Last green
-run: 291 smoke checks, 109 layout checks, 0 problems.
+run: 321 smoke checks, 115 layout checks, 0 problems.
 
+- **A level gate can be red because of the fixture's own ramp, not the code under test.**
+  Section [30] asserts that a humanised hit is the *same samples* as the grid hit, only
+  later, and it came back red by 0.000415564 on a head sample 482 output samples apart --
+  with the two peaks also differing, 0.602598 against 0.602140. The engine was not
+  retuning anything: `MasterBus` moves its trim through a 20 ms one-pole
+  (`smoothingSeconds`), which needs about 13 time constants to reach a target, and the
+  harness set the trim *after* `prepareToPlay`, so both renders started from unity and
+  climbed at slightly different phases. `currentGain` is set to the target only in
+  `setSampleRate`, so `prepareToPlay` is the moment the smoother is told where to sit.
+  Set the globals before the prepare and the two renders are bit-identical. The rule: when
+  an A/B that should differ only in *when* something happens reports a *level* difference,
+  ask what in the fixture is still moving, and fix that instead of widening the limit. And
+  make the passing run say so: the level check now prints both peaks on success
+  (`level: peak 0.601509392 on the grid, 0.601509392 late` in `out/smoke-43.txt`), because
+  a gate whose evidence only appears when it fails cannot be re-checked later.
+- **A scan for a seed that shows a defect has to switch the defect on first.** Two [30]
+  arms looked for a seed whose draw lands in a usable window, and both did it with the
+  humanize knob shut, where the function returns 0.0 for every key. The search finds
+  nothing, the dependent checks are skipped or vacuously satisfied, and the run prints a
+  pass. Any knob-gated search needs the knob set *before* the loop and a printed
+  precondition next to it that says the thing being searched for exists at all.
+- **A limit that is derived from a measured quantity is checked against that quantity.**
+  `Layout::maxHumanizeLateSteps` is 0.25 steps because the closest two onsets the swing
+  grid can produce are 0.5 steps apart -- measured at the shuffle on both grids (0.5000,
+  0.5000, and 1.0000 straight), not read off a formula in the test. Same rule as the click
+  ruler: derive from the signal, and let the check ask the function that decides the
+  behaviour rather than recomputing it in the test file.
+- **APVTS state children are keyed by a lowercase `"id"` attribute, and a missing child is
+  a default, not a bug.** `Params::humanizeId` is matched with `getStringAttribute ("id")`;
+  asking for `"ID"` finds nothing and the arm reports one fewer element than it removed.
+  Deleting the row from a saved state and loading it leaves the parameter at the
+  `RangedAudioParameter` default via `valueTreeRedirected` ->
+  `updateParameterConnectionsToChildTrees` -- which is what makes "a session that predates
+  the parameter opens shut" a property of the framework worth a gate rather than a hope.
+- **A JUCE double-click is not four mouse-downs.** The click count a `Slider` uses for
+  `setDoubleClickReturnValue` comes from the OS through `MouseInputSource`, so synthetic
+  down/up pairs in a test leave the fader where the drag put it and the check silently
+  measures a different gesture. Dispatch `Slider::mouseDoubleClick (event)` directly with a
+  constructed `MouseEvent`; the handler that runs is the one a real double-click runs.
 - **A walk that runs zero times looks like a wrong answer, and partly like a right one.**
   Section [29] built its 4096-cell decision matrix with three mirrored loop headers --
   `for (step = numSteps - (backwards ? 1 : 0); backwards ? step >= 0 : step < numSteps;` --
@@ -223,7 +263,7 @@ run: 291 smoke checks, 109 layout checks, 0 problems.
   remaining way in is `apvts.getParameter (id)->setValueNotifyingHost
   (apvts.getParameterRange (id).convertTo0to1 (v))`, wrapped as
   `GrooveboxProcessor::writeParameter` ([Source/PluginProcessor.cpp:231](Source/PluginProcessor.cpp)).
-  114 parameters (6 global + 12 x 9); the pattern is deliberately not one. The listener
+  115 parameters (7 global + 12 x 9); the pattern is deliberately not one. The listener
   list in `allParameterIds` ([Source/PluginProcessor.cpp:24](Source/PluginProcessor.cpp))
   is built from `Params::globalIds()` and `Params::laneTargets()` for the same reason:
   when it was a hand-written copy of the lane ids, the choke parameter was created,

@@ -233,6 +233,24 @@ struct SequencerState
     std::atomic<float> mutate { 0.0f };
 
     /**
+        How much of the grid's per-hit timing slack the machine is allowed to use, 0..1.
+
+        The other half of variation, and it sits beside `mutate` because it works the
+        same way: one number for the whole machine, zero means "exactly what was
+        drawn", and the amount is applied per hit from the same key the roll uses — the
+        seed and where in the song the hit is, never a counter. So a session with a
+        given seed is one take in both senses: the same hits drop out and the same hits
+        land late. Change the seed and both change together, which is what makes an A/B
+        of two bounces an A/B.
+
+        What it can do is start a hit later than its step. Never earlier, and never by
+        more than `Layout::maxHumanizeLateSteps`, which is half the closest two onsets
+        this machine can make: the drawn pattern keeps its order however far this is
+        opened.
+    */
+    std::atomic<float> humanize { 0.0f };
+
+    /**
         Which sequence of rolls this session is.
 
         A hit is decided by where it sits in the song — bar, step, lane — and this
@@ -432,6 +450,26 @@ public:
     */
     bool wouldThisHitFire (juce::int64 bar, int step, int channel) const;
 
+    /**
+        How far behind its onset the hit at (bar, step, channel) starts, in steps.
+
+        The same reason `wouldThisHitFire` is public, and the same generator: this is
+        the function `fireStep` calls, so a check that the take is deterministic,
+        bounded and never early is a check about the engine rather than about a copy of
+        its arithmetic. The draw is a slice of the key that the roll does not use, so
+        the two are independent numbers from one seed — a hit that drops out is not
+        biased towards one that lands late.
+
+        In steps, not samples, on purpose: the offset is a relationship to the grid and
+        therefore follows the tempo, and a seam that returned samples would answer a
+        different question depending on whether the transport had told the engine its
+        tempo yet. `fireStep` does the one multiply, at the moment it knows both halves.
+
+        Zero whenever the knob is shut, and zero for every key, which is why opening
+        the whole feature leaves the fingerprint of the closed one alone.
+    */
+    double humanizeLateInSteps (juce::int64 bar, int step, int channel) const;
+
     /** True when the given channel is currently producing sound. */
     bool isChannelSounding (int channel) const noexcept
     {
@@ -466,6 +504,30 @@ private:
         */
         double dropExcess = 0.0;
         double dropRemaining = 0.0;
+
+        /**
+            Output samples this hit has left to wait before it makes a sound.
+
+            The humanize offset, counted down. It lives here rather than in the clock
+            because the clock is what decides the order of things: a step that fires a
+            third of a step early is a step that fired before the head reached it, and
+            the only answer the sequencer's arithmetic has for that is to try the
+            occurrence a whole bar on. A voice can be late without asking anyone where
+            it is: it starts its own read this many samples into the region its onset
+            opened, and everything else about it — the source, the envelope, the pitch
+            — is untouched, so the hit is the same hit a quarter of a step later.
+
+            A countdown rather than a start sample, because a block is split at every
+            onset and the wait can outlast the chunk it began in; this is the only form
+            that survives both a region boundary and a block boundary without a queue.
+
+            Zero is what every hit gets when the knob is shut, and what every tail
+            gets always: the delay is not a property of the sound, and a stolen hit is
+            already sounding, so it hands over where it stands. `renderVoice` does not
+            light the lane while this is positive, so a hit that has not started has
+            not started, and nothing reads it as having.
+        */
+        int startDelay = 0;
 
         float gain = 1.0f;
 
@@ -619,8 +681,14 @@ private:
 
     /** Starts one hit, working out its playback ratio from the channel's own
         sample rate and pitch. Muted, empty and silent channels simply do not start
-        a voice, so callers do not have to check first. */
-    void trigger (int channel, float velocity, bool fromMidi);
+        a voice, so callers do not have to check first.
+
+        `startDelaySamples` is the humanize offset for this hit and belongs to the grid
+        alone: a note from a keyboard is already late or early by however the player
+        struck it, and a preview is a diagnostic, so both ask for zero. The voice waits
+        that many output samples before it reads anything, which is why a nonzero value
+        also leaves the channel unlit until the wait is over. */
+    void trigger (int channel, float velocity, bool fromMidi, int startDelaySamples = 0);
     void stopAllVoices();
 
     /** True when a voice's channel currently has sustain, so it holds rather than

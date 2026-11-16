@@ -14,7 +14,7 @@ namespace
         edge — which the layout test reads as a zero-width child, i.e. a control that
         cannot be clicked. The grid takes the extra width as wider cells.
     */
-    constexpr int editorWidth = 1520;
+    constexpr int editorWidth = 1678;
     constexpr int editorHeight = 844;
 
     constexpr int margin = 18;

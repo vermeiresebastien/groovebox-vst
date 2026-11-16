@@ -5964,6 +5964,834 @@ int main()
     }
 
     //======================================================================
+    /**
+        The timing half of variation, measured the way the probability half was.
+
+        Three things have to be true and none of them follows from the last section:
+        the draw must be a take (the same key, the same lateness, in a bounce and in a
+        live pass), it must be bounded by something other than taste (a hit may never
+        pass the one after it, which turns the knob from a feel control into a pattern
+        editor), and it must reach the samples — because every arithmetic check above
+        could pass next to an engine that never reads the number it computes. The seam
+        is the engine's own `humanizeLateInSteps`, the same call `fireStep` makes, so a
+        green here is about the machine and not about a model of it in this file.
+
+        The audio half is where the design shows. The offset lives on the voice, not in
+        the clock, so it has to survive a block boundary, a region boundary and a
+        tempo — and the measurement is therefore repeated at three block sizes, the
+        lesson from the pitch drop, whose defect only appeared at a 1024 block and
+        nothing in the suite could see it.
+    */
+    std::printf ("\n[30] a late hit is late on purpose\n");
+    {
+        constexpr int lateBars  = 64;
+        constexpr int lateLanes = 4;
+        constexpr int lateCells = lateBars * Layout::numSteps * lateLanes;
+
+        const auto lateClick = makeClickWav ("late-click", 1200, sampleRate);
+
+        /**
+            Four lanes painted right through, so every cell of the take is asked.
+
+            The same shape as [29]: the knobs go in through the parameters a host would
+            use, and the tempo is 120 so `exactStepSamples` is the ruler the offsets are
+            measured against.
+
+            The globals go in *before* `prepareToPlay`, and that order is load-bearing.
+            The master trim moves through a 20 ms one-pole so a drag cannot zipper, and
+            the smoother is set to whatever the target is when the sample rate is set
+            (`MasterBus::setSampleRate`) — change the trim after that and it ramps for
+            roughly thirteen time constants, about a third of a second, snapping to the
+            target only inside 1e-6. This section's whole claim is that a late hit is the
+            *same samples*, which is only a fair claim when both hits are measured at one
+            trim. With the trim moved after the prepare, the gate went red by 0.0004 on a
+            head sample 482 output samples apart: the wait had not changed the level, it
+            had changed *when the level was reached*, and the smoother was the thing
+            moving. At rest, shut and open come out bit-identical.
+        */
+        const auto arm = [&] (GrooveboxProcessor& p, int forBlockSize)
+        {
+            p.setManualTempo (120.0);
+            p.setSwingGrid (4);
+            p.setSwing (0.0f);
+            p.setMasterGainDb (-3.5f);
+            p.setSeed (1234);
+            p.prepareToPlay (sampleRate, forBlockSize);
+
+            juce::String error;
+            for (int channel = 0; channel < lateLanes; ++channel)
+                p.loadSampleIntoChannel (channel, lateClick, error);
+
+            clearAllSteps (p);
+
+            for (int channel = 0; channel < lateLanes; ++channel)
+                for (int step = 0; step < Layout::numSteps; ++step)
+                {
+                    p.setStep (channel, step, true);
+                    p.setStepVelocity (channel, step, 1.0f);
+                    p.setStepChance (channel, step, 128.0f / (float) Layout::chanceLevels);
+                }
+        };
+
+        /**
+            Every key's lateness, in a fixed slot per cell.
+
+            Indexed rather than appended, and walkable in either direction, for the
+            reason [29] records: an answer that depends on the answers before it lands
+            in different slots when the grid is walked backwards, and a `push_back`
+            would hide that behind a difference in order.
+        */
+        const auto lateness = [&] (GrooveboxProcessor& p, bool backwards)
+        {
+            std::vector<double> cells ((size_t) lateCells, -1.0);
+
+            for (int i = 0; i < lateBars; ++i)
+                for (int j = 0; j < Layout::numSteps; ++j)
+                    for (int k = 0; k < lateLanes; ++k)
+                    {
+                        const auto bar  = backwards ? lateBars - 1 - i : i;
+                        const auto step = backwards ? Layout::numSteps - 1 - j : j;
+                        const auto lane = backwards ? lateLanes - 1 - k : k;
+
+                        cells[(size_t) ((bar * Layout::numSteps + step) * lateLanes + lane)]
+                            = p.wouldThisStepStartLate (bar, step, lane);
+                    }
+
+            return cells;
+        };
+
+        const auto hashOf = [] (const std::vector<double>& cells)
+        {
+            return fnv1a (0xcbf29ce484222325ull, cells.data(), cells.size() * sizeof (double));
+        };
+
+        GrooveboxProcessor probe;
+        arm (probe, blockSize);
+
+        //---- a. shut is shut, and open is bounded ---------------------------------
+        {
+            probe.setHumanize (0.0f);
+
+            const auto shut = lateness (probe, false);
+
+            auto drawn = 0;
+            auto worstShut = 0.0;
+
+            for (const auto value : shut)
+            {
+                if (std::abs (value) > 1.0e-12)
+                {
+                    ++drawn;
+                    worstShut = juce::jmax (worstShut, value);
+                }
+            }
+
+            check (drawn == 0,
+                   "with the knob shut no hit is drawn off its onset",
+                   juce::String (drawn) + " of " + juce::String (lateCells)
+                       + " keys moved, worst " + juce::String (worstShut, 6) + " steps");
+
+            probe.setHumanize (1.0f);
+
+            const auto open = lateness (probe, false);
+
+            auto low = 1.0e9;
+            auto high = -1.0e9;
+            auto sum = 0.0;
+            auto nearGrid = 0;
+            auto offGrid = 0;
+
+            for (const auto value : open)
+            {
+                low = juce::jmin (low, value);
+                high = juce::jmax (high, value);
+                sum += value;
+
+                if (value > 1.0e-12)
+                    ++offGrid;
+
+                if (value <= Layout::maxHumanizeLateSteps * 0.25)
+                    ++nearGrid;
+            }
+
+            const auto mean = sum / (double) lateCells;
+
+            std::printf ("        draw over %d keys: min %s, max %s, mean %s steps; "
+                         "%d off the grid, %d within a quarter of the travel\n",
+                         lateCells, juce::String (low, 5).toRawUTF8(),
+                         juce::String (high, 5).toRawUTF8(), juce::String (mean, 5).toRawUTF8(),
+                         offGrid, nearGrid);
+
+            check (low >= 0.0 && high <= Layout::maxHumanizeLateSteps + 1.0e-12,
+                   "every hit is late by at least nothing and at most the bound",
+                   "min " + juce::String (low, 6) + ", max " + juce::String (high, 6)
+                       + ", bound " + juce::String (Layout::maxHumanizeLateSteps, 6));
+
+            // The skew is a claim about the distribution, so it is measured rather than
+            // assumed: a uniform draw would average half the travel and put a quarter of
+            // the keys in the near band. Squaring predicts a third and a half.
+            check (mean > Layout::maxHumanizeLateSteps * 0.27
+                       && mean < Layout::maxHumanizeLateSteps * 0.38,
+                   "the average offset is a third of the travel, not half of it",
+                   "mean " + juce::String (mean, 5) + " of "
+                       + juce::String (Layout::maxHumanizeLateSteps, 5));
+
+            check (nearGrid > lateCells * 4 / 10 && nearGrid < lateCells * 6 / 10,
+                   "half the hits land within a quarter of the travel",
+                   juce::String (nearGrid) + " of " + juce::String (lateCells));
+
+            // The knob scales the one draw rather than drawing again: every key at half
+            // has to sit at half of the same key at full.
+            probe.setHumanize (0.5f);
+
+            const auto half = lateness (probe, false);
+
+            auto scaled = 0;
+
+            for (size_t i = 0; i < (size_t) lateCells; ++i)
+                if (std::abs (half[i] - open[i] * 0.5) > 1.0e-12)
+                    ++scaled;
+
+            check (scaled == 0,
+                   "and the amount scales that draw instead of replacing it",
+                   juce::String (scaled) + " keys did not halve");
+        }
+
+        //---- b. one key, one take --------------------------------------------------
+        {
+            probe.setHumanize (1.0f);
+
+            const auto forward = lateness (probe, false);
+            const auto backward = lateness (probe, true);
+            const auto again = lateness (probe, false);
+
+            check (hashOf (forward) == hashOf (again),
+                   "the same seed asked twice gives the same take",
+                   hexOf (hashOf (forward)) + " vs " + hexOf (hashOf (again)));
+
+            check (hashOf (forward) == hashOf (backward),
+                   "and the answer does not depend on the order it was asked in",
+                   hexOf (hashOf (forward)) + " forwards, " + hexOf (hashOf (backward)) + " backwards");
+
+            probe.setSeed (1235);
+
+            const auto other = lateness (probe, false);
+
+            auto moved = 0;
+
+            for (size_t i = 0; i < (size_t) lateCells; ++i)
+                if (std::abs (other[i] - forward[i]) > 1.0e-12)
+                    ++moved;
+
+            check (moved >= lateCells - 1,
+                   "a new seed re-draws the timing of the take, not a tweak of it",
+                   juce::String (moved) + " of " + juce::String (lateCells) + " keys");
+
+            // ...and a *different* take, not a different law: the new seed has to sit
+            // inside the same distribution the first one does, or the seed would be a
+            // second amount knob hiding in the reroll button.
+            auto otherSum = 0.0;
+
+            for (const auto value : other)
+                otherSum += value;
+
+            const auto otherMean = otherSum / (double) lateCells;
+
+            std::printf ("        seed 1235 draws a mean of %s steps over %d keys\n",
+                         juce::String (otherMean, 5).toRawUTF8(), lateCells);
+
+            check (otherMean > Layout::maxHumanizeLateSteps * 0.27
+                       && otherMean < Layout::maxHumanizeLateSteps * 0.38,
+                   "and the new take obeys the same law as the old one",
+                   "mean " + juce::String (otherMean, 5) + " of "
+                       + juce::String (Layout::maxHumanizeLateSteps, 5));
+
+            probe.setSeed (1234);
+
+            /**
+                The two draws share a key and not a bit.
+
+                This is the check that says a timing knob is a timing knob: opening it
+                must leave *which hits play* exactly where it was. The cells walked here
+                are the roll's own answers, taken with the timing knob at both ends of
+                its travel.
+            */
+            probe.setMutate (1.0f);
+
+            juce::uint64 rollHash = 0;
+            auto first = true;
+
+            for (const auto amount : { 0.0f, 1.0f })
+            {
+                probe.setHumanize (amount);
+
+                std::vector<juce::uint8> fired ((size_t) lateCells, 0);
+
+                for (int bar = 0; bar < lateBars; ++bar)
+                    for (int step = 0; step < Layout::numSteps; ++step)
+                        for (int lane = 0; lane < lateLanes; ++lane)
+                            fired[(size_t) ((bar * Layout::numSteps + step) * lateLanes + lane)]
+                                = probe.wouldThisStepHit (bar, step, lane) ? 1 : 0;
+
+                const auto hash = fnv1a (0xcbf29ce484222325ull, fired.data(), fired.size());
+
+                if (first)
+                {
+                    rollHash = hash;
+                    first = false;
+                }
+                else
+                {
+                    check (hash == rollHash,
+                           "opening the timing knob does not change which hits play",
+                           hexOf (rollHash) + " shut, " + hexOf (hash) + " open");
+                }
+            }
+
+            /**
+                And the two draws do not lean on each other.
+
+                The check above says the timing knob cannot move the roll. The other
+                half of "one seed, two independent takes" is that the roll's *outcome*
+                does not predict the timing's — because the two read the same 64-bit key,
+                and if they read the same *bits* of it, every hit that survived the roll
+                would be late by exactly as much as it was lucky, which is a groove that
+                steers itself: the dropped hits and the pushed hits would line up.
+
+                So the correlation between "did this one fire" and how late it is drawn
+                has to be nothing. Measured as the point-biserial between the roll's
+                answer and the unit the offset came from, over the same 4096 keys: with
+                shared bits this is ~0.8, with disjoint ones it is the sampling noise of
+                a finite take, and the two are not close.
+            */
+            std::vector<juce::uint8> fired ((size_t) lateCells, 0);
+
+            for (int bar = 0; bar < lateBars; ++bar)
+                for (int step = 0; step < Layout::numSteps; ++step)
+                    for (int lane = 0; lane < lateLanes; ++lane)
+                        fired[(size_t) ((bar * Layout::numSteps + step) * lateLanes + lane)]
+                            = probe.wouldThisStepHit (bar, step, lane) ? 1 : 0;
+
+            auto sumAll = 0.0, sumFired = 0.0, squareAll = 0.0;
+            auto countFired = 0;
+
+            for (int i = 0; i < lateCells; ++i)
+            {
+                // Undo the two mappings the draw applies, to get back at the unit the
+                // key actually produced: the amount is at full, so only the travel and
+                // the square stand between the key and the number reported.
+                const auto unit = std::sqrt (forward[(size_t) i] / Layout::maxHumanizeLateSteps);
+
+                sumAll += unit;
+                squareAll += unit * unit;
+
+                if (fired[(size_t) i] != 0)
+                {
+                    ++countFired;
+                    sumFired += unit;
+                }
+            }
+
+            const auto n = (double) lateCells;
+            const auto meanAll = sumAll / n;
+            const auto meanFired = sumFired / (double) countFired;
+            const auto meanMissed = (sumAll - sumFired) / (n - (double) countFired);
+            const auto sdAll = std::sqrt (squareAll / n - meanAll * meanAll);
+            const auto share = (double) countFired / n;
+            const auto correlation = (meanFired - meanMissed) * std::sqrt (share * (1.0 - share)) / sdAll;
+
+            std::printf ("        %d of %d cells fired; r between firing and lateness %s\n",
+                         countFired, lateCells, juce::String (correlation, 4).toRawUTF8());
+
+            check (countFired > lateCells * 3 / 10 && countFired < lateCells * 7 / 10,
+                   "the roll leaves about half the take standing, so a correlation could show",
+                   juce::String (countFired) + " of " + juce::String (lateCells));
+
+            check (std::abs (correlation) < 0.1,
+                   "which hits fire and how late they are are drawn from separate bits",
+                   "r = " + juce::String (correlation, 4));
+
+            probe.setMutate (0.0f);
+        }
+
+        //---- c. the bound is arithmetic, not taste ---------------------------------
+        {
+            /**
+                The closest two onsets the engine can put a bar's steps, in steps.
+
+                Asked of `getStepOnsetInSteps`, which is the function that decides where
+                a step is played — not of a formula in this file. Swing is what squeezes
+                the gap: a straight grid is a whole step apart everywhere, and the
+                heaviest shuffle puts a pair at half. So the bound has to be checked at
+                the shuffle, and the straight grid is here to show what the pressure is.
+            */
+            const auto closestGap = [&] (int grid, float swing)
+            {
+                probe.setSwingGrid (grid);
+                probe.setSwing (swing);
+
+                auto worst = 1.0e9;
+
+                for (int step = 0; step < Layout::numSteps; ++step)
+                {
+                    const auto next = (step + 1) % Layout::numSteps;
+                    auto gap = probe.getStepOnsetInSteps (next) - probe.getStepOnsetInSteps (step);
+
+                    if (next == 0)
+                        gap += (double) Layout::numSteps;
+
+                    worst = juce::jmin (worst, gap);
+                }
+
+                return worst;
+            };
+
+            const auto shuffle = closestGap (4, 1.0f);
+            const auto sixteenthShuffle = closestGap (2, 1.0f);
+            const auto straight = closestGap (4, 0.0f);
+
+            std::printf ("        closest onsets: %s steps at 1/8 shuffle, %s at 1/16, %s straight; "
+                         "the bound is %s steps\n",
+                         juce::String (shuffle, 4).toRawUTF8(),
+                         juce::String (sixteenthShuffle, 4).toRawUTF8(),
+                         juce::String (straight, 4).toRawUTF8(),
+                         juce::String (Layout::maxHumanizeLateSteps, 4).toRawUTF8());
+
+            check (Layout::maxHumanizeLateSteps * 2.0 <= shuffle + 1.0e-12,
+                   "the most a hit can be late is half the closest gap at a shuffle",
+                   "bound " + juce::String (Layout::maxHumanizeLateSteps, 4)
+                       + " against a gap of " + juce::String (shuffle, 4));
+
+            check (Layout::maxHumanizeLateSteps * 2.0 <= sixteenthShuffle + 1.0e-12,
+                   "and that holds on the 1/16 swing grid too",
+                   "bound " + juce::String (Layout::maxHumanizeLateSteps, 4)
+                       + " against a gap of " + juce::String (sixteenthShuffle, 4));
+
+            probe.setSwing (0.0f);
+            probe.setSwingGrid (4);
+        }
+
+        //---- d. the number reaches the samples -------------------------------------
+        {
+            /**
+                One hit, rendered, and where it lands.
+
+                A single cell on one lane, so the first sample above the threshold can
+                only be that hit, and the difference between the shut render and the open
+                one is the offset and nothing else. The seed is *searched* rather than
+                picked: what the check needs is a draw long enough to see, and a
+                hard-coded seed is a number that stops meaning anything the moment the
+                generator moves.
+            */
+            auto pickSeed = 0;
+            auto wantSamples = 0;
+
+            probe.setHumanize (1.0f);
+
+            for (int candidate = 0; candidate < 1000; ++candidate)
+            {
+                probe.setSeed (candidate);
+
+                const auto samples = (int) std::lround (probe.wouldThisStepStartLate (0, 0, 0)
+                                                        * exactStepSamples);
+
+                if (samples >= 160 && samples <= 600)
+                {
+                    pickSeed = candidate;
+                    wantSamples = samples;
+                    break;
+                }
+            }
+
+            check (wantSamples > 0,
+                   "a seed exists whose first hit is drawn between 160 and 600 samples late",
+                   "searched 1000, found none");
+
+            probe.setSeed (pickSeed);
+
+            const auto take = [&] (GrooveboxProcessor& p, int block, int total)
+            {
+                {
+                    juce::AudioBuffer<float> settle (2, block);
+                    juce::MidiBuffer silent;
+
+                    for (int i = 0; i < 16; ++i)
+                    {
+                        settle.clear();
+                        p.processBlock (settle, silent);
+                    }
+                }
+
+                p.resetTransport();
+                p.setPlaying (true);
+
+                auto out = render (p, total, block, sampleRate);
+                p.setPlaying (false);
+
+                return out;
+            };
+
+            /** One cell on one lane, at the given amount, from the top of the bar. */
+            const auto oneHit = [&] (GrooveboxProcessor& p, int block, float amount)
+            {
+                clearAllSteps (p);
+                p.setStep (0, 0, true);
+                p.setStepChance (0, 0, 1.0f);
+                p.setMutate (0.0f);
+                p.setSeed (pickSeed);
+                p.setHumanize (amount);
+
+                return take (p, block, 40000);
+            };
+
+            GrooveboxProcessor shifter;
+            arm (shifter, blockSize);
+
+            const auto open = oneHit (shifter, blockSize, 1.0f);
+
+            GrooveboxProcessor still;
+            arm (still, blockSize);
+
+            const auto shut = oneHit (still, blockSize, 0.0f);
+
+            const auto firstUp = onsetAfter (open.left, 0, 1.0e-4f);
+            const auto firstOn = onsetAfter (shut.left, 0, 1.0e-4f);
+            const auto shifted = firstUp - firstOn;
+
+            std::printf ("        seed %d: drawn %d samples, onset %d against %d = %d late\n",
+                         pickSeed, wantSamples, firstUp, firstOn, shifted);
+
+            check (shifted == wantSamples,
+                   "the hit arrives the number of samples the draw said",
+                   "measured " + juce::String (shifted) + ", drawn " + juce::String (wantSamples));
+
+            check (firstDifference (shut.left, open.left, 0, (int) shut.left.size()) != -1,
+                   "and opening the knob actually moves the audio");
+
+            // A wait is a shift. Anything else — a level change, a retune, a hit that
+            // reads the source from a different place — shows up here, and it is the
+            // check that keeps this a timing control rather than a new sound.
+            auto worstDiff = 0.0;
+            auto worstAt = -1;
+
+            for (int i = 4; i + shifted < 1600 && i + shifted < (int) open.left.size(); ++i)
+            {
+                const auto diff = (double) std::abs (shut.left[(size_t) i]
+                                                     - open.left[(size_t) (i + shifted)]);
+
+                if (diff > worstDiff)
+                {
+                    worstDiff = diff;
+                    worstAt = i;
+                }
+            }
+
+            std::printf ("        same hit, shifted: worst sample difference %s%s\n",
+                         juce::String (worstDiff, 9).toRawUTF8(),
+                         worstAt < 0 ? " (no sample differs)"
+                                     : (" at " + juce::String (worstAt)).toRawUTF8());
+
+            check (worstDiff < 1.0e-6,
+                   "the late hit is the same samples, only later",
+                   "worst " + juce::String (worstDiff, 9) + " at sample " + juce::String (worstAt)
+                       + " of " + juce::String (shifted) + " shifted");
+
+            std::printf ("        level: peak %s on the grid, %s late\n",
+                         juce::String ((double) peakOf (shut.left), 9).toRawUTF8(),
+                         juce::String ((double) peakOf (open.left), 9).toRawUTF8());
+
+            check (std::abs (peakOf (shut.left) - peakOf (open.left)) < 1.0e-6f,
+                   "and it is not a different level",
+                   juce::String (peakOf (shut.left), 6) + " on the grid, "
+                       + juce::String (peakOf (open.left), 6) + " late");
+
+            /**
+                The same measurement at three block sizes.
+
+                This is where the design either holds or does not: the wait is a
+                countdown on the voice, so a 64-sample block has to carry it across
+                several blocks and a 1024-sample block has to finish inside one, and both
+                must put the hit on the same sample. A stale countdown was the pitch
+                drop's bug, invisible at 256 and 570 samples of the hit at 1024.
+            */
+            auto sameAtEveryBlock = true;
+            juce::String perBlock;
+
+            for (const auto block : { 64, 256, 1024 })
+            {
+                GrooveboxProcessor walker;
+                arm (walker, block);
+
+                const auto late = oneHit (walker, block, 1.0f);
+                const auto up = onsetAfter (late.left, 0, 1.0e-4f);
+
+                perBlock += juce::String (block) + "->" + juce::String (up) + " ";
+
+                if (up != firstUp)
+                    sameAtEveryBlock = false;
+            }
+
+            check (sameAtEveryBlock,
+                   "the wait survives a block boundary at 64, 256 and 1024 alike",
+                   perBlock + ", expected all " + juce::String (firstUp));
+        }
+
+        //---- e. a hit that has not started has not started -------------------------
+        {
+            /**
+                The lane stays dark through the wait, and lights on the block it ends on.
+
+                `isChannelSounding` is what the strips and the grid's activity glow read,
+                so a hit that lit its lane when it was *scheduled* rather than when it
+                *sounded* would show a flash on a row that is still silent — the kind of
+                thing that reads as a bug in the meter and is really a second clock. The
+                wait has to be longer than a block for this to be able to bite, and that
+                is asserted rather than assumed: a control that cannot go red is the
+                failure mode this suite already documents twice.
+            */
+            constexpr int watchBlock = 64;
+
+            GrooveboxProcessor dark;
+            arm (dark, watchBlock);
+
+            // Open before searching: the knob is what makes the draw non-zero, and a
+            // seed scan done with it shut finds nothing and says so as a pass.
+            dark.setHumanize (1.0f);
+
+            auto darkSeed = 0;
+            auto darkDrawn = 0;
+
+            for (int candidate = 0; candidate < 1000; ++candidate)
+            {
+                dark.setSeed (candidate);
+
+                const auto samples = (int) std::lround (dark.wouldThisStepStartLate (0, 0, 0)
+                                                        * exactStepSamples);
+
+                if (samples >= 3 * watchBlock && samples <= 8 * watchBlock)
+                {
+                    darkSeed = candidate;
+                    darkDrawn = samples;
+                    break;
+                }
+            }
+
+            std::printf ("        wait under test: %d samples at a %d-sample block\n",
+                         darkDrawn, watchBlock);
+
+            check (darkDrawn >= 3 * watchBlock,
+                   "the wait spans at least three blocks, so this can go red",
+                   juce::String (darkDrawn) + " samples at a "
+                       + juce::String (watchBlock) + "-sample block");
+
+            /**
+                Renders block by block, reporting what each block said.
+
+                The peak is what the block *did*, the sounding flag what the engine
+                *claims* — and the whole point of the check is that those two are the
+                same fact, block for block.
+            */
+            const auto watch = [&] (GrooveboxProcessor& p, int total)
+            {
+                std::vector<float> peaks;
+                std::vector<int> lit;
+
+                juce::AudioBuffer<float> buffer (2, watchBlock);
+                juce::MidiBuffer midi;
+
+                p.resetTransport();
+                p.setPlaying (true);
+
+                for (int rendered = 0; rendered < total; rendered += watchBlock)
+                {
+                    buffer.clear();
+                    p.processBlock (buffer, midi);
+
+                    auto loudest = 0.0f;
+
+                    for (int i = 0; i < watchBlock; ++i)
+                        loudest = juce::jmax (loudest, std::abs (buffer.getSample (0, i)));
+
+                    peaks.push_back (loudest);
+                    lit.push_back (p.isChannelSounding (0) ? 1 : 0);
+                }
+
+                p.setPlaying (false);
+
+                return std::make_pair (peaks, lit);
+            };
+
+            const auto oneCell = [&] (GrooveboxProcessor& p, float amount)
+            {
+                clearAllSteps (p);
+                p.setStep (0, 0, true);
+                p.setStepChance (0, 0, 1.0f);
+                p.setMutate (0.0f);
+                p.setSeed (darkSeed);
+                p.setHumanize (amount);
+            };
+
+            oneCell (dark, 1.0f);
+
+            const auto late = watch (dark, 8 * watchBlock + 4000);
+
+            auto firstSound = (int) late.first.size();
+            auto firstLit = (int) late.second.size();
+
+            for (size_t i = 0; i < late.first.size(); ++i)
+            {
+                if (late.first[i] > 1.0e-4f && (int) i < firstSound)
+                    firstSound = (int) i;
+
+                if (late.second[i] != 0 && (int) i < firstLit)
+                    firstLit = (int) i;
+            }
+
+            std::printf ("        %d blocks of %d: sound from block %d, lane lit from block %d\n",
+                         (int) late.first.size(), watchBlock, firstSound, firstLit);
+
+            check (firstLit == firstSound && firstSound >= 1,
+                   "the lane lights in the block the hit starts sounding, not the one it was fired in",
+                   "lit at block " + juce::String (firstLit) + ", sound at block "
+                       + juce::String (firstSound));
+
+            // The same probe with the knob shut, because the check above is only worth
+            // something if the light still arrives with the sound when there is no wait
+            // at all — otherwise "never lit during a wait" could be paid for with
+            // "never lit".
+            oneCell (dark, 0.0f);
+
+            const auto onGrid = watch (dark, 4 * watchBlock + 4000);
+
+            auto shutSound = (int) onGrid.first.size();
+            auto shutLit = (int) onGrid.second.size();
+
+            for (size_t i = 0; i < onGrid.first.size(); ++i)
+            {
+                if (onGrid.first[i] > 1.0e-4f && (int) i < shutSound)
+                    shutSound = (int) i;
+
+                if (onGrid.second[i] != 0 && (int) i < shutLit)
+                    shutLit = (int) i;
+            }
+
+            check (shutLit == shutSound && shutSound >= 0 && shutSound < 4,
+                   "with no wait the lane still lights on the block it sounds in",
+                   "lit at block " + juce::String (shutLit) + ", sound at block "
+                       + juce::String (shutSound));
+        }
+
+        //---- f. what a session from before this parameter opens as -----------------
+        {
+            /**
+                Three arms of one question: what does a saved session do about a knob
+                that did not exist when it was written?
+
+                The round trip goes through `getStateInformation`/`setStateInformation`,
+                not by handing `setStateInformation` bare XML — `getXmlFromBinary` only
+                recognises its own eight-byte header and answers anything else with
+                nullptr, which the processor reads as "no session" and acts on not at
+                all. That is a green that tested nothing, and this file already documents
+                catching it once.
+            */
+            const auto roundTrip = [] (GrooveboxProcessor& from, GrooveboxProcessor& to)
+            {
+                juce::MemoryBlock blob;
+                from.getStateInformation (blob);
+                to.setStateInformation (blob.getData(), (int) blob.getSize());
+            };
+
+            GrooveboxProcessor fresh;
+            fresh.prepareToPlay (sampleRate, blockSize);
+
+            check (fresh.getHumanize() == 0.0f,
+                   "a processor built now starts with the knob shut",
+                   juce::String (fresh.getHumanize(), 4));
+
+            GrooveboxProcessor mover;
+            mover.prepareToPlay (sampleRate, blockSize);
+            clearAllSteps (mover);
+            mover.setStep (3, 7, true);
+            mover.setSwing (0.4f);
+            mover.setSeed (13579);
+            mover.setHumanize (0.75f);
+
+            GrooveboxProcessor back;
+            back.prepareToPlay (sampleRate, blockSize);
+            roundTrip (mover, back);
+
+            check (std::abs (back.getHumanize() - 0.75f) < 1.0e-4f,
+                   "and the amount comes back with the session",
+                   juce::String (back.getHumanize(), 4));
+
+            check (back.wouldThisStepStartLate (0, 0, 0)
+                       == mover.wouldThisStepStartLate (0, 0, 0),
+                   "the restored session draws the same timing as the one that saved it",
+                   juce::String (back.wouldThisStepStartLate (0, 0, 0), 6)
+                       + " against " + juce::String (mover.wouldThisStepStartLate (0, 0, 0), 6));
+
+            /**
+                The same session as the build before this parameter wrote it: the
+                `humanize` entry cut out of the state, everything else left alone.
+
+                Deleting the child is the honest way to age a session — the point of the
+                claim is a reader that has never seen the property, and a value of 0 in
+                the file is a value the old build could have written, not an absence.
+
+                It lands in a processor with the knob *open*, because the failure worth
+                catching is a restore that leaves the live value where it was: the host
+                loads an old set and keeps a timing knob the session never asked for.
+            */
+            juce::MemoryBlock modern;
+            mover.getStateInformation (modern);
+
+            auto xml = juce::AudioProcessor::getXmlFromBinary (modern.getData(), (int) modern.getSize());
+            auto stripped = 0;
+
+            if (xml != nullptr)
+                for (auto* child : xml->getChildIterator())
+                    if (child->getStringAttribute ("id") == Params::humanizeId)
+                    {
+                        xml->removeChildElement (child, true);
+                        ++stripped;
+                        break;
+                    }
+
+            check (stripped == 1,
+                   "a session this build wrote does name the parameter in its state",
+                   juce::String (stripped) + " humanize entries found in the saved XML");
+
+            juce::MemoryBlock aged;
+
+            if (xml != nullptr)
+                juce::AudioProcessor::copyXmlToBinary (*xml, aged);
+
+            GrooveboxProcessor inherits;
+            inherits.prepareToPlay (sampleRate, blockSize);
+            inherits.setHumanize (1.0f);
+            inherits.setStateInformation (aged.getData(), (int) aged.getSize());
+
+            check (inherits.getHumanize() == 0.0f,
+                   "a session that predates the parameter opens with it shut, not with whatever was live",
+                   juce::String (inherits.getHumanize(), 4));
+
+            // The rest of the same session has to survive the same restore, or "the new
+            // parameter defaults" could be paid for with "the whole state was dropped".
+            check (inherits.isStepOn (3, 7),
+                   "and the grid of that session still comes through",
+                   "step 3:7 was lost restoring a session with no humanize entry");
+
+            check (std::abs (inherits.getSwing() - 0.4f) < 1.0e-4f
+                       && inherits.getSeed() == 13579,
+                   "so do the neighbouring globals, which the old build did write",
+                   "swing " + juce::String (inherits.getSwing(), 4)
+                       + ", seed " + juce::String (inherits.getSeed()));
+        }
+
+        lateClick.deleteFile();
+    }
+
+    //======================================================================
     std::printf ("\n%s  %d checks, %d failures\n",
                  failures == 0 ? "PASSED" : "FAILED", checks, failures);
 

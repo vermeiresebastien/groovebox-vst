@@ -459,7 +459,7 @@ int main()
             }
         }
 
-        // Each of the bar's three faders has to be checked against its own parameter,
+        // Each of the bar's faders has to be checked against its own parameter,
         // so each is asked for by name.
         const auto checkBarFader = [transportBar] (const juce::String& name,
                                                    std::function<double()> read)
@@ -470,17 +470,22 @@ int main()
                 fail ("the transport bar has no fader named " + name);
         };
 
-        checkBarFader ("Swing",  [&processor] { return (double) processor.getSwing(); });
-        checkBarFader ("Master", [&processor] { return (double) processor.getMasterGainDb(); });
-        checkBarFader ("Mutate", [&processor] { return (double) processor.getMutate(); });
+        checkBarFader ("Swing",    [&processor] { return (double) processor.getSwing(); });
+        checkBarFader ("Master",   [&processor] { return (double) processor.getMasterGainDb(); });
+        checkBarFader ("Mutate",   [&processor] { return (double) processor.getMutate(); });
+        checkBarFader ("Humanize", [&processor] { return (double) processor.getHumanize(); });
 
-        // Those drags leave all three parameters at the top of their range, and the
+        // Those drags leave all four parameters at the top of their range, and the
         // audio checks below measure levels and count hits, so put them back first.
         // The variation one matters most: a knob left open starts dropping steps, and
         // every level check underneath would then be measuring a different pattern.
+        // The timing one is the same trap at one remove: an open Humanize does not
+        // change which steps fire, but it moves when they fire, and the onset checks
+        // below measure the grid.
         processor.setSwing (0.0f);
         processor.setMasterGainDb (Layout::defaultMasterGainDb);
         processor.setMutate (0.0f);
+        processor.setHumanize (0.0f);
     }
 
     //======================================================================
@@ -795,6 +800,71 @@ int main()
             writeGrid (4);
             transportBar->refresh();
         }
+    }
+
+    //======================================================================
+    // The timing knob, through the panel rather than through the processor.
+    //
+    // `checkBarFader ("Humanize", ...)` above already proved a drag reaches the
+    // engine. What a drag cannot prove is the other two directions: that a value the
+    // host writes with the panel untouched gets drawn back onto the fader, and that
+    // the double-click which is the only way to shut the knob from the bar actually
+    // shuts it. Both matter more here than for the neighbouring knobs, because this
+    // one defaults to shut and its whole point is being able to get back to that.
+    std::printf ("\n-- the timing knob answers the host, and the mouse can shut it --\n");
+
+    if (transportBar != nullptr)
+    {
+        auto* humanize = findNamedSlider (*transportBar, "Humanize");
+        auto* humanizeParam = processor.getValueTreeState().getParameter (Params::humanizeId);
+
+        ++checked;
+
+        if (humanize == nullptr || humanizeParam == nullptr)
+        {
+            fail ("the humanize fader or its parameter is not reachable");
+        }
+        else
+        {
+            pass ("the humanize fader and the host parameter are both there");
+
+            // A host write, with the notification path a drag does not use: the
+            // parameter moves, the processor's atomics follow through
+            // `parameterChanged`, and only `refresh()` tells the panel.
+            humanizeParam->setValueNotifyingHost (humanizeParam->convertTo0to1 (0.4f));
+            transportBar->refresh();
+
+            ++checked;
+
+            if (std::abs (humanize->getValue() - 0.4) < 0.01
+                 && std::abs (processor.getHumanize() - 0.4f) < 1.0e-3)
+                pass ("a host-written 0.4 is drawn on the fader and heard by the engine ("
+                        + juce::String (humanize->getValue(), 3) + ")");
+            else
+                fail ("a host-written 0.4 left the fader at " + juce::String (humanize->getValue(), 3)
+                        + " and the engine at " + juce::String (processor.getHumanize(), 3));
+
+            // Double-click is the documented way back to shut. It is dispatched as
+            // `mouseDoubleClick`, which is the handler the platform calls after it has
+            // decided two clicks were close enough to be one — a pair of synthetic
+            // mouseDowns never reaches that decision, because the click count comes
+            // from the OS, not from the test.
+            humanize->setValue (0.8, juce::sendNotificationSync);
+
+            humanize->mouseDoubleClick (makeEvent (*humanize,
+                                                  humanize->getLocalBounds().getCentre().toFloat()));
+
+            ++checked;
+
+            if (humanize->getValue() == 0.0 && processor.getHumanize() == 0.0f)
+                pass ("a double-click shuts the knob, in the panel and in the engine");
+            else
+                fail ("a double-click left the fader at " + juce::String (humanize->getValue(), 3)
+                        + " and the engine at " + juce::String (processor.getHumanize(), 3));
+        }
+
+        processor.setHumanize (0.0f);
+        transportBar->refresh();
     }
 
     //======================================================================

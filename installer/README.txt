@@ -2,8 +2,9 @@ Groovebox - Skeer Audio
 =======================
 
 A drag-and-drop sample step sequencer: 16 steps, 12 drum channels, per-channel
-pitch, pitch drop, ADSR and velocity, swing on a 1/8 or 1/16 grid, and a master
-trim with a peak meter. It ships as a VST3 plugin and as a standalone app.
+pitch, pitch drop, ADSR and velocity, swing on a 1/8 or 1/16 grid, a timing
+humanize that only ever plays late, and a master trim with a peak meter. It
+ships as a VST3 plugin and as a standalone app.
 
 
 Where things went
@@ -107,6 +108,22 @@ on the same steps every time round the loop, and Reroll deals a new take without
 moving the pattern you drew. Write the number down if you want that take back --
 it is a parameter, not an edit, so there is nothing to undo.
 
+The "Humanize" fader next to it decides how far *behind* the grid a hit is
+allowed to start. It only goes one way: nothing plays early, nothing is added
+and nothing is dropped -- the hits that fire are the ones the grid and the take
+already chose, they just arrive a fraction of a step late. At 0% every hit is on
+its onset and the feature costs nothing. At 100% the most a hit can be late is a
+quarter of a step, which is half the closest two swung onsets can ever be, so a
+late hit can join the one after it but can never pass it: the pattern you drew
+stays the pattern that comes out. The offset follows the tempo, like swing does
+-- a quarter of a step at 120 is a quarter of a step at 240 -- and most hits
+barely move: the draw is weighted towards the grid, so the average sits a third
+of the way there and half of them stay inside its first quarter. Which hits are
+late comes from the same seed as which hits fire, but from different bits of it,
+so moving this fader never changes your take, and "Reroll" re-deals both at once.
+A note you play on a keyboard is not pushed late by this knob -- you are already
+early or late by however you struck it.
+
 Each strip's A D S R rows shape that channel: drag a row up or down, double-click
 to reset just that one. Sustain 0 (the default) makes the channel a one-shot --
 raise it and the sound holds until you release the note.
@@ -136,9 +153,12 @@ indicator. Anything reaching 0 dBFS at the sample latches the clip indicator, an
 clicking the meter is the only thing that clears the latch.
 
 In a host, every continuous control is a normal plugin parameter -- levels, pitch,
-pitch drop, envelopes, mutes, choke groups, swing, swing grid, tempo and the master
-trim -- so you can automate them, and the panel moves to follow what you drew. The
-pattern itself is not a parameter; it is saved with the project.
+pitch drop, envelopes, mutes, choke groups, swing, swing grid, tempo, the master
+trim, the Variation knob, the Humanize fader and the seed -- so you can automate
+them, and the panel moves to follow what you drew. The pattern itself is not a
+parameter; it is saved with the project. A session saved by an older build opens
+with any parameter it did not have at that build's default, not at whatever was
+live when you saved it.
 
 
 Size and limits
@@ -146,6 +166,9 @@ Size and limits
 
 One 16-step bar per channel. There is no song mode or pattern chaining yet, so a
 long arrangement is built in the host.
+
+Humanize is timing only, and late only: it does not start hits ahead of the grid
+and it does not change how hard a hit lands.
 
 Groovebox makes no network calls. The installer writes one registry key,
 HKLM\Software\Skeer\Groovebox, and the uninstaller removes it -- along with every
