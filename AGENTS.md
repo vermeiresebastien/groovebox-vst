@@ -615,6 +615,18 @@ reproducible from `git checkout`.
   the run counts them so this file does not have to retype a number that moves every time a paragraph
   is written: a script that invented a match there would be exactly the unfalsifiable check this file
   warns about.
+- **The merge decides which tree a sweep belongs to, and sweeping the losing side is a defect.** The
+  pair above is `0 to correct` *in the tree the numbers will live in*. Measured on a two-lane split with
+  docs on both sides: `master` reported `to correct: 9`, and applying it would have been wrong twice. It
+  is wrong because `git diff --name-only <merge-base> master -- Source\Tests\CMakeLists.txt` was empty
+  while the merge-tree returned `Source`, `Tests` and `CMakeLists.txt` byte-equal to the *peer's*
+  (`f903ac7d`, `5a2fc680`, `34a1a1df`) -- so the merged tree's compiled inputs are the peer's, the
+  peer's already-swept numbers are the true ones there, none of master's nine stale strings survive into
+  the merged doc, and a shift on this side writes numbers that are correct today and false the moment the
+  merge lands. And it is wrong expensively: those nine lines merge cleanly, so editing them turns one
+  conflict region into ten. Ask before sweeping -- and before quoting `to correct: 0` as owed -- which
+  side's code the merged tree takes; if it takes the peer's, this side's drift is deferred, and the
+  deferral is a stated state of the tree, not a green gate.
 - **An exemption list that is merely *older* can silence a real finding, not only invent one.** The
   hazard this section records is the loud direction: absent pins re-report exempt citations as
   `UNPINNED miss` (measured 22 on a correct tree). The quiet direction is worse because the gate

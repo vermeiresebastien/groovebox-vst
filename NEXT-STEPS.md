@@ -1989,10 +1989,44 @@ printed by a green run, so the receipt for it is the `0 failures` line and nothi
 and driven from section [35]; at that ref `PatternPlanner` still has no caller in Source/, so the
 handover's future-tense exclusion is
 the tree's shape and item 21's blocker stands now that the seam exists.
-Merge preview `git merge-tree --write-tree master lane-44`: AGENTS.md is the only conflicted path.
-Two corrections. Ancestry: `9c872f7` is not an ancestor of `lane-44` -- merge-base is `5d071b0`,
-master +2, lane-44 +5, and the tip has moved again to `ccd6308` (`NEXT-STEPS.md` only over the
-verified `a942cd0`), so a ship is named by SHA, never by a count over a branch someone may push.
+Two corrections to the handover. Ancestry: `9c872f7` is not an ancestor of `lane-44` -- merge-base
+is `5d071b0`, master +2, lane-44 +5 when I measured, so a ship is named by SHA, never by a count
+over a branch someone may push. The tip then moved again, to `ccd6308`: `git diff --name-only
+a942cd0..ccd6308` is `NEXT-STEPS.md`, 0 compiled inputs, 0 payload inputs, and `out/wt-44` is clean
+at that ref -- so 14a/14b reads **verified at `a942cd0`, unchanged at `ccd6308`**, under the
+AGENTS.md rule that a doc commit after a verified SHA is judged by what its diff can still
+invalidate. Provenance of that rule, since it was attributed to `9c872f7`: `git log -S` on the
+sentence puts it in `aa22b44`; `9c872f7` is the commit that says what the two hashes it quotes
+*can* and *cannot* prove, which is the half this paragraph re-checks.
+
+I re-hashed the machine rather than accept the pair: the installed standalone exe is
+`0309abcd...` and the installed bundle binary is `98643a14aa7115b5...`, both byte-equal to their
+`launch/` copies and to the prefixes `AGENTS.md` records for the `3c3f059` export -- so Program Files
+holds `3c3f059`, and the gap to `lane-44` is exactly what
+`git log --oneline 3c3f059..lane-44 -- Source/` says: `ba7c953` and `8e49944`, two commits, not
+everything since `b603107`. `moduleinfo.json` is `e7c65365...` on both sides, at
+`Contents\Resources\` rather than beside the binary -- completeness, never identity -- and the
+installed payload `README.txt` `c98efc6c...` equals the tracked `installer/README.txt`.
+
+The sweep was run over this tree dry and **not** applied: `to correct: 9, unresolvable: 0`
+(25 already right, 86 edited-since-`bcd6188` lines left alone) and all nine sit in the
+`NEXT-STEPS.md` head that `5d071b0` shares with the lane. Not sweeping is the measured choice, not
+a skipped step: `git diff --name-only 5d071b0 master -- Source/ Tests/ CMakeLists.txt` is empty and
+the merge-tree over `4f51a7c ccd6308` returns `Source`, `Tests` and `CMakeLists.txt` byte-equal to
+lane-44's (`f903ac7d`, `5a2fc680`, `34a1a1df`) -- the merged tree's compiled inputs *are* the
+lane's, so the lane's already-swept numbers are the correct ones there (none of master's nine
+stale strings survive into the merged `NEXT-STEPS.md`), while a sweep on this side would write
+numbers true today and false at the merge and turn one conflict region into ten. `external/` is
+untracked, so it is not a fourth equal tree -- `git ls-tree lane-44 --name-only external` is empty.
+
+The audit, with the exemption list named beside it because the list decides the verdict: this
+tree's 17-entry `out/cite-pin.txt` (`3518a1e1089c`) prints points-at-symbol 20, needs-a-human 62,
+table rows 19, pinned 31, repaired 0, baseline-qualified 3, `UNPINNED miss ... : 0`. The lane's
+19-entry set (`a2a9e2c225aa`) over the *same* docs prints 21, 60, 19, 31, repaired 2 and
+`UNPINNED miss ... : 1` -- the one is line 114's `parameterChanged` pointer, which is at 519 in
+this tree. So the two 60s and two 0s differ only by which list was loaded, and `miss: 0` is not
+evidence until the pin file's hash is printed next to it; that is the AGENTS.md rule this run
+re-measures rather than first states.
 Hashes: the exes from the two cold runs differ by far more than the two link clocks -- the std-only
 planner by exactly 4 bytes, the smoke and layout suites by 4222 and 4784, because all 69 `.obj` in
 the two trees differ (measured at `8e49944` vs `a942cd0`; same tree, objects untouched, relink =
@@ -2005,6 +2039,17 @@ line 114 of this file cites PluginProcessor.h lines 333-338 for a declaration th
 `9c872f7`. `8e49944` repaired that pointer to 602-612 on the lane; master carries the base's number,
 so item 22 has a concrete first job: the merged tree is audited with the current six-file set and
 this citation is re-derived, not inherited from either side.
+
+The merge preview the handover closed with -- "AGENTS.md ... still the only conflicted path" -- was
+true when it was written and is not true now, and the second path is mine. Measured on this tree:
+`git merge-tree --write-tree 9c872f7 ccd6308` lists AGENTS.md alone; the same command over `4f51a7c`
+(which appends 38 lines to `NEXT-STEPS.md` an hour later) lists **AGENTS.md and NEXT-STEPS.md**.
+Both are the same shape -- one region per file, both sides appending bullets to the same tail -- and
+both resolve by keeping both, which the line arithmetic proves loses nothing: `NEXT-STEPS.md` merges
+to 2357 lines = 3 marker lines + 2354 = 1977 (base `5d071b0`) + 38 (master) + 339 (lane-44), and
+`AGENTS.md` to 1002 = 3 + 999 = 798 + 69 + 132. So item **22**'s "audit the merged tree with the
+current six-file set" now has a sibling duty in the same step: two paths to resolve, not one, and a
+ship that merges by SHA has to re-run the preview at the SHA it names rather than reuse this sentence.
 
 One witness was spent to get the hash rule, and it has to be recorded here or the next reader finds
 a disagreement in my own scratch: `out/wt-990e4c2`'s smoke exe is now a **relink** made at 19:10 with
