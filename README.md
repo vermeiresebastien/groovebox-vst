@@ -236,9 +236,16 @@ four-bar take of the whole 64-rung ladder the integrated level goes 0.041654 to 
 (**+0.007 dB**) and the 2–7 kHz band 0.000413 to 0.000412 (**−0.026 dB**). The peak of that
 summed take does rise, 1.438488 to 1.485904 (+0.28 dB), for one reason: four voices at one
 step add together, and three of them pulling up is enough to beat a step whose loudest rung
-is only one. Asked of a single hit, as above, the direction is only ever down. Nothing buys
-these numbers back — no limiter, no hidden trim, no renormalisation — and the check that
-proves it is the level-matched one: a jittered hit is bit for bit the very same hit *drawn*
+is only one. Read that pair for what the fixture is: **the hottest state this machine can be
+put in** — four lanes, all sixteen steps, every chance at 1.0, and the velocity ladder running
+the whole 0 to 127, which the genre table never asks for (its densest row is 10 of 16, its
+average 3.4). At that load **both arms are already past 0 dBFS**, so the clip indicator is
+reporting in both and the +0.28 dB is a rise in clipping, not in loudness; Touch did not put the
+output over full scale, because the shut arm reads 1.438488 before the knob moves anywhere. The
+trim is the test's −3.5 dB, not the −2 dB you get. Asked of a single hit, as above, the direction
+is only ever down — and the whole-kit render the fingerprint check measures peaks at 0.68136.
+Nothing buys these numbers back — no limiter, no hidden trim, no renormalisation — and the check
+that proves it is the level-matched one: a jittered hit is bit for bit the very same hit *drawn*
 at the level the draw said, at 64, 256 and 1024 sample blocks alike.
 
 **A session that predates the parameter opens shut.** A missing entry takes its default, here
