@@ -189,11 +189,36 @@ public:
         The shortest name line the grid will give up row height to.
 
         Fourteen, because the name is drawn at a 14 px font and a line shorter than the
-        font ellipsises a name into "Ki…" at the smallest window this editor allows. The
-        floor of the window leaves a 27 px row, and 27 - 13 = 14: the strip exists at
-        every size the resize limits permit, and this is the number that says so.
+        font ellipsises a name into "Ki…" at the smallest window this editor allows.
     */
     static constexpr int bankNameLineHeight = 14;
+
+    /**
+        The shortest row that still carries a whole bank strip: the name line over the
+        strip, and nothing else given up.
+
+        This is the number the *editor*'s height floor is priced against, through
+        `heightForRowAtLeast` below, so the row rule and the resize limits cannot drift
+        apart -- and since 5.6's height half it is no longer a fact about the old floor
+        that happened to hold. At the published minimum the row is exactly this tall.
+    */
+    static constexpr int minimumRowHeight = bankNameLineHeight + bankStripHeight;
+
+    /**
+        The smallest a `StepGridComponent` can be and still give rows at least `row` tall.
+
+        The inverse of `resized()`'s own arithmetic -- `reduced (gridBorder)` then
+        `(gridHeight - (numChannels - 1) * cellGap) / numChannels`, truncated -- so the
+        editor can ask what a row costs instead of remembering 361. Exact for `row >= 2`,
+        which is the floor the division itself clamps to.
+    */
+    static constexpr int heightForRowAtLeast (int row) noexcept
+    {
+        return row * Layout::numChannels + (Layout::numChannels - 1) * cellGap + 2 * gridBorder;
+    }
+
+    /** The grid's own border, taken off all four sides before rows are counted. */
+    static constexpr int gridBorder = 2;
 
     static constexpr int bankEdgePad = 1;
     static constexpr int bankSlotDotSize = 9;

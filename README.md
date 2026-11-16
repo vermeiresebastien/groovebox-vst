@@ -305,7 +305,7 @@ pointed at slot 0 and every counter shut, which is the same machine as before: t
 state of the bank is one grid wide.
 
 The marks need room. They appear when a row is at least 27 px tall **and** the label column
-at least 89 px wide, and every size this editor allows satisfies both — at the 1218 × 844
+at least 89 px wide, and every size this editor allows satisfies both — at the 1218 × 695
 floor the row comes out at exactly 27 px, with nothing to spare. Narrower or shorter than
 the editor permits, the strip is not drawn, is not clickable and there is nothing to explain
 the difference: the rule is one answer behind the painting, the hit test and the test suite.
@@ -437,9 +437,19 @@ and leaves it alone.
   the **Velocity** and **Chance** toggles with the shared **100%** reset, and the master
   trim and meter. A 1774 px bar lays all of that on one row; narrower, the Variation group
   moves to a second line and the bar grows 36 px to take it. Either way no control gives up
-  width to fit the window, which is what lets it go down to **1218 px** — the width a 1366
-  px laptop has. The height is not solved by the wrap: the editor cannot be made shorter
-  than 844 px, so a 768 px screen still cannot show all of it, and the grid pays 36 px.
+  width to fit the window. The smallest editor is **1218 × 695 px** — the width is
+  `TransportBar::wrappedRowWidth + 2 * Layout::editorMargin`, the height is
+  `Layout::editorFloorHeight (TransportBar::twoRowHeight, gridFloor)`, and neither is a typed
+  literal: the height is what the cheapest of the four stages of `Layout::editorPlan` costs,
+  under a two-line bar and a grid left at its own 361 px floor. That fits a 1366 × 768 laptop
+  **as a window** — a 768 px screen leaves roughly 730 px for a window — and it does **not**
+  fit inside Live maximised on that screen: Live spends part of the same 768 px on its own
+  chrome, and anything over 73 px of it leaves a plugin viewport shorter than 695. The height is bought from decoration in a fixed order:
+  the "GROOVEBOX" row (the mark, the one-line load/MIDI hint and the rule, all three inside
+  it), then the strips' slack and their rows down to the floors `Layout::stripPlan` already
+  prices, then the strips' four section captions. The grid is never asked to pay, so its rows
+  stay at 27 px and the bank marks stay drawn to the last pixel of the floor, and no control
+  is ever given up at any size the window is allowed to be.
 - **Middle** — the 16 × 12 step grid. Channel 11 is the top row and channel 0 the
   bottom, matching the web app, which reverses its lane list. The left-hand label column
   of each row carries that lane's pattern bank: four slot marks, the copy mark and the
@@ -768,8 +778,9 @@ by painting the grid into an image and comparing two renders that differ in one
 probability, since it is the one part of the panel with no bounds to inspect: that
 says where the pixels moved, that they moved in only that one cell, and that a
 mark which should not appear there makes two renders of the same cell identical.
-The bar's wrap rule is checked at eight window sizes — the default, exactly the width
-one row asks for, one pixel narrower, the editor's floor, one in between, the largest
+The bar's wrap rule and the editor's height rule are checked at nine window sizes — the
+default, exactly the width one row asks for, one pixel narrower, the editor's width floor at
+the height a session opens at, the floor on both axes at once, one in between, the largest
 the editor allows, and two deliberately below the floor — and at each of them the bar's
 height is compared with
 the row rule's own numbers rather than with the predicate being tested, the
@@ -777,8 +788,9 @@ variation band is placed by which line it overlaps, all twelve channel strips ar
 walked for clipped children, and all 192 hover readouts are asked for their size as
 well as their position, since a label whose bottom edge got pulled up to the top of
 the grid stayed inside it and read as a pass at 1 px tall.
-The two sub-floor arms — a window that gives every strip 236 px, which used to put two of
-its seventeen controls off-screen, and one that gives it 135 px, the rule's own hard floor —
+The two sub-floor arms — a window that gives every strip the 178 px of stage 3, which is the
+height that used to lose two of its seventeen controls at 236 px (`out/layout-tight-probe.log`),
+and one that gives it 169 px, inside the strip rule's own hard floor —
 are kept as permanent gates. They are excused from exactly one claim, that a strip got the
 height its plan asked for; they are still held to keeping every control inside and to having
 laid out through `Layout::stripPlan` rather than a copy of it. Which arms are excused is read

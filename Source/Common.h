@@ -485,6 +485,99 @@ namespace Layout
 
         return p;
     }
+
+    //==============================================================================
+    //  The editor's own vertical budget. See `editorPlan`.
+    //==============================================================================
+    inline constexpr int editorMargin   = 18;   // chrome all the way round
+    inline constexpr int editorGap      = 10;   // under the bar, and above the grid
+    inline constexpr int editorTitleAir = 4;    // between the wordmark row and the bar
+    inline constexpr int wordmarkHeight = 34;   // the GROOVEBOX row: mark, hint, rule
+    inline constexpr int stripDesignHeight = 285;   // a strip at stage 0, spare included
+    inline constexpr int gridGuardHeight = 120; // the least the grid is ever left with
+
+    /**
+        How tall a channel strip has to be to be laid out at `stage` of `stripPlan`.
+
+        Stage 0 keeps the design height, 5 px more than the strip's own 268 px budget,
+        because that slack is what it has always been given and what it still spends on
+        nothing. Stages 2 and 3 are priced exactly: each of those budgets *is* the stage's
+        own `wanted`, so the room and the cost are the same number, and the strip frame
+        goes on top. Stage 1 gives up the wordmark, not the strip, so it pays 285 too.
+    */
+    inline int stripHeightForStage (int stage) noexcept
+    {
+        return stage <= 1 ? stripDesignHeight
+                          : (stage == 2 ? stripFloorRoom : stripBareRoom) + 2 * stripFrame;
+    }
+
+    /** Everything but the wordmark and the strip: air, bar, two gaps and the grid's floor. */
+    inline int editorChromeHeight (int barHeight, int gridFloor) noexcept
+    {
+        return editorTitleAir + barHeight + editorGap * 2 + gridFloor;
+    }
+
+    /** What the editor spends at `stage`, once the bar and the grid floor are known. */
+    inline int editorCostForStage (int stage, int barHeight, int gridFloor) noexcept
+    {
+        return editorChromeHeight (barHeight, gridFloor) + stripHeightForStage (stage)
+               + (stage == 0 ? wordmarkHeight : 0);
+    }
+
+    /** What the editor's `setResizeLimits` floor has to be: the cheapest stage, worst bar. */
+    inline int editorFloorHeight (int barHeight, int gridFloor) noexcept
+    {
+        return editorCostForStage (3, barHeight, gridFloor) + editorMargin * 2;
+    }
+
+    /** One window height, laid out. See `editorPlan`. */
+    struct EditorPlan
+    {
+        bool wordmark = true;   ///< draw the GROOVEBOX row at all?
+        int  strip    = 0;      ///< px handed to every channel strip
+        int  wanted   = 0;      ///< what this stage costs, below the margins
+        int  spare    = 0;      ///< interior - wanted; negative says the window is short
+        int  stage    = 0;      ///< 0 full, 1 no wordmark, 2 strip at floors, 3 no captions
+    };
+
+    /**
+        What the editor should do with `interior` px of height under a `barHeight` px bar.
+
+        Four stages, each giving up one thing and in this order: the GROOVEBOX row (34 px
+        of branding, the one-line load/MIDI hint and the rule, all three drawn inside it),
+        then the strip's slack and its rows down to the floors `stripPlan` already prices,
+        then the strip's captions. The grid is never asked to pay: it is left its own floor,
+        derived from the row height the bank strip needs for a name line, so a short window
+        loses decoration rather than losing a control or a bank mark.
+
+        Stated as costs, not thresholds, for the reason AGENTS.md records about the bar's
+        wrap rule -- a gate that compared the bar's height with the same function `resized()`
+        had just called proved only that both halves read one number, and stayed green when
+        that number was made a constant. The layout test therefore builds each boundary out
+        of the terms it is made of -- the bar's own `twoRowHeight`, the strip's own budget
+        for the stage, the grid's row rule read backwards -- and calls nothing here except
+        where monotonicity is the claim. The floor the editor publishes is this function's
+        stage 3 with the *wrapped* bar, which is the worst case the published minimum width
+        allows.
+
+        Monotone: no stage is ever cheaper than the one above it, because each drops a term.
+    */
+    inline EditorPlan editorPlan (int interior, int barHeight, int gridFloor) noexcept
+    {
+        EditorPlan p;
+
+        p.stage = interior >= editorCostForStage (0, barHeight, gridFloor) ? 0
+                : interior >= editorCostForStage (1, barHeight, gridFloor) ? 1
+                : interior >= editorCostForStage (2, barHeight, gridFloor) ? 2
+                                                                          : 3;
+
+        p.wordmark = p.stage == 0;
+        p.strip    = stripHeightForStage (p.stage);
+        p.wanted   = editorCostForStage (p.stage, barHeight, gridFloor);
+        p.spare    = interior - p.wanted;
+
+        return p;
+    }
 }
 
 /** Palette lifted from the Earworm Studio drum page. */

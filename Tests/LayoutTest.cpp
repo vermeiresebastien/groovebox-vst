@@ -807,6 +807,387 @@ int main()
     }
 
     //======================================================================
+    //  The editor's own height rule, at every stage it can be at.
+    //
+    //  5.6's other half. The width half was paid for by 4.3b; what was left was a typed
+    //  844 that `setResizeLimits` passed straight through as the *minimum* -- 149 px above
+    //  what the layout needs at its cheapest stage, and enough to sit the bottom strip of
+    //  the window off a 768 px screen. The repair is a plan of four stages, each giving up
+    //  one thing in a fixed order: the GROOVEBOX row, then the strip's slack and row
+    //  heights, then its captions. The grid is never asked to pay, because the grid's floor
+    //  is the row height the bank strip needs to carry a name without ellipsising it.
+    //
+    //  The floor is priced against the *wrapped* bar on purpose. The minimum width the same
+    //  rule publishes is below `TransportBar::oneRowWidth`, so the one corner where both
+    //  limits are met at once has a two-line bar, and a height floor derived against the
+    //  one-line bar would be 36 px short there. That coupling is asserted below rather than
+    //  assumed, because it is the claim that decides which of the two is the worst case.
+    std::printf ("\n-- the editor's height rule, at every stage --\n");
+    {
+        std::vector<ChannelStrip*> walks;
+
+        for (int i = 0; i < editor->getNumChildComponents(); ++i)
+        {
+            if (auto* strip = dynamic_cast<ChannelStrip*> (editor->getChildComponent (i)))
+                walks.push_back (strip);
+        }
+
+        const auto gridFloor = StepGridComponent::heightForRowAtLeast (StepGridComponent::minimumRowHeight);
+        const auto tightBar  = TransportBar::twoRowHeight;
+        const auto chrome    = Layout::editorChromeHeight (tightBar, gridFloor);
+
+        // Every term here belongs to the component that owns it -- the bar's second line,
+        // the strip's own budget for the stage it is priced at, the grid's row rule read
+        // backwards -- except the editor's chrome, which is this rule's own vocabulary.
+        // `editorCostForStage` is deliberately not called: AGENTS.md records what happens to
+        // a gate that asks the predicate under test what it expects, and this is the rule
+        // whose cost a mistake here would hide.
+        const int costs[] = {
+            Layout::wordmarkHeight + Layout::stripDesignHeight + chrome,
+            Layout::stripDesignHeight + chrome,
+            Layout::stripFloorRoom + 2 * Layout::stripFrame + chrome,
+            Layout::stripBareRoom  + 2 * Layout::stripFrame + chrome };
+
+        // 1. Each stage begins exactly where its own terms cost that much, and one px under
+        //    a boundary the plan takes the stage below it. `spare == 0` at the cost is what
+        //    makes these boundaries rather than three points on a slope; below the last one
+        //    there is nothing left to give up, so the plan has to say so instead.
+        auto stageWrong = 0, budgetWrong = 0, boundaryWrong = 0;
+
+        for (int stage = 0; stage < 4; ++stage)
+        {
+            const auto at = Layout::editorPlan (costs[stage], tightBar, gridFloor);
+
+            stageWrong  += at.stage != stage;
+            budgetWrong += at.spare != 0 || at.wanted != costs[stage];
+
+            const auto under = Layout::editorPlan (costs[stage] - 1, tightBar, gridFloor);
+
+            if (stage < 3)
+                boundaryWrong += under.stage != stage + 1;
+            else
+                boundaryWrong += under.stage != 3 || under.spare != -1;
+        }
+
+        expect (stageWrong == 0 && budgetWrong == 0,
+                "each stage begins exactly where its own terms cost that much",
+                juce::String (stageWrong) + " stages wrong, " + juce::String (budgetWrong)
+                    + " with a budget that is not its cost (costs " + juce::String (costs[0])
+                    + "/" + juce::String (costs[1]) + "/" + juce::String (costs[2]) + "/"
+                    + juce::String (costs[3]) + " px below the margins, under a "
+                    + juce::String (tightBar) + " px bar and a " + juce::String (gridFloor)
+                    + " px grid)");
+
+        expect (boundaryWrong == 0,
+                "one px under a boundary the plan takes the stage below, and the last stage reports the shortfall",
+                juce::String (boundaryWrong) + " of 4 boundaries disagree");
+
+        // 2. The height each stage hands a strip has to be a height that strip reads back as
+        //    the same stage, or the two rules have drifted apart: the editor would be paying
+        //    for rows the strip then squeezes, or paying for a squeeze the strip never asked
+        //    for. Stage 1 is the one deliberate disagreement -- it gives up the wordmark and
+        //    leaves the strip at its design height -- so it is expected to read back as 0.
+        auto stripOff = 0, slackOff = 0;
+
+        for (int stage = 0; stage < 4; ++stage)
+        {
+            const auto handed = Layout::stripHeightForStage (stage);
+            const auto read   = Layout::stripPlan (Layout::stripRoomFor (handed));
+
+            stripOff += read.stage != (stage == 1 ? 0 : stage);
+            slackOff += read.spare != (stage <= 1 ? Layout::stripRoomFor (Layout::stripDesignHeight)
+                                                           - Layout::stripFullRoom
+                                                                  : 0);
+        }
+
+        expect (stripOff == 0 && slackOff == 0,
+                "the height each stage hands a strip is the height that strip reads as that stage",
+                juce::String (stripOff) + " of 4 disagree, " + juce::String (slackOff)
+                    + " with unexpected slack (the design height is room "
+                    + juce::String (Layout::stripRoomFor (Layout::stripDesignHeight))
+                    + " against a " + juce::String (Layout::stripFullRoom)
+                    + " px budget, so stage 0 and 1 keep "
+                    + juce::String (Layout::stripRoomFor (Layout::stripDesignHeight) - Layout::stripFullRoom)
+                    + " px of it; 222 and 178 px are exact)");
+
+        // 3. The floor the editor publishes is stage 3 at the worst bar, to the pixel -- and
+        //    the worst bar really is the one the width floor forces.
+        const auto* limits = editor->getConstrainer();
+        const auto minWidth  = limits != nullptr ? limits->getMinimumWidth()  : 0;
+        const auto minHeight = limits != nullptr ? limits->getMinimumHeight() : 0;
+
+        expect (minHeight == costs[3] + 2 * Layout::editorMargin,
+                "the published minimum is stage 3 with the wrapped bar, to the pixel",
+                juce::String (minHeight) + " px against "
+                    + juce::String (costs[3] + 2 * Layout::editorMargin) + " px wanted ("
+                    + juce::String (costs[3]) + " below the margins, "
+                    + juce::String (2 * Layout::editorMargin) + " px of margin)");
+
+        const auto barWidthAtMin = minWidth - 2 * Layout::editorMargin;
+        const auto barAtMinWidth = TransportBar::heightForWidth (barWidthAtMin);
+
+        expect (limits != nullptr && TransportBar::isWrappedForWidth (barWidthAtMin)
+                  && barAtMinWidth == tightBar,
+                "and the width floor does force the bar to the height floor's worst case",
+                "the bar at the minimum width is " + juce::String (barWidthAtMin)
+                    + " px wide and " + juce::String (barAtMinWidth) + " px tall, against the "
+                    + juce::String (tightBar) + " px the floor was priced at, because "
+                    + juce::String (barWidthAtMin) + " is under "
+                    + juce::String (TransportBar::oneRowWidth));
+
+        // 4. Real components, at exactly the published floor. This is what turns the
+        //    arithmetic into a layout claim: the row is read off the grid, the controls off
+        //    each strip, the lines off the bar, the wordmark off the label that draws it.
+        editor->setSize (minWidth, minHeight);
+
+        auto walked = 0, clipped = 0, stripShort = 0, stageOffReal = 0, wordmark = 0, barOff = 0;
+        auto rowBelow = 0, bankOff = 0;
+        int rowAtFloor = 0, gridAtFloor = 0;
+        juce::String clipDetail {};
+
+        if (stepGrid != nullptr && transportBar != nullptr && ! walks.empty())
+        {
+            rowAtFloor  = stepGrid->getRowBounds (0).getHeight();
+            gridAtFloor = stepGrid->getHeight();
+            barOff      = transportBar->getHeight() != tightBar;
+            rowBelow    = rowAtFloor < StepGridComponent::minimumRowHeight;
+
+            for (int i = 0; i < editor->getNumChildComponents(); ++i)
+            {
+                if (auto* label = dynamic_cast<juce::Label*> (editor->getChildComponent (i)))
+                {
+                    wordmark += label->isVisible();
+                    break;
+                }
+            }
+
+            const auto bank = stepGrid->getBankStripBounds (0);
+
+            bankOff += bank.getHeight() != StepGridComponent::bankStripHeight
+                       || bank.getWidth() <= 0
+                       || rowAtFloor < bank.getHeight() + StepGridComponent::bankNameLineHeight;
+
+            for (auto* strip : walks)
+            {
+                ++walked;
+                stageOffReal += strip->getLayoutStage() != 3;
+                stripShort       += strip->getSpareHeight() < 0;
+
+                auto bad = 0;
+
+                for (int i = 0; i < strip->getNumChildComponents(); ++i)
+                {
+                    auto* inner = strip->getChildComponent (i);
+
+                    if (inner == nullptr || ! inner->isVisible())
+                        continue;
+
+                    if (! strip->getLocalBounds().contains (inner->getBounds())
+                        || inner->getWidth() < 1 || inner->getHeight() < 1)
+                        ++bad;
+                }
+
+                if (bad != 0)
+                {
+                    ++clipped;
+
+                    if (clipDetail.isEmpty())
+                        clipDetail = juce::String (bad) + " of "
+                                   + juce::String (strip->getNumChildComponents())
+                                   + " in a " + juce::String (strip->getHeight())
+                                   + " px strip, spare " + juce::String (strip->getSpareHeight());
+                }
+            }
+        }
+
+        expect (walked == Layout::numChannels && clipped == 0 && stripShort == 0 && stageOffReal == 0
+                  && wordmark == 0 && barOff == 0 && rowBelow == 0,
+                "at the floor every strip keeps its controls, the grid keeps its row and the bar keeps its lines",
+                juce::String (walked) + " strips walked, " + juce::String (clipped)
+                    + " with a clipped child (" + clipDetail + "), " + juce::String (stripShort)
+                    + " short of what they asked for, " + juce::String (stageOffReal)
+                    + " not at stage 3, " + juce::String (wordmark)
+                    + " wordmark labels still visible, " + juce::String (barOff)
+                    + " bars off " + juce::String (tightBar) + " px, row "
+                    + juce::String (rowAtFloor) + " px against "
+                    + juce::String (StepGridComponent::minimumRowHeight) + " needed");
+
+        expect (bankOff == 0,
+                "and the bank strip still stands in that row, with its name line over it",
+                "row " + juce::String (rowAtFloor) + " px, grid " + juce::String (gridAtFloor)
+                    + " px, strip " + (stepGrid != nullptr
+                        ? asText (stepGrid->getBankStripBounds (0)) : juce::String ("no grid"))
+                    + " against " + juce::String (StepGridComponent::bankStripHeight)
+                    + " px over a " + juce::String (StepGridComponent::bankNameLineHeight)
+                    + " px line");
+        // 4b. Pixels, for the half of the claim that lives in `paint()`. The GROOVEBOX row is
+        //     not only a band the layout reserves: the editor's own paint draws the divider
+        //     and the one-line hint into it, and a paint that drew them whatever the stage
+        //     would put a full-width line through the bar's top line at the floor -- a fact
+        //     about pixels, not about bounds or child components, so nothing above can see it.
+        //     Render the editor alone, not its children, and measure the longest horizontal
+        //     run of the rule colour. The divider is `width - 2 * margin` px of that colour
+        //     in one row, less whatever the right-aligned hint overprints it -- measured 1344 px
+        //     of an unbroken 1796 px line at the default, so the claim is half the panel, which is
+        //     more than any caption, button edge or text run reaches and 0 px cannot be confused with.
+        const auto ruleRun = [] (const juce::Image& img)
+        {
+            auto best = 0;
+
+            for (auto y = 0; y < img.getHeight(); ++y)
+            {
+                auto run = 0;
+
+                for (auto x = 0; x < img.getWidth(); ++x)
+                {
+                    run = img.getPixelAt (x, y) == gb::Colours::rule ? run + 1 : 0;
+                    best = juce::jmax (best, run);
+                }
+            }
+
+            return best;
+        };
+
+        const auto floorHeightAtDefaultWidth = costs[3] + 2 * Layout::editorMargin;
+        auto* shell = dynamic_cast<GrooveboxEditor*> (editor.get());
+        auto drawnRule = 0, goneRule = 0, paintStage = -1;
+
+        if (shell != nullptr)
+        {
+            // The Graphics object has to be destroyed before the pixels are read: an Image
+            // being painted into keeps a cached context, and reading it while that context is
+            // still alive answers with the untouched bitmap. `renderGrid` gets this right by
+            // scoping its Graphics inside a function.
+            const auto renderAt = [&] (int height)
+            {
+                editor->setSize (preferredWidth, height);
+
+                juce::Image image (juce::Image::ARGB, preferredWidth, height, true);
+
+                {
+                    juce::Graphics g (image);
+                    shell->paint (g);
+                }
+
+                return image;
+            };
+
+            const auto atDefault = renderAt (preferredHeight);
+            const auto atFloor   = renderAt (floorHeightAtDefaultWidth);
+
+            drawnRule = ruleRun (atDefault);
+            goneRule  = ruleRun (atFloor);
+            editor->setSize (preferredWidth, preferredHeight);
+
+            paintStage = Layout::editorPlan (floorHeightAtDefaultWidth - 2 * Layout::editorMargin,
+                                              TransportBar::oneRowHeight, gridFloor).stage;
+        }
+
+        expect (shell != nullptr && paintStage == 3
+                  && drawnRule >= (preferredWidth - 2 * Layout::editorMargin) / 2
+                  && goneRule < 40,
+                "and the wordmark's divider is painted exactly when the layout paid for it",
+                "stage " + juce::String (paintStage) + " at " + juce::String (preferredWidth)
+                    + " x " + juce::String (floorHeightAtDefaultWidth) + " px, longest run of the "
+                    "rule colour " + juce::String (drawnRule) + " px at the default against "
+                    + juce::String (goneRule) + " px at that height, where an unbroken divider would be "
+                    + juce::String (preferredWidth - 2 * Layout::editorMargin) + " px minus what the hint overprints");
+
+        // 5. One px below the floor something has to give, and what gives is the grid's row:
+        //    the very thing the floor exists to protect. A floor typed one px too small goes
+        //    red here, and one typed too large goes red in the equality above -- together those
+        //    two pin the number, which is more than "the layout still works at the minimum"
+        //    would have said on its own.
+        editor->setSize (minWidth, minHeight - 1);
+
+        const auto rowUnder = stepGrid != nullptr ? stepGrid->getRowBounds (0).getHeight() : 0;
+
+        expect (stepGrid != nullptr && rowUnder == rowAtFloor - 1
+                  && rowUnder < StepGridComponent::minimumRowHeight,
+                "the last px of the floor is the grid's, not a control's",
+                juce::String (rowUnder) + " px row one px under the floor against "
+                    + juce::String (rowAtFloor) + " px at it; the name line needs "
+                    + juce::String (StepGridComponent::minimumRowHeight));
+
+        // 6. And the window a session opens at is untouched: the wordmark still drawn, the
+        //    strip at its design height, the bar on one line, the grid at the 405 px
+        //    `out/layout-35-final.txt` recorded. Had any of those moved, the repair would have
+        //    retuned everybody's normal layout to buy a laptop size nobody was using it for.
+        editor->setSize (preferredWidth, preferredHeight);
+
+        const auto grid0   = stepGrid != nullptr ? stepGrid->getHeight() : 0;
+        const auto row0    = stepGrid != nullptr ? stepGrid->getRowBounds (0).getHeight() : 0;
+        const auto strip0  = walks.empty() ? 0 : walks.front()->getHeight();
+        const auto bar0    = transportBar != nullptr ? transportBar->getHeight() : 0;
+        auto wordmarkSeen = 0;
+
+        for (int k = 0; k < editor->getNumChildComponents(); ++k)
+        {
+            if (auto* label = dynamic_cast<juce::Label*> (editor->getChildComponent (k)))
+            {
+                wordmarkSeen += label->isVisible();
+                break;
+            }
+        }
+
+        // Read off the components rather than off the plan: the plan is the thing under
+        // test here, and a claim that asks it what it decided would stay green on a rule that
+        // decided a stage and then laid the window out as if it had not.
+        expect (wordmarkSeen == 1 && strip0 == Layout::stripDesignHeight
+                  && bar0 == TransportBar::oneRowHeight,
+                "the default window still shows the wordmark, a strip at its design height and one bar line",
+                juce::String (wordmarkSeen) + " wordmark labels visible, strip "
+                    + juce::String (strip0) + " px against "
+                    + juce::String (Layout::stripDesignHeight) + " designed, bar "
+                    + juce::String (bar0) + " px against "
+                    + juce::String (TransportBar::oneRowHeight) + " for one line");
+
+        // 397 is what a 30 px row costs and 409 what a 31 px row would, asked of the grid's
+        // own inverse: the 405 sits between them, so the row is 30 px and the 8 px left over
+        // is the slack the division truncates away rather than a budget nobody planned for.
+        expect (grid0 == 405
+                  && grid0 >= StepGridComponent::heightForRowAtLeast (30)
+                  && grid0 < StepGridComponent::heightForRowAtLeast (31)
+                  && row0 == 30,
+                "and the grid still gets the 405 px it was measured at, at 30 px rows",
+                juce::String (grid0) + " px grid, row " + juce::String (row0)
+                    + " px, " + juce::String (StepGridComponent::heightForRowAtLeast (30))
+                    + " px being the least a 30 px row costs and "
+                    + juce::String (StepGridComponent::heightForRowAtLeast (31)) + " px a 31 px one");
+
+        // 7. Totality, at the worst bar, over every interior the editor can be handed. No
+        //    stage may be priced at or below the one after it -- the order the stages give
+        //    things up is the rule, and a swap would make a taller window show less -- and
+        //    walking up from 1 px the stage may only ever come down.
+        auto mispriced = 0, backwards = 0, previous = -1;
+
+        for (int stage = 0; stage < 3; ++stage)
+            mispriced += Layout::editorCostForStage (stage, tightBar, gridFloor)
+                       <= Layout::editorCostForStage (stage + 1, tightBar, gridFloor);
+
+        for (auto interior = 1; interior <= 1200; ++interior)
+        {
+            const auto p = Layout::editorPlan (interior, tightBar, gridFloor);
+
+            // Growing the window may only ever buy a *lower* stage number and a taller
+            // strip -- the two move in opposite directions, which is why "nothing went up" is
+            // not the same claim as "nothing got cheaper to serve".
+            if (previous >= 0 && (p.stage > previous
+                || Layout::stripHeightForStage (p.stage) < Layout::stripHeightForStage (previous)))
+                ++backwards;
+
+            previous = p.stage;
+        }
+
+        expect (mispriced == 0 && backwards == 0,
+                "no stage is cheaper than the one above it and a taller window never buys less",
+                juce::String (mispriced) + " stages priced at or below the next, "
+                    + juce::String (backwards) + " backwards steps over 1200 interiors");
+
+        editor->setSize (preferredWidth, preferredHeight);
+    }
+
+    //======================================================================
     //  The bar's wrap rule, at every width the window can take.
     //
     //  This is the half of 5.6 that 4.3b had to pay for: a third fader is 154 px of
@@ -856,9 +1237,9 @@ int main()
         };
 
         // `allowed` is whether the window may actually be this size, and it comes off the
-        // editor's own constrainer rather than from a remembered 844: 5.6's height half is
-        // about to change that number, and an arm that is quietly outside the limits should
-        // stop being excused the moment the limits reach it.
+        // editor's own constrainer rather than from a remembered 844: 5.6's height half has
+        // now changed that number to 695, and an arm that is quietly outside the limits
+        // should stop being excused the moment the limits reach it.
         const auto* limits = editor->getConstrainer();
         const auto floorHeight = limits != nullptr ? limits->getMinimumHeight() : preferredHeight;
 
@@ -878,16 +1259,21 @@ int main()
             { preferredWidth,                             preferredHeight, "the default" },
             { TransportBar::oneRowWidth + barInset,       preferredHeight, "exactly what one line asks for" },
             { TransportBar::oneRowWidth - 1 + barInset,   preferredHeight, "one px narrower, so two lines" },
-            { TransportBar::wrappedRowWidth + barInset,   preferredHeight, "the editor's floor" },
+            { TransportBar::wrappedRowWidth + barInset,   preferredHeight, "the width floor, at the height a session opens at" },
+            // Both limits met at once -- the corner the height floor is priced against, and
+            // the reason it is 96 px of bar rather than the 60 the default width gets.
+            { TransportBar::wrappedRowWidth + barInset,   floorHeight,     "the floor, on both axes" },
             { 1500,                                       700,             "in between" },
             { 2200,                                       1400,            "the largest the editor allows" },
             // Two arms below the floor, on purpose. The first is the height that used to
-            // lose two controls per strip (236 px of strip, `out/layout-tight-probe.log`)
-            // and is now the regression test for it; the second is 1832 x 399, which the
-            // arithmetic in the section above derives as room 123 -- the last height the
-            // rule can serve without a control losing its rectangle.
-            { preferredWidth,                             500, "PROBE: strips at 236 px (below the floor)", false },
-            { preferredWidth,                             399, "PROBE: strips at 135 px, the rule's own floor", false },
+            // lose two controls per strip (236 px of strip, `out/layout-tight-probe.log`);
+            // since 5.6's height half a 500 px window hands the strip 178 px instead, which
+            // is the cheapest stage's exact budget with nothing clamped, so what this arm
+            // regression-tests is now the stage the plan picks rather than the squeeze. The
+            // second is 1832 x 399, whose 169 px strip is room 157 -- below the 166 px the
+            // bare stage costs, so the ADSR row gives up 9 px and every control survives.
+            { preferredWidth,                             500, "PROBE: strips at 178 px, the bare stage (below the floor)", false },
+            { preferredWidth,                             399, "PROBE: strips at 169 px, inside the rule's own floor", false },
         };
 
         std::printf ("  the bar sits %d px inside the window on each side,"
@@ -1053,6 +1439,30 @@ int main()
                                         : juce::String ("below the "))
                         + juce::String (floorHeight) + " px floor"
                         + (size.allowed ? juce::String() : " on purpose"));
+
+            // Which side starves when the window is smaller than the floor.
+            //
+            // `Layout::gridGuardHeight` is the promise the resize path makes to the grid,
+            // and an arm that halves it is invisible to every check above: the strip is
+            // still whole, its controls are still inside it, and the plan still agrees with
+            // itself. So the promise is gated at the component it is made to -- the grid --
+            // and stated with the one term the resize path spends before handing the band
+            // over, the gap above it. The two sub-floor arms answer in different orders and
+            // the message says which: a 500 px window leaves the strip its full 178 and
+            // shortens the grid to 202, a 399 px one cannot take any more from the grid, so
+            // the strip gives up 9 px and lands on 169.
+            const auto gridBand = stepGrid != nullptr ? stepGrid->getHeight() : 0;
+
+            expect (gridBand >= Layout::gridGuardHeight - Layout::editorGap,
+                    "the grid never falls under the guard the resize path promises it",
+                    juce::String (gridBand) + " px of grid against a "
+                        + juce::String (Layout::gridGuardHeight) + " px guard less a "
+                        + juce::String (Layout::editorGap) + " px gap, with "
+                        + juce::String (armStripHeight) + " px of strip against "
+                        + juce::String (Layout::stripHeightForStage (3))
+                        + " for stage 3 ("
+                        + (size.allowed ? juce::String ("inside the floor")
+                                        : juce::String ("below the floor")) + ")");
 
             // The number under the pointer, asked of every corner it has to survive.
             //
@@ -2555,7 +2965,7 @@ int main()
         //------------------------------------------------------------------
         // 2. Every size the window is allowed to take. The extremes come out of the
         // editor's own constrainer — the object `setResizeLimits` filled — because
-        // typing 1218 x 844 here would be a second copy of the floor, and the floor is
+        // typing 1218 x 695 here would be a second copy of the floor, and the floor is
         // what this arm is about: it is the one size at which the row is exactly
         // strip + name line, with nothing to spare.
         const auto* limits = editor->getConstrainer();

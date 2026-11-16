@@ -114,18 +114,24 @@ It is fully gitignored and nothing in it is authored in place.
   `Layout::firstMidiNote` in [Source/Common.h:58](Source/Common.h)), and that Live scans
   `Documents\VST3` (it does not -- see Host folders below).
 - **A fit claim states both axes and names the code that decides each.** 4.3b shipped that the
-  wrap "lets it go down to **1218 px** — a 1366 px laptop" (README.md:440) and that the
-  "editor floor **1218×844**, which does fit 1366×768" (NEXT-STEPS.md:370 -- the line that
-  sentence now sits on, in its corrected form, which is what the last clause of this bullet
-  says happened to it) -- in the same
-  paragraph that then admitted the height half was not paid for. The width is true (1218 <=
-  1366); the height is not, because [Source/PluginEditor.cpp:101](Source/PluginEditor.cpp)
-  passes 844 straight to `setResizeLimits` as the editor's *minimum* while a 768 px screen has
-  roughly 730 px of it -- the bottom strip sits off-screen and no resize brings it back.
-  the printf of `floorHeight` at `Tests/LayoutTest.cpp:893` prints that floor already, so this was
-  one subtraction away rather
-  than a measurement away: a claim that survives checking only one axis is the dangerous shape.
-  Both sentences were corrected by the shipping lane in `71c04fd`.
+  wrap "lets it go down to **1218 px** — a 1366 px laptop" and that the "editor floor
+  **1218×844**, which does fit 1366×768" -- in the same paragraph that then admitted the height
+  half was not paid for. The width was true (1218 <= 1366); the height was not, because
+  [Source/PluginEditor.cpp](Source/PluginEditor.cpp) passed 844 straight to `setResizeLimits` as
+  the editor's *minimum* while a 768 px screen has roughly 730 px of it: the bottom strip sat
+  off-screen and no resize brought it back. `Tests/LayoutTest.cpp` already printed that floor as
+  `floorHeight` off the editor's own constrainer, so this was one subtraction away rather than a
+  measurement away -- a claim that survives checking only one axis is the dangerous shape. Both
+  sentences were corrected by the shipping lane in `71c04fd`, and the defect was closed by 5.6's
+  height half, which is why the copy now reads **1218 × 695** with the two deciding expressions
+  beside their own axes: `TransportBar::wrappedRowWidth + 2 * Layout::editorMargin` for the width
+  and `Layout::editorFloorHeight (TransportBar::twoRowHeight, gridFloor)` for the height. Three
+  things that rule has to keep saying out loud: the *height* floor is priced against the
+  **wrapped** bar, because the published width floor is below `oneRowWidth` and the corner where
+  both limits are met at once is the worst case; the word "fits" states what it fits as -- a
+  window, on the roughly 730 px a 768 px screen leaves -- and what it does not fit, Live
+  maximised; and no bare "fits a 1366×768 laptop" sentence is allowed anywhere, because a
+  one-axis fit claim is exactly what shipped once.
 - **A verified number is not a verified claim.** The Touch A/B quoted `peak 1.438488 -> 1.485904`
   straight out of the run log, so every digit was true -- and both numbers are past 0 dBFS, because
   the fixture is four lanes x all sixteen steps at chance 1.0 on the whole velocity ladder
@@ -153,7 +159,7 @@ no generated header ([CMakeLists.txt:232-335](CMakeLists.txt)), which is what ke
 second. All four entries are `add_test` cases carrying a `PASS_REGULAR_EXPRESSION` that requires a
 `, 0 ` problem count, so a run that prints nothing and a run that prints a problem both fail the
 tracked path even at process exit 0, and `-V` is the documented form because the quiet one prints no
-counts. Last green run: 422 smoke checks, 554 layout checks, 85 planner checks, 0 problems, guard OK.
+counts. Last green run: 422 smoke checks, 619 layout checks, 85 planner checks, 0 problems, guard OK.
 
 **CTest does not build.** Measured by the lane that wired it (`ecfe76c`): with `GenrePatterns.h:101`
 broken and no rebuild, `ctest` reported 4/4 passed while the sources no longer matched the binaries.
@@ -369,13 +375,29 @@ gate. The two are not interchangeable and neither alone is the whole check; run 
   stage at exactly that stage's cost -- 268 / 246 / 210 / 166, hard floor 123 -- and the gate
   asserts cost <= room for every room the editor can reach, one px under each boundary, and that
   the floor is where the absorber runs out rather than a rounded guess (`LayoutTest.cpp:653`,
-  twelve checks; six mutation arms kill 28 / 10 / 7 / 2 / 1 / 4 of the suite).
+  twelve checks; six mutation arms kill 28 / 10 / 7 / 2 / 1 / 4 of the suite). 5.6's height half is
+  twelve more (`LayoutTest.cpp:825`) plus one per size in the walk, and its ten arms kill
+  6 / 5 / 4 / 5 / 1 / 4 / 1 / 4 / 1 / 1.
 - **An arm's "this size is impossible, so skip the claim" flag is read from the code that makes
-  it impossible.** The layout test now walks eight sizes: six the window can take plus the 236 px
-  and 135 px strip probes, kept permanently, and marks the probes unreachable by comparing against
+  it impossible.** The layout test walks nine sizes: seven the window can take -- the default, one
+  row exactly, one px narrower, the width floor at the height a session opens at, both limits met
+  at once, one in between, the largest -- plus the 178 px and 169 px strip probes, kept
+  permanently, and it marks the probes unreachable by comparing against
   `editor->getConstrainer ()->getMinimumHeight ()` rather than a typed 844. Typing the number
-  would have made the two probe arms a permanent excuse the moment 5.6's remaining half lowers the
-  floor -- the gate would keep passing while the sizes it forgave stopped being forgivable.
+  would have made the two probe arms a permanent excuse the moment 5.6's remaining half lowered
+  the floor -- the gate would keep passing while the sizes it forgave stopped being forgivable.
+  It did lower it, and the arms were pulled in: they now get the full height their plan asks at
+  stage 3, so what they test is the stage rather than the squeeze.
+- **A clamp that never binds at a reachable size has no gate until something asks it.** The last
+  of 5.6's ten height arms -- `Layout::gridGuardHeight` halved -- passed all 610 checks, because
+  at every size the window can take the strip is clamped by its own plan, not by the guard; the
+  guard only decides anything below the floor, and below the floor the deficit lands on the grid
+  band first (a 500 px window still hands the strip its 178 px and shortens the grid to 202).
+  Where it does bind -- 1832 x 399 -- the grid keeps guard minus the gap above it and the strip
+  starves to 169, so the check that catches the arm asks the grid component's own height against
+  that promise and prints 101 px against 110. The lesson is the same one as the row-wrap gate:
+  an arm that comes back green is a question about which component the rule can actually be read
+  off, and the answer is the component that ends up with the leftover.
 - **A control's colour is not its word.** Two of the bank's pixel checks -- "a lane that is
   rotating looks different" and "a full bank reports the copy mark has nowhere to go" -- were
   carried end to end by the *text* drawn beside the controls: arm p2 (the chip's lit branch
@@ -690,4 +712,15 @@ on purpose: see the two bolded rules below.
   `out\test\NOTE.txt` records exactly how far it got and where the shell refused it. Read
   that note before trying the retarget-inside-the-repo approach again; it does not work. The
   real install does, through `Start-Process -Verb RunAs` -- see the installer bullet above.
+- **One bare CR turns a doc edit into a whole-file rewrite.** This repo's blobs are LF and
+  the working copies are CRLF (`core.autocrlf=true`), and git normally normalises back on add,
+  so `git diff --numstat` reads as 20/8 for a README paragraph. A single CR *not* followed by
+  LF makes git treat the file as `w/-text` in `git ls-files --eol` and switch the conversion
+  off entirely -- the next commit then carries CRLF on every line: 1408 changed lines for a
+  40-line edit, found here after ten arms' worth of python-driven docs work, and the tell is
+  exactly that numstat magnitude. The cause is a replacement string that ends in `\n` being
+  converted to `\r\n` by hand while the literal already carries a trailing CR. So a scripted
+  edit of these docs checks `git ls-files --eol` and `git diff --numstat` before staging, and
+  `re.sub(rb"\r(?!\n)", b"", …)` is the repair -- three such bytes in this repo's two big
+  markdown files, all of them written this session.
 - Per-repo conventions live in this file, not in anyone's memory.

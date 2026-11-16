@@ -23,29 +23,23 @@ namespace
         and below `TransportBar::oneRowWidth` the variation band moves to a second line
         of its own — the row-wrap rule that 5.6 was going to need anyway, taken off the
         editor's floor here rather than leaving a third fader to push the minimum another
-        154 px wider. Nothing gets narrower on either line; the bar gets taller, and the
-        grid is what pays, by 36 px at the smallest window.
+        154 px wider. Nothing gets narrower on either line; the bar gets taller, and since
+        5.6's height half the bar's second line is paid for by the height floor itself, which
+        is priced under `TransportBar::twoRowHeight` rather than the one-line height.
     */
     constexpr int editorWidth = 1832;
+
+    /**
+        The window a new session opens at. Unchanged by 5.6's height half, and no longer
+        the same number as the floor: the floor is derived below, from what the cheapest
+        stage of `Layout::editorPlan` costs under the bar's worst (wrapped) height.
+    */
     constexpr int editorHeight = 844;
 
-    constexpr int margin = 18;
-    constexpr int titleHeight = 34;
-    // The bar's height is its own rule, not a constant: one line at 60, two when the
-    // variation band has been lifted out of a row that no longer fits. `resized()` asks
-    // `TransportBar::heightForWidth` for it, so the bar and the editor cannot disagree
-    // about how much of the window the bar has taken.
-    constexpr int gridHeight = 400;
-    // Tall enough for every control in a channel strip: the sound and clear
-    // buttons, the pitch row and the drop line under it, the level fader, the four
-    // ADSR rows, and the choke box sharing a row with mute. A shorter strip still
-    // lays out, but the bottom control gets clipped. The extra height comes out of
-    // the grid's slack, not out of the window: at the 844 px minimum and one line in
-    // the bar the grid still has 405 px, more than the 400 it was designed around, and
-    // with the bar wrapped it has 369 -- the 36 px the second line costs, and the whole
-    // reason the wrap is opt-in by width rather than the new default.
-    constexpr int stripHeight = 285;
-    constexpr int gap = 10;
+    // What a `StepGridComponent` has to be handed to keep the bank strip's name line
+    // readable, asked of the grid rather than remembered here: 361 px at the row height
+    // `StepGridComponent::minimumRowHeight` derives from its own two numbers.
+    constexpr int gridFloor = StepGridComponent::heightForRowAtLeast (StepGridComponent::minimumRowHeight);
 }
 
 GrooveboxEditor::GrooveboxEditor (GrooveboxProcessor& p)
@@ -93,12 +87,23 @@ GrooveboxEditor::GrooveboxEditor (GrooveboxProcessor& p)
     setSize (editorWidth, editorHeight);
     setResizable (true, true);
 
-    // The floor is the *wrapped* row, not the one-line row: below
+    // The width floor is the *wrapped* row, not the one-line row: below
     // `TransportBar::oneRowWidth` the variation band moves down a line rather than
     // anything on either line losing width, so the smallest window that can still show
     // every control at its own size is the first line on its own -- 1182 px of bar plus
     // this editor's margins, which is what a 1366 px laptop has to work with.
-    setResizeLimits (TransportBar::wrappedRowWidth + margin * 2, editorHeight, 2200, 1400);
+    //
+    // The height floor is that same worst case priced one level up. A window at the width
+    // floor has a two-line bar, so the minimum height has to be paid with 96 px of bar,
+    // not the 60 the default width gets: `editorFloorHeight` is stage 3 of the plan under
+    // `TransportBar::twoRowHeight`, which is 695 px -- the strip at its captions-gone
+    // budget, the grid at `gridFloor` and no wordmark row. Every size in between is the
+    // plan's to decide, and none of them costs a control: what the four stages give up is
+    // the GROOVEBOX row (mark, hint and rule, all three drawn inside it), then the strip's
+    // slack, its row heights and its captions, in that order.
+    setResizeLimits (TransportBar::wrappedRowWidth + Layout::editorMargin * 2,
+                     Layout::editorFloorHeight (TransportBar::twoRowHeight, gridFloor),
+                     2200, 1400);
 }
 
 GrooveboxEditor::~GrooveboxEditor()
@@ -181,9 +186,17 @@ void GrooveboxEditor::paint (juce::Graphics& g)
 {
     g.fillAll (Colours::background);
 
+    // Everything in here is the GROOVEBOX row, and the row is stage 0's to keep: the
+    // wordmark is branding, the rule is chrome, and the hint is the one-line answer to
+    // "how do I get a sound in". Nothing else is drawn at this level, so a short window
+    // gives up all three together rather than leaving a rule over an empty band.
+    if (! currentPlan().wordmark)
+        return;
+
     // The rule under the title, matching the web app's header divider.
     g.setColour (Colours::rule);
-    g.fillRect (margin, titleHeight + 8, getWidth() - margin * 2, 1);
+    g.fillRect (Layout::editorMargin, Layout::wordmarkHeight + 8,
+                getWidth() - Layout::editorMargin * 2, 1);
 
     g.setColour (Colours::muted);
     g.setFont (juce::Font (juce::FontOptions (12.0f)));
@@ -196,30 +209,49 @@ void GrooveboxEditor::paint (juce::Graphics& g)
 
     g.drawText ("Drop a WAV or AIFF on any channel row to load it   |   MIDI notes "
                   + firstNote + "-" + lastNote + " play the channels",
-                margin, titleHeight - 2, getWidth() - margin * 2, 16,
+                Layout::editorMargin, Layout::wordmarkHeight - 2,
+                getWidth() - Layout::editorMargin * 2, 16,
                 juce::Justification::centredRight);
+}
+
+Layout::EditorPlan GrooveboxEditor::currentPlan() const noexcept
+{
+    const auto interior = getLocalBounds().reduced (Layout::editorMargin);
+
+    // Both the bar's height and the grid's floor are asked of the components that own
+    // those rules, so the editor cannot decide a budget the bar or the grid then spends
+    // differently -- which is the trap AGENTS.md records for a gate that called the very
+    // predicate it was meant to test.
+    return Layout::editorPlan (interior.getHeight(),
+                               TransportBar::heightForWidth (interior.getWidth()),
+                               gridFloor);
 }
 
 void GrooveboxEditor::resized()
 {
-    auto area = getLocalBounds().reduced (margin);
+    auto area = getLocalBounds().reduced (Layout::editorMargin);
+    const auto plan = currentPlan();
 
-    auto titleRow = area.removeFromTop (titleHeight);
+    auto titleRow = area.removeFromTop (plan.wordmark ? Layout::wordmarkHeight : 0);
+    titleLabel.setVisible (plan.wordmark);
     titleLabel.setBounds (titleRow);
-    area.removeFromTop (4);
+    area.removeFromTop (Layout::editorTitleAir);
 
     // One line or two, asked of the bar itself with the width it is about to be given:
     // the bar's own numbers are component widths, and the margin here is not part of
     // them. Getting that backwards is how a bar ends up laying out two lines inside a
     // band the editor paid for as one.
     transportBar.setBounds (area.removeFromTop (TransportBar::heightForWidth (area.getWidth())));
-    area.removeFromTop (gap);
+    area.removeFromTop (Layout::editorGap);
 
-    // The channel strips take their full height: the clamp that used to be here
-    // (a third of the remaining area) silently squeezed the bottom control out of
-    // the strip whenever the window was a little short.
-    auto stripRow = area.removeFromBottom (juce::jmin (stripHeight, juce::jmax (0, area.getHeight() - 120)));
-    const auto stripWidth = (stripRow.getWidth() - gap * (Layout::numChannels - 1)) / Layout::numChannels;
+    // The strip gets what its own stage of `Layout::stripPlan` costs, and never more than
+    // what is left once the grid has been promised `Layout::gridGuardHeight`. The clamp
+    // used to be the only thing deciding the strip's height, and the 120 was typed: below
+    // it the strip went on shrinking until a control lost its rectangle, with the slack
+    // spent on a grid that could not use it.
+    auto stripRow = area.removeFromBottom (juce::jmin (plan.strip,
+                                                        juce::jmax (0, area.getHeight() - Layout::gridGuardHeight)));
+    const auto stripWidth = (stripRow.getWidth() - Layout::editorGap * (Layout::numChannels - 1)) / Layout::numChannels;
 
     for (int channel = 0; channel < channelStrips.size(); ++channel)
     {
@@ -228,10 +260,10 @@ void GrooveboxEditor::resized()
         channelStrips[channel]->setBounds (bounds);
 
         if (channel < channelStrips.size() - 1)
-            stripRow.removeFromLeft (gap);
+            stripRow.removeFromLeft (Layout::editorGap);
     }
 
-    area.removeFromBottom (gap);
+    area.removeFromBottom (Layout::editorGap);
     stepGrid.setBounds (area);
 }
 

@@ -71,7 +71,7 @@ StepGridComponent::~StepGridComponent()
 
 void StepGridComponent::resized()
 {
-    const auto bounds = getLocalBounds().reduced (2);
+    const auto bounds = getLocalBounds().reduced (gridBorder);
 
     // The label column shrinks on very narrow windows so the cells keep a chance.
     labelWidth = juce::jmin (labelTargetWidth, juce::jmax (40, bounds.getWidth() / 4));

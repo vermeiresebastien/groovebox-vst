@@ -151,7 +151,7 @@ sample-exact clock invariant that test `[12]` protects.
 | **U2** | Kit workflow: multi-file drop fills lanes (`StepGridComponent.cpp`'s `filesDropped` uses `files[0]` and ignores the rest; its silence was fixed earlier, it raises the same error box the browse path does), lane menu from `getSampleIds()`, remembered folder, audition on click (B7) | 12 file dialogs → one gesture | 12-20 h | low | U3 |
 | **U3** | Live programs/kits (`getNumPrograms()==1`) = a free preset browser in Live's browser | makes the thing shareable and recallable | 16-24 h, partly blocked by path-only refs | med | — |
 | **U4** | Pattern → MIDI clip export by drag (`juce::MidiFile` already linked; `skulpt/Source/SequenceView.cpp:507` is the precedent) | gets your groove into the arranger | 4-8 h | low | — |
-| **U5** | Editor floor fits a 1366×768 laptop, all-12-strip layout test — **two of the three halves are done**: the row half (2026-11-16, pulled into 4.3b — the bar wraps to two lines below 1774 px, `TransportBar::oneRowWidth`/`wrappedRowWidth`) and the strip-height half (2026-11-16, 5.6 — `Layout::stripPlan` is one budget that prices four stages; the 5.6 entry below has the numbers and the gates) | was: `LayoutTest.cpp` checked one size and the first strip only. Now eight sizes × all twelve strips, two of them deliberately below the editor's own minimum, and each one asserts `0 clipped` **and** that it ran the shared rule. The floor is still **1218×844** (`editorWidth`/`editorHeight` are the default *and* the minimum) and a 768 px screen has ~730 px | ~2-3 h left | low | what is left is the **height** half: 844 px of minimum, not the strip and not the row |
+| **U5** | Editor floor for a 1366×768 laptop, all-12-strip layout test — **done, all three halves**: the row half (2026-11-16, pulled into 4.3b — the bar wraps to two lines below 1774 px, `TransportBar::oneRowWidth`/`wrappedRowWidth`), the strip-height half (2026-11-16, 5.6 — `Layout::stripPlan` prices four stages) and the editor-height half (2026-11-16, 5.6 — `Layout::editorPlan`, and the 5.6 entry below has the numbers and the gates). `LayoutTest.cpp` walked one size and the first strip; it now walks nine sizes × all twelve strips, two of them deliberately below the editor's own minimum, and each one asserts `0 clipped` **and** that it ran the shared rule. The published floor is **1218 × 695 px** — the width is `TransportBar::wrappedRowWidth + 2 * Layout::editorMargin`, the height is `Layout::editorFloorHeight (TransportBar::twoRowHeight, gridFloor)`, and neither is typed. 695 px fits the roughly 730 px a 768 px screen leaves for a window; it still does not fit Live maximised on that screen. The default is untouched at 1832×844 | done | low | — |
 | **V1** | `verify.ps1`: build → both test exes with `$LASTEXITCODE` checked → SHA-256 manifest of `launch/` vs artefacts | today `installer/build-installer.ps1:92-105` only `Test-Path`s 5 files; nothing hashes anything | 3-4 h | low | — |
 | **V2** | RT tripwire (counting allocator armed inside `processBlock`) + click metric (max \|x[n]−x[n−1]\|) + level-matched A/B render rig | makes "sounds better" falsifiable, which is your rule | 12-16 h | med — JUCE 8.0.4 has **no** `OfflineRenderer`, BS.1770 LUFS would be hand-rolled | everything audio |
 | **M1** | Positioning: free BYO-sample in-plugin sequencer is genuinely unoccupied (Triaz Player can't load custom samples; TerminalVST is one sound per instance; Hydrogen isn't a plugin; Battery/Maschine sequence nothing in-plugin) | decide what the next 20 hours are *for* | 2 h decision | n/a | — |
@@ -368,7 +368,8 @@ touches the velocity law. No step here is allowed to be reported as better becau
   day:** the third fader had made the floor worse (**1832×844**), so the *wrap rule* and the
   multi-size layout test were pulled forward into 4.3b and shipped there — one row at
   **1774 px** and wider, two lines below it, editor floor **1218×844**, which fits 1366 px of
-  *width* and not 768 px of height.
+  *width* and not 768 px of height. *(That clause was true of the floor as 4.3b shipped it; the
+  height half below is what paid for it, and the published floor is **1218×695** now.)*
   **The strip-height half, and the defect was worse than this entry claimed.** The 4.3b
   write-up said the `tight` branch "is broken": a probe arm at a 500 px window put **2 of
   every strip's 17 visible controls outside it**, at 236 px of strip with
@@ -394,17 +395,58 @@ touches the velocity law. No step here is allowed to be reported as better becau
   and 135 px strip arms kept permanently, with reachability read from
   `editor->getConstrainer()->getMinimumHeight()` rather than a literal 844, so lowering the
   floor in the next step pulls those arms into the usability gate instead of excusing them.
+  *(It did: the walk is **nine** sizes now, one of them both limits met at once, and the two
+  probes hand the strip 178 px and 169 px rather than 236 px and 135.)*
   Green: **554 checks, 0 problems**. Six single-expression arms kill **28 / 10 / 7 / 2 / 1 /
   4** of them — revert to `8a27d27`, stage-0 envelope asking 66 while the budget counts 56
   (this is the one that reddens the walk: *12 of 12 short at 285 px*), stage-2 header at 22,
   absorber clamped at 4 instead of 1, top boundary `>=` made `>`, and stage 2 wired to
   `stripBareRoom` — so every gate in the new section is seen to bite by at least one arm
   (`out/56-<arm>.txt`, `out/mut56.py` restores from `out/*.good` at the top of every run).
-  What is **not** paid for is the height: `PluginEditor.cpp:101` still hands 844 to
-  `setResizeLimits` as the *minimum* and a 768 px screen has roughly 730 px of it. Measured
-  here: the strips hold their 285 px down to a 585 px window, so the debt is the grid's 120 px
-  reserve and the wrapped bar's 96, not the strip. ~2-3 h, and it is a *different* 2-3 h than
-  the one this entry was describing.
+  **The editor-height half, paid for the same day.** The strip held its 285 px down to a 585 px
+  window, so the debt was never the strip: it was that `editorHeight 844` did double duty as the
+  default *and* the minimum, and nobody had ever asked what the layout costs at its cheapest.
+  `Layout::editorPlan (interior, barHeight, gridFloor)` (`Source/Common.h:565`) answers that in
+  four stages, each giving up exactly one thing, in a fixed order: the GROOVEBOX row — 34 px that
+  holds the mark, the one-line load/MIDI hint *and* the rule, all three drawn inside it — then the
+  strip's slack and its rows down to the floors `stripPlan` already prices, then the strip's four
+  captions. Costs **800 / 766 / 703 / 659 px** below the margins, so the published floor is stage 3
+  plus 36 px of margin = **695 px**. The bar in that price is `TransportBar::twoRowHeight`, not the
+  60 the default width gets, because the minimum *width* the same rule publishes — 1218 — is under
+  `oneRowWidth`: there is one corner where both limits are met at once, and pricing the height
+  against the one-line bar would leave it 36 px short exactly there, which is gated rather than
+  assumed. `GrooveboxEditor::paint` and `::resized` read one plan through `currentPlan()`, so the
+  wordmark cannot be drawn by one half and left unpaid by the other. The grid is never asked to
+  pay: its floor is `StepGridComponent::heightForRowAtLeast (minimumRowHeight)` = **361 px**, the
+  row rule read backwards from the 27 px the bank strip needs to carry a name line without
+  ellipsising it, so the marks and the name survive to the last px — and `Layout::gridGuardHeight`
+  (120) is what the strip may never take from the grid on the way *below* the floor. The default is
+  untouched: **1832×844 is stage 0**, strip 285, grid 405, rows 30, wordmark drawn.
+  Gated by **13 new check sites**: twelve in `LayoutTest.cpp:825` (each stage boundary built out of
+  the terms it is made of — the bar's `twoRowHeight`, the strip's own budget for the stage, the
+  grid's row rule inverted — rather than by calling `editorCostForStage`; one px under every
+  boundary; the strip's height read back off a real strip at each stage; the published minimum
+  equal to stage 3 with the wrapped bar to the pixel; the width floor forcing that worst-case bar;
+  twelve real strips at the floor with 0 clipped / 0 short / 0 not stage 3 / 0 visible wordmarks /
+  bar 96 / row 27 against 27 needed; the bank strip still standing in that row; the divider asked
+  of pixels — longest run of the rule colour **1344 px** at the default against **0 px** at the
+  floor; a 26 px row one px under the floor; the default window unchanged; monotonicity over 1200
+  interiors) and one per size in the walk, that the grid never falls under the guard.
+  Green: **619 checks, 0 problems** (smoke 422, planner 85). Ten single-expression arms kill
+  **6 / 5 / 4 / 5 / 1 / 4 / 1 / 4 / 1 / 1**: the strip never gives anything up, the wordmark always
+  paid for, a gap dropped from the chrome, the grid's own border left out of the inverse, `>=` made
+  `>` at the top boundary, `resized` reserving the 34 px whatever the plan said, `paint` ignoring
+  the plan, the floor priced against the one-line bar, the guard halved, and the label left visible
+  with nothing to draw into it (`out/mut56h.py`, restoring from `out/*.good` at the top of every
+  run; logs `out/mut56h-h<arm>.txt`, with the SHA-256 of every file that arm went red against in
+  `out/mut56h-h<arm>.sha`).
+  **One arm needed a second gate.** Nine of the ten reddened the suite as it stood; `gridGuardHeight
+  / 2` passed all 610, because the clamp it weakens never binds at a size the window can take — the
+  deficit only lands there *below* the floor, where a 500 px window still leaves the strip its full
+  178 px and shortens the grid band to 202. Halving the guard is only visible where the grid has
+  given all it is allowed to: at 1832×399 the strip starves to 169 px and the grid keeps guard minus
+  the 10 px gap above it, so the new check asks the grid component's own height and h9 prints
+  **101 px against 110**. An arm that survives the suite is the suite's defect, not the arm's.
 - **5.7** Tell people the two gestures exist. Undo and redo are wired, tested and named in
   `LayoutTest` — `Ctrl/Cmd+Z`, `Ctrl+Y`, one press per *gesture* — and appear in **neither**
   README, while drag-a-sample-to-load does get a line in the header. A host that keeps its
@@ -819,11 +861,13 @@ meaning — the settled rate, the note — and the fall lives in two new mutable
 `dropRemaining`, recursed once per output sample at `SequencerEngine.cpp:858`. The window cost is one more row
 per lane: `ChannelStrip.cpp:299` (was `:249` before 5.6 rewrote `resized`) 205 to 219 px and the editor 830 to
 **844 px** at 1240 wide (the width is
-**1520** since 4.2's panel half, **1678** since 4.3's timing fader; the 844 still holds). The grid keeps its
-405 (`out/layout-35-final.txt`: component 1 at y=126, h=405), so the window pays the 14 at the bottom. That is
-the debt Phase 5 U5 has to pay back. *(5.6 paid the strip's half of it — that 14 is now `Layout::stripPlan`'s
-`dropRow`, 14 px in the two roomy stages and 12 in the two at floors, and the strip is 285 px; the 844 is the
-part still open.)*
+**1520** since 4.2's panel half, **1678** since 4.3's timing fader; 844 is still the default, and since 5.6 it is
+nothing else). The grid keeps its
+405 (`out/layout-35-final.txt`: component 1 at y=126, h=405), so the window pays the 14 at the bottom. That was
+the debt Phase 5 U5 had to pay back, and it is paid. *(5.6 covered both halves: that 14 is now
+`Layout::stripPlan`'s `dropRow`, 14 px in the two roomy stages and 12 in the two at floors, and the strip is
+285 px at the default; and the 844 quoted above is the **default** only — the *minimum* is 695 px now, which
+`Layout::editorPlan` prices rather than types. The 5.6 entry has the numbers and the gates.)*
 
 *What `[25]` measures.* Periods are counted from zero crossings, so the claim is about pitch and not about a
 waveform shape; the fixture tone is a known 220 Hz, hence a known 200.455-sample period.
@@ -1177,7 +1221,7 @@ layout test reads as an unclickable control. This makes **5.6's laptop floor wor
 better: at 1366 px the bar cannot lay out, so that step now has to give the row somewhere
 else to go rather than only trim heights. *(Closed 2026-11-16 by 4.3b, which is the step that
 gave it somewhere else to go: the row wraps below 1774 px and the floor came down to
-**1218×844**. The widening sentence above stayed true for the default size and stopped being
+**1218×844** (the height half of that is 5.6's, and is now 695). The widening sentence above stayed true for the default size and stopped being
 true of the minimum the moment `editorWidth` became a default rather than a floor — which is
 what `PluginEditor.cpp`'s comment now says.)* It is no longer reachable from `1240×830`, and
 it cites `PluginEditor`'s `editorWidth`/`editorHeight` rather than a line number, because
@@ -1470,7 +1514,10 @@ twoRowHeight (96)` and `isWrappedForWidth / heightForWidth`; `layoutVariation()`
 the same code lays the group out on either line; the editor asks `heightForWidth` with the width it
 is about to hand over and takes its floor from `wrappedRowWidth + margin * 2` = **1218×844**; the
 grid pays 36 px at the narrow end (405 → 369). The default is still 1832×844 and is now documented
-as a default rather than a floor. Widening past 1832 was rejected: the cost lands on the grid, which
+as a default rather than a floor. *(Superseded the same day on the height axis: 844 was still the
+default pasted in as a minimum. `Layout::editorPlan` prices the minimum instead, and the floor is
+**1218×695** — the width half of this row is untouched, the 36 px the grid paid is now its own
+361 px floor, and the 5.6 entry above has the gates.)* Widening past 1832 was rejected: the cost lands on the grid, which
 is the thing being looked at while the faders are not.
 
 **The layout gates that were false greens, and what each one asks now.** Six sizes × six claims.
@@ -1490,7 +1537,8 @@ outside, spare 0, 12 BAD lines (`out/layout-tight-probe.log`). That is what is l
 *(Superseded the same day by 5.6, above — and the probe arm was read correctly here, it just
 understated the defect: `219` was not a band nobody reached, it was a threshold **no** strip
 height satisfies, because the compact set cost 228 and was only ever chosen below 219. The rule
-is now `Layout::stripPlan`; the walk is eight sizes with both probe arms kept as permanent gates;
+is now `Layout::stripPlan`; the walk was eight sizes then and is **nine** now, both probe arms
+re-based on 178 px and 169 px when the height half moved the floor to 695;
 and `spare` is the plan's own deficit rather than the leftover of a clamping rectangle, which is
 the specific reason this sentence's `spare 0` could never have gone red.)*
 

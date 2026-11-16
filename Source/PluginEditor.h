@@ -24,6 +24,19 @@ public:
     void paint (juce::Graphics&) override;
     void resized() override;
 
+    /**
+        What the editor spends its height on at its current size.
+
+        Asked by `paint()` and `resized()` together, so the GROOVEBOX row cannot be drawn
+        by one half and given no band by the other. Both the bar's height and the grid's
+        floor come from the components that own those rules, which is what stops the editor
+        paying for a budget the bar or the grid then spends differently. The layout test
+        watches the components rather than calling this: a claim that asked the rule what
+        it had decided would stay green on a plan that decided a stage and laid nothing out
+        to match.
+    */
+    Layout::EditorPlan currentPlan() const noexcept;
+
     /** Ctrl/Cmd+Z and Ctrl/Cmd+Shift+Z (or Ctrl+Y), straight to the undo manager. */
     bool keyPressed (const juce::KeyPress&) override;
 
