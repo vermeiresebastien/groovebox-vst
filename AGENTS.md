@@ -73,7 +73,7 @@ It is fully gitignored and nothing in it is authored in place.
   stale `samplesToSourceEnd` "cuts the hit in half" survived writing into the plan and the
   engine comment until the disabled-fix run came back with identical bytes: the countdown
   is re-derived from the current rate at the top of every `renderVoice` call
-  ([Source/SequencerEngine.cpp:785](Source/SequencerEngine.cpp)), so a stale one can only
+  ([Source/SequencerEngine.cpp](Source/SequencerEngine.cpp)), so a stale one can only
   survive one block. The real defect is block-size dependence -- 570 of 1576 samples gone
   at a 1024 block, nothing at 256, which is why every fixture in the suite had missed it.
   Re-measure where the mechanism can actually show, and let the gate say that instead.
@@ -104,16 +104,28 @@ It is fully gitignored and nothing in it is authored in place.
   `Layout::firstMidiNote` in [Source/Common.h:28](Source/Common.h)), and that Live scans
   `Documents\VST3` (it does not -- see Host folders below).
 
-## Tests: two console apps, no CMake test target
+## Tests: three console apps plus a source guard, gated by CTest
 
 ```powershell
 build-new\GrooveboxSmokeTest_artefacts\Release\GrooveboxSmokeTest.exe   # timing, swing, pitch, state round-trip, automatability
 build-new\GrooveboxLayoutTest_artefacts\Release\GrooveboxLayoutTest.exe # real editor, bounds of every control
+build-new\Release\GrooveboxPatternPlanTest.exe                          # genre table + planner, std-only, no JUCE
+ctest --test-dir build-new -C Release -V                                # the tracked gate over all four
 ```
 
-Both compile the plugin sources headlessly ([CMakeLists.txt:166-231](CMakeLists.txt));
-they print a check count and a problem count, and exit non-zero on failure. Last green
-run: 321 smoke checks, 115 layout checks, 0 problems.
+The first two compile the plugin sources headlessly ([CMakeLists.txt:166-231](CMakeLists.txt));
+the third reads only `Source/GenrePatterns.h` and `Source/PatternPlanner.h`, links no JUCE and gets
+no generated header ([CMakeLists.txt:232-335](CMakeLists.txt)), which is what keeps it at about a
+second. All four entries are `add_test` cases carrying a `PASS_REGULAR_EXPRESSION` that requires a
+`, 0 ` problem count, so a run that prints nothing and a run that prints a problem both fail the
+tracked path even at process exit 0, and `-V` is the documented form because the quiet one prints no
+counts. Last green run: 365 smoke checks, 374 layout checks, 85 planner checks, 0 problems, guard OK.
+
+**CTest does not build.** Measured by the lane that wired it (`ecfe76c`): with `GenrePatterns.h:101`
+broken and no rebuild, `ctest` reported 4/4 passed while the sources no longer matched the binaries.
+So `ctest` is the tracked *replay*, and `out/run-gate.ps1` / `out/gate-plan.ps1` -- which build,
+refuse to run an exe older than their own inputs, then run the suites and the guard -- stay the local
+gate. The two are not interchangeable and neither alone is the whole check; run the build first.
 
 - **A level gate can be red because of the fixture's own ramp, not the code under test.**
   Section [30] asserts that a humanised hit is the *same samples* as the grid hit, only
@@ -130,6 +142,33 @@ run: 321 smoke checks, 115 layout checks, 0 problems.
   make the passing run say so: the level check now prints both peaks on success
   (`level: peak 0.601509392 on the grid, 0.601509392 late` in `out/smoke-43.txt`), because
   a gate whose evidence only appears when it fails cannot be re-checked later.
+- **A proportionality gate is asked in the unit the law works in, and of one voice at a
+  time.** [31] checks that half the Touch fader is half the departure. Asked between the
+  struck floats it came back red on 101 keys by up to 13 steps, and neither half of that
+  was the engine. The rounding bound is exactly one step, so it lands on its own limit and
+  the last bit of the `/ 127` in the seam's return crosses it: compare `round (d)` with
+  `round (d / 2)` in steps. And the 13 were the clamp, not the law -- a rung near 127 has
+  its positive departures cut off, so both arms land on 127 and are *equal* rather than
+  halved; the exemption is counted, held under a quarter of the take, and paired with the
+  weaker claim that survives it (opening the knob never moves a hit back towards its rung).
+  The same asymmetry is why the level cost has no exact ceiling on a summed take: three of
+  four voices at one step pulling up beat a shut step whose loudest rung is only one, which
+  is how the four-lane peak moved 1.438488 -> 1.485904 while the single rung-127 hit -- the
+  arm where monotone gain and monotone tone make `<=` arithmetic -- came down 0.601509 ->
+  0.577455. Ask the exact question where one voice can answer it, and print the rest.
+- **A correlation gate cannot see a law reading the wrong bits.** [31] asserts that how hard
+  a hit is struck is independent of when it lands and of whether it fires at all -- and both
+  assertions stayed green when the level law was mutated to read the roll's slice, and again
+  when it was made to read the timing's. The reason is the shape of the key rather than the
+  size of the sample: `unit` is a 16-bit window of a 64-bit hash, so conditioned on any other
+  slice's outcome it is still exactly uniform (each value appears four times in [0, 2^23)),
+  and a point-biserial r against a binary roll outcome is 0.0000 by arithmetic, not by luck.
+  Read off the bottom 24 instead and `unit_t = (unit_l + H) / 256`, which measures r = 0.0039
+  against a 3-sigma limit of 0.0674. What does see it is a gate that **names the bits**:
+  re-derive the key inside the test, predict the struck rung, the lateness and the
+  fire-or-not for all 4096 cells from the three slices as documented, and require zero wrong
+  in each. A correlation says two quantities are independent; only an exact prediction says
+  they came from the place you claim they came from.
 - **A scan for a seed that shows a defect has to switch the defect on first.** Two [30]
   arms looked for a seed whose draw lands in a usable window, and both did it with the
   humanize knob shut, where the function returns 0.0 for every key. The search finds
@@ -257,13 +296,33 @@ run: 321 smoke checks, 115 layout checks, 0 problems.
   passes on a build whose predicate ignores `isStepOn`, because `paint()` only draws marks
   inside the lit branch, so the predicate's own term is discharged by the rule check
   instead. Say which is which rather than letting eight green checks imply eight controls.
+- **A bounds check has to ask for the size, not just the position.** The hover readout is a
+  label 12 px above its cell, and the first check asked only whether `getY () >= 0` and the
+  bottom was inside the grid -- so it passed on a rectangle **1 px tall**. The helper had been
+  written with `Rectangle::setTop`/`setBottom`, which in JUCE 8.0.4 move an edge and resize
+  (`setTopLeft`/`setBottomRight` are the ones that move); the rewrite that fixed that was wrong
+  twice more -- a corner-by-corner clamp squashes a rect wider than its parent, and a
+  `jmin (leftOverflow, rightOverflow)` shift only ever pulls positive, so the right-hand column
+  stayed clipped. Slide with `jlimit` on the far corner, keep the size, and gate both:
+  `getHeight () == 11`, `getWidth () >= 22`, all four edges inside, for all 192 cells.
+- **A gate that asks the predicate under test what it expects is not a gate.** The bar's wrap
+  check compared its height with `TransportBar::heightForWidth (its width)` -- the same function
+  `resized ()` had just used, so it proved the editor and the bar read one rule and said nothing
+  about the rule. Mutating `isWrappedForWidth` to `return false` left that, the line-membership
+  and the fader-width checks all green; the run only went red because a 1774 px row does not in
+  fact fit in 1182 px and a seed label collapsed to 0 px. Two of the arms are now stated in the
+  rule's own numbers instead -- `oneRowHeight` at `>= oneRowWidth`, `twoRowHeight` below -- and
+  those are what catch `<= oneRowWidth` (1 problem) and never-wrap (4) as *different* failures.
+  The sizes are widths of the component, not of the window: the test measures the editor's inset
+  off the running editor rather than typing the 18 px margin a second time, for the reason in
+  the bullet above about a list written twice.
 - Automatability is testable single-threaded because
   `AudioProcessorParameter::setValueNotifyingHost` notifies listeners synchronously.
 - JUCE 8 removed `AudioProcessorValueTreeState::setParameterNotifyingHost`; the one
   remaining way in is `apvts.getParameter (id)->setValueNotifyingHost
   (apvts.getParameterRange (id).convertTo0to1 (v))`, wrapped as
-  `GrooveboxProcessor::writeParameter` ([Source/PluginProcessor.cpp:231](Source/PluginProcessor.cpp)).
-  115 parameters (7 global + 12 x 9); the pattern is deliberately not one. The listener
+  `GrooveboxProcessor::writeParameter` ([Source/PluginProcessor.cpp](Source/PluginProcessor.cpp)).
+  116 parameters (8 global + 12 x 9); the pattern is deliberately not one. The listener
   list in `allParameterIds` ([Source/PluginProcessor.cpp:24](Source/PluginProcessor.cpp))
   is built from `Params::globalIds()` and `Params::laneTargets()` for the same reason:
   when it was a hand-written copy of the lane ids, the choke parameter was created,

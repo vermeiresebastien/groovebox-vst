@@ -222,6 +222,37 @@ namespace Layout
     inline constexpr double maxHumanizeLateSteps = 0.25;
 
     /**
+        How far a jittered hit may depart from the velocity its step was written at.
+
+        A fraction of *that step's own level*, not a number of rungs of the range, and
+        the reason is what keeps a rest a rest. An additive wobble gives every cell a
+        floor of its own: a step drawn at zero — which is not a quiet hit but the
+        absence of one — comes back sounding, and a machine that plays hits the grid
+        says not to play is not varying the take, it is writing a second pattern behind
+        it. Multiplied, a soft hit moves by a small absolute amount and a loud one by a
+        large one, in the same proportion, which is the relationship a hand actually
+        has to a pad.
+
+        A quarter of the written level. What that costs the drawn shape is arithmetic:
+        a quieter hit can overtake a louder one only when it is more than
+        (1 - r) / (1 + r) of it, which at a quarter is 0.6 — so any accent drawn more
+        than 1.67 times its neighbour keeps its place in every take, and the travel
+        would have to reach a third before a plain 2:1 accent could be inverted. A
+        quarter is inside that with room, and it is the top of the knob rather than the
+        typical hit: the draw is squared about zero, so the average departure is a third
+        of the travel — eight per cent of the level, under a decibel.
+
+        A judgement about a kit, like `softestHitCutoffHz` above. Two consequences of it
+        are gated rather than argued: the deviation can push a hit past the top of the
+        7-bit lattice but never past 127, so opening this cannot make the loudest thing
+        in the set louder, and because velocity is two laws here — gain and tone — a
+        jittered hit changes brightness along with its level. That is the mechanism
+        working as designed, and its cost is measured and stated rather than bought
+        back.
+    */
+    inline constexpr double maxTouchRatio = 0.25;
+
+    /**
         Which generation of the saved record this build writes.
 
         The number goes on the root of the state as `stateVersion`, and the step

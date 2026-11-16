@@ -9,24 +9,41 @@ namespace
     /**
         The minimum the transport bar needs to show every control at its own size.
 
-        The bar is one row, and the alternative to widening it was shrinking a fader
-        until it was too narrow to drag or letting the last button fall off the right
-        edge — which the layout test reads as a zero-width child, i.e. a control that
-        cannot be clicked. The grid takes the extra width as wider cells.
+        The bar is one row at the default width, and the alternative to widening it was
+        shrinking a fader until it was too narrow to drag or letting the last button fall
+        off the right edge — which the layout test reads as a zero-width child, i.e. a
+        control that cannot be clicked. The grid takes the extra width as wider cells.
+
+        1832 is the row with three variation faders in it: the 1678 before this was the
+        same row with two, and the 154 that joined them is exactly the 96 px track, the
+        42 px readout and the gaps between, paid for in full rather than taken from the
+        swing or the trim.
+
+        It is the *default*, not the floor. The floor is `TransportBar::wrappedRowWidth`,
+        and below `TransportBar::oneRowWidth` the variation band moves to a second line
+        of its own — the row-wrap rule that 5.6 was going to need anyway, taken off the
+        editor's floor here rather than leaving a third fader to push the minimum another
+        154 px wider. Nothing gets narrower on either line; the bar gets taller, and the
+        grid is what pays, by 36 px at the smallest window.
     */
-    constexpr int editorWidth = 1678;
+    constexpr int editorWidth = 1832;
     constexpr int editorHeight = 844;
 
     constexpr int margin = 18;
     constexpr int titleHeight = 34;
-    constexpr int transportHeight = 60;
+    // The bar's height is its own rule, not a constant: one line at 60, two when the
+    // variation band has been lifted out of a row that no longer fits. `resized()` asks
+    // `TransportBar::heightForWidth` for it, so the bar and the editor cannot disagree
+    // about how much of the window the bar has taken.
     constexpr int gridHeight = 400;
     // Tall enough for every control in a channel strip: the sound and clear
     // buttons, the pitch row and the drop line under it, the level fader, the four
     // ADSR rows, and the choke box sharing a row with mute. A shorter strip still
     // lays out, but the bottom control gets clipped. The extra height comes out of
-    // the grid's slack, not out of the window: at the 844 px minimum the grid still
-    // has 405 px, more than the 400 it was designed around.
+    // the grid's slack, not out of the window: at the 844 px minimum and one line in
+    // the bar the grid still has 405 px, more than the 400 it was designed around, and
+    // with the bar wrapped it has 369 -- the 36 px the second line costs, and the whole
+    // reason the wrap is opt-in by width rather than the new default.
     constexpr int stripHeight = 285;
     constexpr int gap = 10;
 }
@@ -75,7 +92,13 @@ GrooveboxEditor::GrooveboxEditor (GrooveboxProcessor& p)
 
     setSize (editorWidth, editorHeight);
     setResizable (true, true);
-    setResizeLimits (editorWidth, editorHeight, 2200, 1400);
+
+    // The floor is the *wrapped* row, not the one-line row: below
+    // `TransportBar::oneRowWidth` the variation band moves down a line rather than
+    // anything on either line losing width, so the smallest window that can still show
+    // every control at its own size is the first line on its own -- 1182 px of bar plus
+    // this editor's margins, which is what a 1366 px laptop has to work with.
+    setResizeLimits (TransportBar::wrappedRowWidth + margin * 2, editorHeight, 2200, 1400);
 }
 
 GrooveboxEditor::~GrooveboxEditor()
@@ -185,7 +208,11 @@ void GrooveboxEditor::resized()
     titleLabel.setBounds (titleRow);
     area.removeFromTop (4);
 
-    transportBar.setBounds (area.removeFromTop (transportHeight));
+    // One line or two, asked of the bar itself with the width it is about to be given:
+    // the bar's own numbers are component widths, and the margin here is not part of
+    // them. Getting that backwards is how a bar ends up laying out two lines inside a
+    // band the editor paid for as one.
+    transportBar.setBounds (area.removeFromTop (TransportBar::heightForWidth (area.getWidth())));
     area.removeFromTop (gap);
 
     // The channel strips take their full height: the clamp that used to be here

@@ -256,6 +256,32 @@ TransportBar::TransportBar (GrooveboxProcessor& processorToUse)
     humanizeValueLabel.setFont (captionFont());
     addAndMakeVisible (humanizeValueLabel);
 
+    /**
+        The level half of the same pair, and the same shape again for the same reason.
+
+        What has to be said out loud on this one is that it is a proportion of what was
+        drawn, not an amount of level: it cannot turn a rest into a hit, it cannot push
+        the loudest thing in the set past full, and it follows the step's own velocity
+        the way the timing knob follows the tempo. The third sentence is the one people
+        misread on a machine like this — a touch that dims everything is a trim, and a
+        trim is already on this bar.
+    */
+    touchSlider.setSliderStyle (juce::Slider::LinearHorizontal);
+    touchSlider.setTextBoxStyle (juce::Slider::NoTextBox, false, 0, 0);
+    touchSlider.setRange (0.0, 1.0, 0.01);
+    touchSlider.setDoubleClickReturnValue (true, 0.0);
+    touchSlider.setTooltip ("Touch: how far a hit is allowed to depart from the velocity"
+                            " its step was written at. A proportion of that step, so a rest"
+                            " stays a rest and a full hit can only come down. Shut, every"
+                            " hit is struck exactly as drawn.");
+    touchSlider.setName ("Touch");
+    addAndMakeVisible (touchSlider);
+
+    touchValueLabel.setJustificationType (juce::Justification::centredLeft);
+    touchValueLabel.setColour (juce::Label::textColourId, Colours::text);
+    touchValueLabel.setFont (captionFont());
+    addAndMakeVisible (touchValueLabel);
+
     rerollButton.setTooltip ("Take a new seed: a different set of drops, the same grid");
     addAndMakeVisible (rerollButton);
 
@@ -342,6 +368,15 @@ TransportBar::TransportBar (GrooveboxProcessor& processorToUse)
                                     juce::dontSendNotification);
     };
 
+    // Straight through, like the two above it.
+    touchSlider.onValueChange = [this]
+    {
+        processor.setTouch ((float) touchSlider.getValue());
+
+        touchValueLabel.setText (juce::String (juce::roundToInt (touchSlider.getValue() * 100.0)) + "%",
+                                 juce::dontSendNotification);
+    };
+
     masterSlider.onValueChange = [this]
     {
         processor.setMasterGainDb ((float) masterSlider.getValue());
@@ -397,6 +432,10 @@ void TransportBar::refresh()
     humanizeSlider.setValue ((double) processor.getHumanize(), juce::dontSendNotification);
     humanizeValueLabel.setText (juce::String (juce::roundToInt (processor.getHumanize() * 100.0f)) + "%",
                                 juce::dontSendNotification);
+
+    touchSlider.setValue ((double) processor.getTouch(), juce::dontSendNotification);
+    touchValueLabel.setText (juce::String (juce::roundToInt (processor.getTouch() * 100.0f)) + "%",
+                             juce::dontSendNotification);
     seedLabel.setText (juce::String (processor.getSeed()), juce::dontSendNotification);
 
     // The shared reset follows the overlay that is open, so the hover text names the
@@ -407,14 +446,58 @@ void TransportBar::refresh()
                                       : "Put every step back to full velocity");
 }
 
+void TransportBar::layoutVariation (juce::Rectangle<int> band)
+{
+    // Variation sits next to swing when there is room, because both of them bend what
+    // was drawn rather than what is stored: swing moves the hits in time, these three
+    // drop some of them, start the rest a little late and strike them a little
+    // differently. When there is not, this whole band is what moves to the second line.
+    //
+    // The band is the width it is because a slider that got narrower to make room is a
+    // cost nobody was told about: 96 px of track and 42 px of readout per fader, three
+    // faders, Reroll and the seed.
+    variationCaptionArea = band.removeFromTop (12); // drawn in paint()
+    band.removeFromTop (2);
+    mutateSlider.setBounds (band.removeFromLeft (96).withSizeKeepingCentre (96, 22));
+    band.removeFromLeft (6);
+    mutateValueLabel.setBounds (band.removeFromLeft (42).withSizeKeepingCentre (42, 18));
+    band.removeFromLeft (10);
+    humanizeSlider.setBounds (band.removeFromLeft (96).withSizeKeepingCentre (96, 22));
+    band.removeFromLeft (6);
+    humanizeValueLabel.setBounds (band.removeFromLeft (42).withSizeKeepingCentre (42, 18));
+    band.removeFromLeft (10);
+    touchSlider.setBounds (band.removeFromLeft (96).withSizeKeepingCentre (96, 22));
+    band.removeFromLeft (6);
+    touchValueLabel.setBounds (band.removeFromLeft (42).withSizeKeepingCentre (42, 18));
+    band.removeFromLeft (10);
+    rerollButton.setBounds (band.removeFromLeft (58).withSizeKeepingCentre (58, 24));
+    band.removeFromLeft (6);
+    seedLabel.setBounds (band.withSizeKeepingCentre (band.getWidth(), 18));
+}
+
 void TransportBar::resized()
 {
+    const auto wrapped = isWrappedForWidth (getWidth ());
+
     auto area = getLocalBounds().reduced (8, 6);
     area.removeFromBottom (2); // leave room for the separator rule
 
+    // One line or two. The second line is the variation band and nothing else, so the
+    // first is the whole bar with those 592 px lifted out of it -- which is why the
+    // editor's floor is the first line's width, `wrappedRowWidth`, rather than the row's.
+    auto line = area;
+    auto secondLine = area;
+
+    if (wrapped)
+    {
+        const auto lineHeight = (area.getHeight() - 4) / 2;
+        line.setHeight (lineHeight);
+        secondLine.removeFromTop (lineHeight + 4);
+    }
+
     // The master section comes off the right first, so it keeps its width however
     // narrow the window gets and the tools to its left are what give way.
-    auto masterArea = area.removeFromRight (212);
+    auto masterArea = line.removeFromRight (212);
     masterCaptionArea = masterArea.removeFromTop (12); // drawn in paint()
     masterArea.removeFromTop (2);
     masterSlider.setBounds (masterArea.removeFromLeft (110).withSizeKeepingCentre (110, 22));
@@ -422,23 +505,23 @@ void TransportBar::resized()
     masterValueLabel.setBounds (masterArea.removeFromLeft (52).withSizeKeepingCentre (52, 18));
     masterArea.removeFromLeft (6);
     masterMeter.setBounds (masterArea.removeFromLeft (38).withSizeKeepingCentre (38, 22));
-    area.removeFromRight (10);
+    line.removeFromRight (10);
 
-    playButton.setBounds (area.removeFromLeft (76).reduced (0, 2));
-    area.removeFromLeft (6);
-    hostCaption.setBounds (area.removeFromLeft (92).reduced (0, 2));
-    area.removeFromLeft (8);
+    playButton.setBounds (line.removeFromLeft (76).reduced (0, 2));
+    line.removeFromLeft (6);
+    hostCaption.setBounds (line.removeFromLeft (92).reduced (0, 2));
+    line.removeFromLeft (8);
 
-    auto tempoArea = area.removeFromLeft (124);
+    auto tempoArea = line.removeFromLeft (124);
     tempoCaptionArea = tempoArea.removeFromTop (12); // drawn in paint()
 
     auto tempoRow = tempoArea.withSizeKeepingCentre (tempoArea.getWidth(), 22);
     tempoDownButton.setBounds (tempoRow.removeFromLeft (22));
     tempoUpButton.setBounds (tempoRow.removeFromRight (22));
     tempoLabel.setBounds (tempoRow);
-    area.removeFromLeft (8);
+    line.removeFromLeft (8);
 
-    auto swingArea = area.removeFromLeft (300);
+    auto swingArea = line.removeFromLeft (300);
     swingCaptionArea = swingArea.removeFromTop (12); // drawn in paint()
     swingArea.removeFromTop (2);
     swingSlider.setBounds (swingArea.removeFromLeft (140).withSizeKeepingCentre (140, 22));
@@ -448,37 +531,26 @@ void TransportBar::resized()
     swingEighthButton.setBounds (swingArea.removeFromLeft (34).withSizeKeepingCentre (34, 22));
     swingArea.removeFromLeft (2);
     swingSixteenthButton.setBounds (swingArea.removeFromLeft (40).withSizeKeepingCentre (40, 22));
-    area.removeFromLeft (8);
+    line.removeFromLeft (8);
 
-    // Variation sits next to swing, because both of them bend what was drawn rather
-    // than what is stored: swing moves the hits in time, these two drop some of them
-    // and start the rest a little late. The group is two sliders wide now, and the
-    // editor grew to pay for it rather than squeezing swing or the trim — a control
-    // that got narrower to make room is a cost nobody was told about.
-    auto variationArea = area.removeFromLeft (430);
-    variationCaptionArea = variationArea.removeFromTop (12); // drawn in paint()
-    variationArea.removeFromTop (2);
-    mutateSlider.setBounds (variationArea.removeFromLeft (96).withSizeKeepingCentre (96, 22));
-    variationArea.removeFromLeft (6);
-    mutateValueLabel.setBounds (variationArea.removeFromLeft (42).withSizeKeepingCentre (42, 18));
-    variationArea.removeFromLeft (10);
-    humanizeSlider.setBounds (variationArea.removeFromLeft (96).withSizeKeepingCentre (96, 22));
-    variationArea.removeFromLeft (6);
-    humanizeValueLabel.setBounds (variationArea.removeFromLeft (42).withSizeKeepingCentre (42, 18));
-    variationArea.removeFromLeft (10);
-    rerollButton.setBounds (variationArea.removeFromLeft (58).withSizeKeepingCentre (58, 24));
-    variationArea.removeFromLeft (6);
-    seedLabel.setBounds (variationArea.withSizeKeepingCentre (variationArea.getWidth(), 18));
-    area.removeFromLeft (8);
+    if (wrapped)
+    {
+        layoutVariation (secondLine.removeFromLeft (584));
+    }
+    else
+    {
+        layoutVariation (line.removeFromLeft (584));
+        line.removeFromLeft (8);
+    }
 
-    clearPatternButton.setBounds (area.removeFromLeft (108).withSizeKeepingCentre (108, 24));
-    area.removeFromLeft (8);
+    clearPatternButton.setBounds (line.removeFromLeft (108).withSizeKeepingCentre (108, 24));
+    line.removeFromLeft (8);
 
-    velocityButton.setBounds (area.removeFromLeft (76).withSizeKeepingCentre (76, 24));
-    area.removeFromLeft (4);
-    chanceButton.setBounds (area.removeFromLeft (76).withSizeKeepingCentre (76, 24));
-    area.removeFromLeft (4);
-    resetValuesButton.setBounds (area.removeFromLeft (46).withSizeKeepingCentre (46, 22));
+    velocityButton.setBounds (line.removeFromLeft (76).withSizeKeepingCentre (76, 24));
+    line.removeFromLeft (4);
+    chanceButton.setBounds (line.removeFromLeft (76).withSizeKeepingCentre (76, 24));
+    line.removeFromLeft (4);
+    resetValuesButton.setBounds (line.removeFromLeft (46).withSizeKeepingCentre (46, 22));
 }
 
 //==============================================================================

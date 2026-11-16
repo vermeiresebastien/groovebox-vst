@@ -104,6 +104,19 @@ public:
     */
     bool isStepMutable (int channel, int step) const;
 
+    /**
+        Where the number under the pointer is drawn, in this component's own coordinates.
+
+        Public for the same reason `getCellBounds` is: the claim being tested is that the
+        readout is *on screen*, and a private rectangle that the painter keeps to itself
+        can only be tested by taking a screenshot. The readout sits 12 px above its cell,
+        which for the top row is above the component's own top edge at the narrow end of
+        the window -- and JUCE clips drawing at the bounds, so the number would lose its
+        head rather than complain. The rectangle that comes back here is the one the
+        painter uses, already pulled inside, so the test and the pixels cannot drift.
+    */
+    juce::Rectangle<int> valueReadoutBoundsFor (int channel, int step) const;
+
 private:
     /** A cell address; a channel of -1 means "no cell" (e.g. in the label column). */
     struct Cell

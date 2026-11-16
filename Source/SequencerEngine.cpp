@@ -573,10 +573,12 @@ void SequencerEngine::fireStep (int step)
 {
     const auto mutate = state.mutate.load();
     const auto humanize = state.humanize.load();
+    const auto touch = state.touch.load();
 
-    // Either knob needs to know which bar it is, and neither of them gets asked when
-    // both are shut: the closed machine neither rolls nor draws a time, which is the
-    // whole of the "bit-identical at zero" claim in one line of arithmetic.
+    // Any of the three needs to know which bar it is, and none of them gets asked when
+    // all are shut: the closed machine neither rolls nor draws a time nor a level,
+    // which is the whole of the "bit-identical at zero" claim in one line of
+    // arithmetic.
 
     /**
         Which bar this onset belongs to.
@@ -586,7 +588,7 @@ void SequencerEngine::fireStep (int step)
         deliberately allows after a host seek — is then still keyed to the bar it is
         in, and the same place in the song keeps rolling the same way.
     */
-    const auto bar = mutate > 0.0f || humanize > 0.0f
+    const auto bar = mutate > 0.0f || humanize > 0.0f || touch > 0.0f
                        ? (juce::int64) std::floor (onsetPositionInSteps (step)
                                                     / (double) Layout::numSteps)
                        : (juce::int64) 0;
@@ -622,8 +624,21 @@ void SequencerEngine::fireStep (int step)
         // offset on the grid and make the bottom half of the knob do nothing.
         const auto late = humanize > 0.0f ? humanizeLateInSteps (bar, step, channel) : 0.0;
 
-        trigger (channel, state.velocity[(size_t) channel][(size_t) step].load(), false,
-                 (int) std::lround (late * samplesPerStep));
+        // The level is the other number the cell carries, and it follows the same rule
+        // as the timing one above: the draw is asked of the engine, keyed to where the
+        // hit is, and it cannot move anything else about the hit. Where it differs is
+        // that the wait belongs to the clock and this belongs to the voice — the
+        // jittered level goes into `trigger` as the velocity of one strike, so the
+        // envelope, the tone corner and the channel's own fader all read the same number
+        // a played note would, and nothing downstream has to know a machine drew it.
+        //
+        // The written velocity is passed in rather than read again inside, because this
+        // is the one place that has already loaded it: a second read would be a second
+        // answer if the grid moved between the two.
+        const auto written = state.velocity[(size_t) channel][(size_t) step].load();
+
+        trigger (channel, touch > 0.0f ? struckVelocityFor (bar, step, channel, written) : written,
+                 false, (int) std::lround (late * samplesPerStep));
     }
 }
 
@@ -680,11 +695,12 @@ namespace
         handed the same question — which is what makes the pattern of drops a take
         instead of a shimmer over the whole bar.
 
-        This is the whole of the take's randomness, and both of the things that read
-        it read *different bits of it*: `rollLetsHitThrough` uses the top 24, the
-        timing offset the bottom 24. That separation is the reason a hit that survives
-        the roll is not biased towards one that lands late, and the reason one seed
-        names a session in both senses at once.
+        This is the whole of the take's randomness, and the three things that read it
+        read *different bits of it*: `rollLetsHitThrough` uses the top 24, the timing
+        offset the bottom 24 and `struckVelocityFor` the 16 in between. That separation
+        is the reason a hit that survives the roll is not biased towards one that lands
+        late, the reason a late hit is not biased towards a loud one, and the reason one
+        seed names a session in all three senses at once.
     */
     inline juce::uint64 takeKey (juce::uint32 seed, juce::int64 bar, int step, int channel) noexcept
     {
@@ -739,6 +755,64 @@ double SequencerEngine::humanizeLateInSteps (juce::int64 bar, int step, int chan
     const auto skew = unit * unit;
 
     return Layout::maxHumanizeLateSteps * (double) amount * skew;
+}
+
+float SequencerEngine::struckVelocityFor (juce::int64 bar, int step, int channel, float written) const
+{
+    const auto amount = juce::jlimit (0.0f, 1.0f, state.touch.load());
+
+    // Shut, the generator is not asked and the number comes back untouched — not
+    // snapped to the lattice, not rounded through anything. This is the branch that ran
+    // before the feature existed, and it is what the fingerprint of the closed machine
+    // is measured against.
+    if (amount <= 0.0f)
+        return written;
+
+    // The middle 16 bits: the roll has the top 24 and the offset the bottom 24, so
+    // which hits happen, when they land and how hard they are struck are three
+    // independent answers out of one key. Sixteen bits is 65536 departures between the
+    // two ends of the travel, and the finest change this law can make at the top of the
+    // range is one step of 127, which is far coarser — so the slice is not the limit on
+    // the resolution of the answer.
+    const auto key = takeKey ((juce::uint32) state.seed.load(), bar, step, channel);
+    const auto unit = (double) ((key >> 24) & 0xffffull) * (1.0 / 65536.0);
+
+    /**
+        Squared about zero, because a hand misses in both directions and mostly by
+        a little.
+
+        The timing draw is one-sided — late only, for the reasons in
+        `Layout::maxHumanizeLateSteps` — and this one cannot be: a level that can only
+        go down is a trim, not a touch, and it would make every take quieter than the
+        grid it was drawn from. So the unit is centred first, then squared with its sign
+        kept, which puts the average departure at a third of the travel instead of half
+        and leaves the mean at nothing. An accent and a ghost therefore keep their
+        distance: what moves is each hit's own position, by a proportion of itself.
+    */
+    const auto away = unit * 2.0 - 1.0;
+    const auto deviation = away * std::abs (away);
+
+    /**
+        The rung the cell is stored on, not the float in memory.
+
+        A velocity is held as 0..1 and written as a number of 127ths, so a value the
+        panel dragged to 0.5 comes back from a session as 64/127. Applying the law to
+        the rung takes the quantisation once, at the front, which means the same hit is
+        struck at the same level on both sides of a save — and it is why the result is on
+        the lattice to begin with: a jittered level that the record could not hold would
+        make the take depend on whether the session had been written down yet.
+    */
+    const auto rung = juce::jlimit (0, 127, juce::roundToInt (written * 127.0));
+
+    // A proportion of the rung, scaled by the knob, in steps of the rung. Multiplying
+    // the rung rather than the range is what leaves a rest a rest: the deviation of zero
+    // is zero at any setting of the knob, so this control cannot put a hit where the grid
+    // drew none, and cannot make the loudest thing in the set louder either, because the
+    // clamp below is the top of what the engine plays rather than a correction.
+    const auto delta = juce::roundToInt ((double) rung * deviation
+                                         * Layout::maxTouchRatio * (double) amount);
+
+    return (float) (juce::jlimit (0, 127, rung + delta) * (1.0 / 127.0));
 }
 
 void SequencerEngine::renderVoices (juce::AudioBuffer<float>& buffer, int startSample, int numSamples)

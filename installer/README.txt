@@ -3,8 +3,9 @@ Groovebox - Skeer Audio
 
 A drag-and-drop sample step sequencer: 16 steps, 12 drum channels, per-channel
 pitch, pitch drop, ADSR and velocity, swing on a 1/8 or 1/16 grid, a timing
-humanize that only ever plays late, and a master trim with a peak meter. It
-ships as a VST3 plugin and as a standalone app.
+humanize that only ever plays late, a level touch that only ever perturbs what you
+wrote, and a master trim with a peak meter. It ships as a VST3 plugin and as a
+standalone app.
 
 
 Where things went
@@ -124,6 +125,31 @@ so moving this fader never changes your take, and "Reroll" re-deals both at once
 A note you play on a keyboard is not pushed late by this knob -- you are already
 early or late by however you struck it.
 
+The "Touch" fader after it decides how far off the velocity you wrote a hit is
+allowed to be struck. This one goes both ways: a hit can land a little harder or a
+little softer than the step says, and never by more than a quarter of that step's
+own level. At 0% every hit is struck exactly where you set it. Because the travel
+is a proportion of the level rather than a fixed amount, a rest has nothing to move
+and stays a rest, and a step at 100% can be taken down but never above full -- so
+this control cannot make the set louder than you made it, and cannot put a hit
+where the grid drew none. Most hits barely move, the same way timing works: the
+draw is weighted towards the number you wrote, so the average sits a third of the
+way to the limit and half of them stay inside its first quarter. An accent keeps
+its place: a hit written at twice another is still struck above it, because the
+travel is a proportion of each hit's own level, and the two would only cross if
+the travel were far larger than this knob allows.
+
+What moves is the level, and level is also tone in this engine: a soft hit is
+played through a lowpass whose corner rises with how hard it was struck, and at
+full velocity the filter is off entirely. A jittered hit can therefore come out a
+little darker or a little brighter as well as quieter or louder. That is the tone
+law doing what it was built to do, not a second effect, and it is why the loudest
+thing the machine plays is still your recording exactly as it was sampled. Which
+hits are off their level comes from the same seed as which hits fire and when they
+land, but from the 16 bits between them, so moving this fader changes neither your
+take nor your groove, and "Reroll" re-deals all three at once. A note you play on a
+pad or keyboard is not struck by this knob -- it uses how hard you hit it.
+
 Each strip's A D S R rows shape that channel: drag a row up or down, double-click
 to reset just that one. Sustain 0 (the default) makes the channel a one-shot --
 raise it and the sound holds until you release the note.
@@ -154,11 +180,11 @@ clicking the meter is the only thing that clears the latch.
 
 In a host, every continuous control is a normal plugin parameter -- levels, pitch,
 pitch drop, envelopes, mutes, choke groups, swing, swing grid, tempo, the master
-trim, the Variation knob, the Humanize fader and the seed -- so you can automate
-them, and the panel moves to follow what you drew. The pattern itself is not a
-parameter; it is saved with the project. A session saved by an older build opens
-with any parameter it did not have at that build's default, not at whatever was
-live when you saved it.
+trim, the Variation knob, the Humanize and Touch faders and the seed -- so you can
+automate them, and the panel moves to follow what you drew. The pattern itself is
+not a parameter; it is saved with the project. A session saved by an older build
+opens with any parameter it did not have at that build's default, not at whatever
+was live when you saved it.
 
 
 Size and limits
@@ -167,8 +193,11 @@ Size and limits
 One 16-step bar per channel. There is no song mode or pattern chaining yet, so a
 long arrangement is built in the host.
 
-Humanize is timing only, and late only: it does not start hits ahead of the grid
-and it does not change how hard a hit lands.
+Humanize is timing only, and late only: it does not start hits ahead of the grid.
+
+Touch is level only, and a deviation rather than a redraw: it cannot turn a rest
+into a hit, cannot strike a step more than a quarter of its own level away from
+what you wrote, and does not move a hit in time.
 
 Groovebox makes no network calls. The installer writes one registry key,
 HKLM\Software\Skeer\Groovebox, and the uninstaller removes it -- along with every

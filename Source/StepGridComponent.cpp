@@ -419,6 +419,33 @@ void StepGridComponent::setValueFromPointer (int channel, int step, juce::Point<
     repaint();
 }
 
+juce::Rectangle<int> StepGridComponent::valueReadoutBoundsFor (int channel, int step) const
+{
+    const auto cell = getCellBounds (channel, step);
+
+    if (cell.isEmpty())
+        return {};
+
+    const auto above = juce::Rectangle<int> (cell.getX() - 4, cell.getY() - 12,
+                                             juce::jmax (cell.getWidth(), 22), 11);
+
+    // The whole rule: the readout may leave its cell, but not the component, and it
+    // slides rather than being squashed -- a 1 px tall number is as unreadable as a
+    // clipped one, and JUCE clips drawing at the component's bounds without complaining.
+    //
+    // Sliding is `jlimit` on the far corner, not a clamp of each edge. An edge-by-edge
+    // clamp is what a rect of unknown size wants, and here the size is the point: the
+    // first version of this moved the top-left and let the bottom-right fall where it
+    // liked, which produced a rectangle 1 px tall for the top row and still read as a
+    // pass because the check below only asked about the top edge.
+    const auto bounds = getLocalBounds();
+
+    return above.withPosition (juce::jlimit (bounds.getX(), juce::jmax (bounds.getX(), bounds.getRight() - above.getWidth()),
+                                             above.getX ()),
+                               juce::jlimit (bounds.getY(), juce::jmax (bounds.getY(), bounds.getBottom() - above.getHeight()),
+                                             above.getY()));
+}
+
 void StepGridComponent::paintValueOverlay (juce::Graphics& g)
 {
     const auto valueFont = juce::Font (juce::FontOptions (9.0f));
@@ -466,17 +493,15 @@ void StepGridComponent::paintValueOverlay (juce::Graphics& g)
         && juce::isPositiveAndBelow (valueHover.step, Layout::numSteps))
     {
         const auto cell = getCellBounds (valueHover.channel, valueHover.step);
+        const auto label = valueReadoutBoundsFor (valueHover.channel, valueHover.step);
 
-        if (! cell.isEmpty())
+        if (! cell.isEmpty() && ! label.isEmpty())
         {
             g.setColour (Colours::text);
             g.drawRoundedRectangle (cell.toFloat().reduced (0.5f), (float) cornerRadius * 0.5f, 2.0f);
 
             const auto value = juce::roundToInt (juce::jlimit (0.0f, 1.0f,
                                  valueOf (valueHover.channel, valueHover.step)) * 100.0f);
-
-            const auto label = juce::Rectangle<int> (cell.getX() - 4, cell.getY() - 12,
-                                                     juce::jmax (cell.getWidth(), 22), 11);
 
             g.setColour (Colours::background);
             g.fillRoundedRectangle (label.toFloat(), 2.0f);

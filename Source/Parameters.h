@@ -120,6 +120,7 @@ namespace Params
     inline constexpr const char* tempoId      = "tempo";
     inline constexpr const char* mutateId     = "mutate";
     inline constexpr const char* humanizeId   = "humanize";
+    inline constexpr const char* touchId      = "touch";
     inline constexpr const char* seedId       = "seed";
 
     /**
@@ -133,10 +134,10 @@ namespace Params
         into the type for the same reason `numLaneControls` is — forgetting to extend
         it when a parameter joins is a compile error, not a silent stale number.
     */
-    inline const std::array<const char*, 7>& globalIds()
+    inline const std::array<const char*, 8>& globalIds()
     {
-        static const std::array<const char*, 7> ids
-            { masterGainId, swingId, swingGridId, tempoId, mutateId, humanizeId, seedId };
+        static const std::array<const char*, 8> ids
+            { masterGainId, swingId, swingGridId, tempoId, mutateId, humanizeId, touchId, seedId };
 
         return ids;
     }
@@ -195,6 +196,25 @@ namespace Params
     inline constexpr float humanizeMin = 0.0f;
     inline constexpr float humanizeMax = 1.0f;
     inline constexpr float humanizeDefault = 0.0f;
+
+    /**
+        How much of the grid's dynamic slack the machine may use.
+
+        The third half of the same decision, and it is an amount of variation rather
+        than a number of decibels for the reason `maxHumanizeLateSteps` is: what is
+        being imitated is a relationship to what was drawn. The travel is a fraction of
+        each step's own velocity — see `Layout::maxTouchRatio` — so a ghost note moves
+        by a ghost amount and an accent by an accent's, and a step written at zero
+        stays at zero because there is no proportion of nothing to perturb.
+
+        Zero is the default, and it is not a neutral midpoint chosen to be safe: it is
+        the state in which the engine does not ask the generator anything, which is what
+        makes a session saved before this parameter existed come back with the levels it
+        was saved with, sample for sample.
+    */
+    inline constexpr float touchMin = 0.0f;
+    inline constexpr float touchMax = 1.0f;
+    inline constexpr float touchDefault = 0.0f;
 
     /**
         Which sequence of rolls a session is, as a number the user can write down.
@@ -259,6 +279,15 @@ namespace Params
         layout.add (std::make_unique<juce::AudioParameterFloat> (
             juce::ParameterID { humanizeId, 1 }, "Humanize",
             humanizeMin, humanizeMax, humanizeDefault));
+
+        // The third knob of the pair above, and the same insertion rule applies. Touch
+        // is the level half of what the other two say about timing and about counting:
+        // one decides which hits happen, one when they land, this how hard each is
+        // struck. It cannot be a per-lane control, because what it describes is the
+        // hand, not the drum.
+        layout.add (std::make_unique<juce::AudioParameterFloat> (
+            juce::ParameterID { touchId, 1 }, "Touch",
+            touchMin, touchMax, touchDefault));
 
         layout.add (std::make_unique<juce::AudioParameterInt> (
             juce::ParameterID { seedId, 1 }, "Seed", seedMin, seedMax, seedDefault));

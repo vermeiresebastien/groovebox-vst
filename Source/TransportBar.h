@@ -70,8 +70,50 @@ public:
     void paint (juce::Graphics& g) override;
     void resized() override;
 
+    /**
+        The bar's own layout rule, in the open because the editor has to pay for the
+        second line in height, and because "which control gave up width" is exactly the
+        question this bar answers by refusing to ask it.
+
+        One line needs `oneRowWidth` and is `oneRowHeight` tall. Below that width the
+        Variation group -- the widest band on the bar, and the one nobody is dragging
+        while watching the grid -- moves to a second line instead of anything getting
+        narrower, and the bar becomes `twoRowHeight` tall. That is what lets the editor's
+        floor come down to `wrappedRowWidth`, which is the first line with the variation
+        band lifted out of it: nothing on either line is squeezed, and a 1366 px laptop
+        can now hold the whole machine.
+
+        The three numbers are deliberately typed once, here, and read by the layout test
+        at each side of the boundary -- a width the row was measured at is worth nothing
+        if nothing checks that the row still fits at it.
+
+        They are widths of *this component*, not of the window: the editor has a margin
+        of its own, and mixing the two is how a bar ends up laying out two lines inside a
+        band the editor paid for as one. The editor asks `heightForWidth` with the width
+        it is about to hand over, and adds its own margin to `wrappedRowWidth` to get its
+        floor.
+    */
+    static constexpr int variationBandWidth = 584 + 8;  // the group, plus the gap after it
+    static constexpr int oneRowWidth = 1774;            // every band, on one line
+    static constexpr int wrappedRowWidth = oneRowWidth - variationBandWidth;
+    static constexpr int oneRowHeight = 60;
+    static constexpr int twoRowHeight = 96;             // two 38 px lines, their air and the rule
+
+    static bool isWrappedForWidth (int width) noexcept
+    {
+        return width < oneRowWidth;
+    }
+
+    static int heightForWidth (int width) noexcept
+    {
+        return isWrappedForWidth (width) ? twoRowHeight : oneRowHeight;
+    }
+
 private:
     void timerCallback() override;
+
+    /** The three faders, Reroll and the seed, laid out into whatever band they were given. */
+    void layoutVariation (juce::Rectangle<int> band);
 
     void handlePlayClicked();
     void handleTempoMinus();
@@ -116,6 +158,8 @@ private:
     juce::Label mutateValueLabel;
     juce::Slider humanizeSlider;
     juce::Label humanizeValueLabel;
+    juce::Slider touchSlider;
+    juce::Label touchValueLabel;
     juce::TextButton rerollButton { "Reroll" };
     juce::Label seedLabel;
 

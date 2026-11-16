@@ -251,6 +251,27 @@ struct SequencerState
     std::atomic<float> humanize { 0.0f };
 
     /**
+        How much of the grid's per-hit dynamic slack the machine is allowed to use, 0..1.
+
+        The level half of the pair above, so it is a proportion rather than a decibel
+        figure: it says how far a hit may depart from the velocity *its own step was
+        written at*, which is the same relationship to the grid that swing and the
+        timing offset are, and it is why a step at zero stays a rest instead of growing
+        a floor of its own. Drawn out of the middle slice of the same key, so one seed
+        names one take in all three senses — which hits happen, how late they land, how
+        hard each is struck.
+
+        What it can do is move a hit off the level it was given, by at most
+        `Layout::maxTouchRatio` of that level, and never off the 7-bit lattice the cell
+        is stored on. It cannot make a hit louder than full: the top of the range is the
+        top of the lattice, so the loudest thing in the set can only come down. Because
+        velocity is two laws in this engine — gain and tone — a struck-differently hit
+        is also brighter or darker, which is the point of the control rather than a side
+        effect, and is measured.
+    */
+    std::atomic<float> touch { 0.0f };
+
+    /**
         Which sequence of rolls this session is.
 
         A hit is decided by where it sits in the song — bar, step, lane — and this
@@ -469,6 +490,32 @@ public:
         the whole feature leaves the fingerprint of the closed one alone.
     */
     double humanizeLateInSteps (juce::int64 bar, int step, int channel) const;
+
+    /**
+        The level the hit at (bar, step, channel) is actually struck at, given the
+        velocity its step was written at.
+
+        The third public seam of the same take, asked for the same reason as the two
+        above: it is the call `fireStep` makes, so a check that the jitter is bounded,
+        centred, on the lattice and reproducible is about the engine rather than about a
+        model of it. The draw is the middle slice of the key — the roll has the top and
+        the offset the bottom — so a hit's level, its lateness and whether it happens at
+        all are three independent numbers out of one seed.
+
+        The deviation is a proportion of the level as the *record stores it*, rounded to
+        the 7-bit lattice the saved cell carries, rather than of the float in memory.
+        That is what makes the take survive a save: the format quantises a written
+        velocity once, and a law applied to the number before that quantisation would
+        answer differently on the two sides of it. A step at zero is therefore struck at
+        zero — the deviation of nothing is nothing — and a step at full can only come
+        down, because the top of the lattice is the top of what the machine plays.
+
+        Returns the written value untouched when the knob is shut, without asking the
+        generator: the branch that ran before this feature exists is the branch that
+        runs with it switched off, which is what keeps `[28]`'s fingerprint a statement
+        about code and not about rounding.
+    */
+    float struckVelocityFor (juce::int64 bar, int step, int channel, float written) const;
 
     /** True when the given channel is currently producing sound. */
     bool isChannelSounding (int channel) const noexcept

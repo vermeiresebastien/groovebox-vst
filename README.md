@@ -19,10 +19,11 @@ sample you drag onto its row, and which also plays from MIDI notes.
 | **Step probability** | **Every step says how often it is allowed to fire, 0–100 %. Hit *Chance* in the top bar and drag inside a step; a step that can be dropped has its corner cut off. The *Variation* knob — parameter **Mutate** — decides how much of that the machine may use: shut, the grid is law** |
 | Swing | 0–100 % on either a 1/8 or 1/16 grid |
 | **Humanize** | **0–100 %: a hit is allowed to start a little behind its step. Late only, never past a quarter of a step, and it follows the tempo rather than a fixed delay — the *Humanize* fader in the top bar, double-click to shut** |
+| **Touch** | **0–100 %: a hit is allowed to be struck a little off the velocity its step says. Both ways, never past a quarter of that step's own level, and a rest stays a rest — the *Touch* fader in the top bar, double-click to shut** |
 | Tempo | Follows the host project tempo; in the standalone build it has its own transport and tempo |
 | Mix | Per-channel level and mute, plus a "clear row" button |
 | **Master trim & meter** | **A −24 to +6 dB master trim you can see and reach, a bar for the sample peak with a tick for the true peak hiding between the samples, and a clip latch on the output** |
-| **Automation** | **Levels, pitches, pitch drops, envelopes, mutes, choke groups, swing, swing grid, tempo, the master trim, Mutate, Humanize and Seed are host parameters — automate them, and the panel follows what the host drew** |
+| **Automation** | **Levels, pitches, pitch drops, envelopes, mutes, choke groups, swing, swing grid, tempo, the master trim, Mutate, Humanize, Touch and Seed are host parameters — automate them, and the panel follows what the host drew** |
 | Row editing | Click a cell to toggle it; drag across cells to paint a run |
 | **Shift a row** | **The ← and → buttons in a channel strip turn that whole row one step earlier or later, and every step's velocity goes with it** |
 | Persistence | Pattern, per-step velocity and probability, pitch, levels, mutes, names, colours, seed and sample paths are saved in the session; a session saved before the parameter migration is read in and its values carried over |
@@ -179,6 +180,70 @@ sample-accuracy gate in the suite still means what it says.
 state takes its default rather than whatever was live when the file was written, and the
 default here is 0 %.
 
+## How hard a hit is actually struck
+
+**The *Touch* fader lets a hit land a little off the velocity its step was drawn at.** It is
+one number for the whole machine — 0–100 %, in the Variation group beside **Mutate** and
+**Humanize**, shut again by a double-click. With it shut the engine never reaches for the
+generator at all, which is why a session opened on the closed knob is the same machine that
+played before this knob existed.
+
+| Knob | What it does |
+|---|---|
+| 0 % | every hit is struck exactly as drawn, and no random number is asked |
+| 50 % | up to an eighth of a hit's own level off, most hits far less |
+| 100 % | up to a quarter of a hit's own level off |
+
+**A proportion, not an offset.** The travel is a quarter of *each step's own* level, so a
+step drawn at nothing stays at nothing — this control cannot put a hit where the grid drew
+none — and a step drawn at full can only come down. That is the one place the control is not
+symmetric, and it is stated rather than averaged away: the clamp is the top of what the
+engine plays, so opening Touch cannot make the loudest thing in the set louder or brighter
+than the full-velocity hit already is. Asked of that hit on its own, the peak goes 0.601509
+to 0.577455 and the top of the band with it, 0.00000835 to 0.00000798 at 6 kHz.
+
+**Most hits are struck nearly as drawn.** The departure is squared about zero rather than
+spread evenly, and that is measured, not asserted: over 4096 keys the average is a third of
+the travel (0.0794 of 0.2500) and just over half of them are inside the bottom quarter of
+it. A uniform draw would put the average at half the travel, which is every hit audibly off
+rather than the odd one.
+
+**An accent keeps its place.** Because the departure is a proportion of each hit's own
+level, a hit drawn at twice its neighbour can only be overtaken once the two have moved past
+0.6 of each other — a 2:1 accent survives the knob wide open, and a third would be the limit
+of what this travel can do.
+
+**The level is drawn on the lattice the session stores.** A velocity here is a number of
+127ths, so the law runs on that rung and the answer comes back on it: the take a seed names
+is the take that seed names again after a save and a reload. That is checked on the one step
+deliberately drawn at 0.5 — 63.5 of 127, the cell where a law applied to the float instead
+of the rung would answer differently on the two sides of a write — and the record really does
+quantise it, from 0.500000 to 0.503937, while the take stays rung for rung the same.
+
+**Three readers, three slices of one number.** Which hits fire reads the top bits of the
+seed's hash, how late they land the bottom ones, and how hard they are struck the 16 in
+between. So moving one fader cannot move the others' answers: opening Touch leaves the
+pattern and the timing exactly where they were, and opening **Humanize** leaves the levels
+where they were — checked as whole-take hashes, and as a correlation between lateness and
+level of 0.021 against a sampling limit of 0.067. **Reroll** re-deals all three together,
+because a new take is a new performance rather than the same one nudged.
+
+**It is also a tone change, on purpose.** Velocity in this machine is two laws, gain and the
+lowpass corner, so a hit struck a little quieter is also a hit a little darker; that is the
+mechanism working as designed, not a side effect to compensate. What the set of them costs is
+measured rather than assumed, at the same −3.5 dB trim in both arms and the same seed: over a
+four-bar take of the whole 64-rung ladder the integrated level goes 0.041654 to 0.041688
+(**+0.007 dB**) and the 2–7 kHz band 0.000413 to 0.000412 (**−0.026 dB**). The peak of that
+summed take does rise, 1.438488 to 1.485904 (+0.28 dB), for one reason: four voices at one
+step add together, and three of them pulling up is enough to beat a step whose loudest rung
+is only one. Asked of a single hit, as above, the direction is only ever down. Nothing buys
+these numbers back — no limiter, no hidden trim, no renormalisation — and the check that
+proves it is the level-matched one: a jittered hit is bit for bit the very same hit *drawn*
+at the level the draw said, at 64, 256 and 1024 sample blocks alike.
+
+**A session that predates the parameter opens shut.** A missing entry takes its default, here
+0 %, and the grid, the seed and the neighbouring globals come through anyway.
+
 ## The envelope
 
 Every channel has its own ADSR, shown as four rows (**A D S R**) under the level
@@ -278,8 +343,8 @@ what you mixed.
 Every continuous control is a proper host parameter, so it can be drawn as
 automation instead of only moved by hand: per-channel level, pitch, pitch drop,
 A/D/S/R, mute and choke group (9 parameters × 12 channels), plus master trim,
-swing, swing grid, tempo, Mutate, Humanize and Seed — 115 in total, grouped per lane so a
-host lists them sensibly.
+swing, swing grid, tempo, Mutate, Humanize, Touch and Seed — 116 in total, grouped per lane
+so a host lists them sensibly.
 
 The pattern is deliberately **not** in the parameter list. 192 cells as 192
 parameters would swamp a host's automation list, and it is not what anyone
@@ -301,11 +366,14 @@ and leaves it alone.
 
 ## Layout
 
-- **Top bar** — one row: transport, tempo, swing and its grid, the **Variation** group
-  (the knob, the **Humanize** fader, **Reroll** and the seed readout), "Clear pattern",
+- **Top bar** — transport, tempo, swing and its grid, the **Variation** group (the knob,
+  the **Humanize** and **Touch** faders, **Reroll** and the seed readout), "Clear pattern",
   the **Velocity** and **Chance** toggles with the shared **100%** reset, and the master
-  trim and meter. The window's minimum width is what this row needs to lay every control
-  out at its own size, so the bar never has to give room up to fit the window.
+  trim and meter. A 1774 px bar lays all of that on one row; narrower, the Variation group
+  moves to a second line and the bar grows 36 px to take it. Either way no control gives up
+  width to fit the window, which is what lets it go down to **1218 px** — a 1366 px laptop
+  now holds the whole machine. The grid is what pays for the second line, by 36 px at the
+  narrow end.
 - **Middle** — the 16 × 12 step grid. Channel 11 is the top row and channel 0 the
   bottom, matching the web app, which reverses its lane list.
 - **Bottom** — one strip per channel: name (double-click to rename), colour
@@ -349,6 +417,8 @@ does not match (`cmake --help` lists the available ones).
 | `Groovebox_VST3` | `build-new/Groovebox_artefacts/Release/VST3/Groovebox.vst3` |
 | `Groovebox_Standalone` | `build-new/Groovebox_artefacts/Release/Standalone/Groovebox.exe` |
 | `GrooveboxSmokeTest` | `build-new/GrooveboxSmokeTest_artefacts/Release/GrooveboxSmokeTest.exe` |
+| `GrooveboxLayoutTest` | `build-new/GrooveboxLayoutTest_artefacts/Release/GrooveboxLayoutTest.exe` |
+| `GrooveboxPatternPlanTest` | `build-new/Release/GrooveboxPatternPlanTest.exe` — a plain `add_executable`, not a JUCE console app, because the two headers it reads are std-only by design |
 
 The two shippable artefacts are assembled into **`launch/`** by a dedicated
 target, the same way the other skeer-audio projects do it:
@@ -456,7 +526,25 @@ will not overwrite a bundle that is in use.
 
 ## Verifying
 
-Two test programs run with no GUI window and no host.
+Three test programs run with no GUI window and no host: the engine suite, the
+editor suite, and a std-only check of the genre table that costs about a second
+because it compiles none of the plugin. All four checks — the three programs and
+the real-time allocation guard — are registered with CTest, so the tracked way to
+run the gate is:
+
+```powershell
+cmake --build build-new --config Release --parallel 2
+ctest --test-dir build-new -C Release -V
+```
+
+which is what a fresh clone can do, and `-V` is not decoration — the quiet form
+prints no check counts. Each entry is a condition rather than a process id: it pins
+the line the suite prints last and demands a problem count of 0, so a run that prints
+nothing (a walk that ran zero checks) and a run that prints one problem both fail the
+tracked path even at exit 0. `ctest` replays, it does not build, so without the line
+above a defect in a header can leave four green tests sitting on a binary that was
+never rebuilt. The executables can also be run on their own, as below, and that is
+what the harness does while it works.
 
 `GrooveboxSmokeTest` drives the real processor and checks the parts that are easy
 to get subtly wrong:
@@ -485,6 +573,19 @@ It asserts, among other things, that:
   sounding on the same block the lane light comes on, at 64, 256 and 1024 alike; and the
   bound is checked against the closest onsets the swing grid can make — 0.5000 steps at
   the shuffle, so the knob can join a hit to the next one but never pass it;
+- **a hit struck off its drawn level is still the hit that was drawn**: shut, no random
+  number is asked at all; open, the departure stays inside a quarter of its own rung,
+  averages a third of that travel and puts just over half the fine rungs in its bottom
+  quarter, and it lands on the 1/127 lattice the session stores — so the take a seed names
+  is the take that seed names again after a save and a reload. The same seed twice gives the
+  same levels; a new seed re-deals 1889 of 1984 of them. **Which hits fire and when they
+  land do not move when the level knob moves**, nor the other way round (correlation 0.021
+  against a sampling limit of 0.067) — and all three readers are then checked against a key
+  re-derived inside the test, level on the middle 16 bits, timing on the bottom 24, the roll
+  on the top 24, 4096 cells with none of them wrong, because a correlation cannot see a law
+  that quietly moved to a different slice. A step drawn at nothing makes no sound however
+  far the knob is open, and a jittered hit is bit-for-bit the same hit *drawn* at the level
+  the draw said, at 64, 256 and 1024-sample blocks alike;
 - an octave of pitch shortens a sample, mute silences a channel, and a lower
   level is quieter;
 - pitching a sample **up** does not fold its top end back into the audible band:
@@ -564,7 +665,7 @@ It asserts, among other things, that:
   first, is a no-op over a whole bar, and leaves every other row alone;
 - a value written into a **parameter** the way a host writes it — normalised,
   straight through `setValueNotifyingHost`, without touching any of the
-  processor's own setters — reaches the engine and changes the audio, so all 115
+  processor's own setters — reaches the engine and changes the audio, so all 116
   parameters are genuinely automatable rather than merely listed.
 
 `GrooveboxLayoutTest` builds the real editor and inspects it. A control laid out
@@ -591,8 +692,20 @@ by painting the grid into an image and comparing two renders that differ in one
 probability, since it is the one part of the panel with no bounds to inspect: that
 says where the pixels moved, that they moved in only that one cell, and that a
 mark which should not appear there makes two renders of the same cell identical.
+The bar's wrap rule is checked at six window sizes — the default, exactly the width
+one row asks for, one pixel narrower, the editor's floor, one in between and the
+largest the editor allows — and at each of them the bar's height is compared with
+the row rule's own numbers rather than with the predicate being tested, the
+variation band is placed by which line it overlaps, all twelve channel strips are
+walked for clipped children, and all 192 hover readouts are asked for their size as
+well as their position, since a label whose bottom edge got pulled up to the top of
+the grid stayed inside it and read as a pass at 1 px tall.
 
-Run both after any change to the editor or the engine. Both have already caught
+`GrooveboxPatternPlanTest` checks the genre table and the placement rule as plain
+data, with no JUCE and no plugin sources in the link, which is what keeps it at about
+a second and lets a fresh clone go red on a table edit without rebuilding anything.
+
+Run all three after any change to the editor or the engine. They have already caught
 real bugs: swing that was computed but never applied, a step that fired early
 after a bar wrap, a pitch control laid out at 0 px wide, faders whose moves never
 reached the processor, and a panel that kept showing the old value after the host
@@ -616,9 +729,12 @@ Source/
   TransportBar.{h,cpp}      transport, tempo, swing, variation, the step-value
                             toggles, master trim and meter
   LookAndFeel.{h,cpp}       the flat dark theme
+  GenrePatterns.h           the generated genre table the planner reads
+  PatternPlanner.h          how a planned pattern is placed into the lanes
 Tests/
   SmokeTest.cpp         the headless engine test
   LayoutTest.cpp        builds the real editor and inspects it
+  PatternPlanTest.cpp   the table and the placement rule, as std-only data
 ```
 
 Notes on the design:
@@ -686,15 +802,16 @@ Notes on the design:
   the build that had no knob.
 - **How late a hit is comes off the same key, different bits.** `SequencerEngine::humanizeLateInSteps`
   hashes seed, bar, step and lane exactly as the roll does and reads the **bottom** 24
-  bits, where `wouldThisHitFire` reads the top ones, then squares the unit so the offsets
-  pile up near the grid. Two draws from one key that share no bits are independent
-  draws — which is what makes "the timing knob cannot change which hits play" a property
-  of the generator rather than a habit. The result is a number of steps, converted to
-  output samples once, at the tempo of the bar being played; the voice then counts that
-  many samples down in `renderVoice` before it reads a sample, advances an envelope or
-  lights a lane. Deliberately not in the clock: `stepOnsetInSteps` is what the
-  sample-accuracy gates measure, and a timing knob that answered it differently would
-  move the step's own position — and, at an early offset, could put an onset behind the
+  bits, where `wouldThisHitFire` reads the top ones and `struckVelocityFor` the 16 in
+  between, then squares the unit so the offsets pile up near the grid. Three draws from
+  one key that share no bits are independent draws — which is what makes "the timing knob
+  cannot change which hits play" a property of the generator rather than a habit. The
+  result is a number of steps, converted to output samples once, at the tempo of the bar
+  being played; the voice then counts that many samples down in `renderVoice` before it
+  reads a sample, advances an envelope or lights a lane. Deliberately not in the clock:
+  `stepOnsetInSteps` is what the sample-accuracy gates measure, and a timing knob that
+  answered it differently would move the step's own position — and, at an early offset,
+  could put an onset behind the
   playhead, where this engine's arithmetic answers by pushing the step a whole bar
   forward.
 - **A record this build cannot read is kept, not repaired.** A payload whose codec tag
@@ -731,8 +848,10 @@ Notes on the design:
 - Audio dropped from outside the app is decoded into memory but has no path, so
   it is not restored with the session.
 - One 16-step bar; there is no pattern chaining or song mode yet.
-- *Humanize* is timing only, and late only: it cannot start a hit ahead of its step and
-  it does not change how hard a hit lands.
+- *Humanize* is timing only, and late only: it cannot start a hit ahead of its step.
+- *Touch* is level only, and it is a deviation, not a redraw: it cannot turn a rest into
+  a hit, cannot strike a step more than a quarter of its own level above or below what
+  you wrote, and does not move a hit in time.
 - No per-channel pan, and no group or submix routing.
 - The loaded-sample registry is capped at `SampleStore::maxSamples` per session;
   past that, a load reports an error instead of growing the list.

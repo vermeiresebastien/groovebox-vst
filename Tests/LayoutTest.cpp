@@ -68,6 +68,42 @@ void checkBounds (juce::Component& parent, juce::Component& child, const juce::S
         ++problems;
 }
 
+/**
+    A claim with its number next to it, for the checks that are not about one rectangle.
+
+    `checked` is what the pass line counts, so a sweep that ran and printed nothing would
+    still be a sweep nobody could tell from one that was skipped -- the same reason the
+    audio gates print their precondition.
+*/
+void expect (bool ok, const juce::String& what, const juce::String& detail)
+{
+    ++checked;
+
+    if (ok)
+        pass (what + " [" + detail + "]");
+    else
+        fail (what + " [" + detail + "]");
+}
+
+/** As `expect`, for a loop where twelve passing lines would bury the section it is in. */
+void expectQuiet (bool ok, const juce::String& what, const juce::String& detail)
+{
+    ++checked;
+
+    if (! ok)
+        fail (what + " [" + detail + "]");
+}
+
+/** Whether a child lies wholly inside its parent and still has a size of its own. */
+bool fitsInside (juce::Component& parent, juce::Component& child)
+{
+    const auto b = child.getBounds();
+
+    return b.getWidth() > 0 && b.getHeight() > 0
+           && b.getY() >= 0 && b.getBottom() <= parent.getHeight()
+           && parent.getLocalBounds().contains (b);
+}
+
 /** Builds a mouse event in a component's own coordinates. */
 juce::MouseEvent makeEvent (juce::Component& target, juce::Point<float> position)
 {
@@ -405,6 +441,230 @@ int main()
     }
 
     //======================================================================
+    //  The bar's wrap rule, at every width the window can take.
+    //
+    //  This is the half of 5.6 that 4.3b had to pay for: a third fader is 154 px of
+    //  row, and the alternative to a rule about where those 154 px go was a floor that
+    //  moved again. Two things are being claimed -- that the row wraps instead of
+    //  squeezing, and that the squeeze never happened at either size -- and both are
+    //  only visible by laying the real editor out at each side of the boundary.
+    std::printf ("\n-- the transport bar at the sizes the window can take --\n");
+    {
+        std::vector<ChannelStrip*> strips;
+
+        for (int i = 0; i < editor->getNumChildComponents(); ++i)
+        {
+            if (auto* strip = dynamic_cast<ChannelStrip*> (editor->getChildComponent (i)))
+                strips.push_back (strip);
+        }
+
+        expect (static_cast<int> (strips.size()) == Layout::numChannels,
+                "every strip is in reach, not just one",
+                juce::String (static_cast<int> (strips.size())) + " of "
+                    + juce::String (Layout::numChannels));
+
+        const auto barSlider = [transportBar] (const juce::String& name)
+        {
+            return findNamedSlider (*transportBar, name);
+        };
+
+        struct Size { int width, height; juce::String what; };
+
+        // The bar's rule is about *bar* widths, so the arms are written in bar widths and
+        // the editor's margins are measured off the running editor rather than typed in
+        // a second time -- a margin written twice is a margin that gets missed.
+        const auto barInset = preferredWidth - transportBar->getWidth();
+
+        const Size sizes[] = {
+            { preferredWidth,                             preferredHeight, "the default" },
+            { TransportBar::oneRowWidth + barInset,       preferredHeight, "exactly what one line asks for" },
+            { TransportBar::oneRowWidth - 1 + barInset,   preferredHeight, "one px narrower, so two lines" },
+            { TransportBar::wrappedRowWidth + barInset,   preferredHeight, "the editor's floor" },
+            { 1500,                                       700,             "in between" },
+            { 2200,                                       1400,            "the largest the editor allows" },
+        };
+
+        std::printf ("  the bar sits %d px inside the window on each side\n", barInset / 2);
+
+        for (const auto& size : sizes)
+        {
+            editor->setSize (size.width, size.height);
+
+            const auto wrapped = TransportBar::isWrappedForWidth (transportBar->getWidth());
+
+            std::printf ("\n  %d x %d (bar %d) -- %s (%s)\n", size.width, size.height,
+                         transportBar->getWidth(), size.what.toRawUTF8(),
+                         wrapped ? "two lines" : "one line");
+
+            // The editor and the bar have to agree about how much of the window the bar
+            // has taken, or the grid is laid out inside a band the bar is painting in.
+            expect (transportBar->getHeight() == TransportBar::heightForWidth (transportBar->getWidth()),
+                    "the bar took the height its own rule says",
+                    juce::String (transportBar->getHeight()) + " px for a "
+                        + juce::String (transportBar->getWidth()) + " px bar, rule says "
+                        + juce::String (TransportBar::heightForWidth (transportBar->getWidth())));
+
+            // The boundary itself, stated without borrowing the predicate being tested.
+            //
+            // The check above only proves the editor and the bar read one rule, so on its
+            // own it stays green for any rule at all -- change `isWrappedForWidth` to
+            // `return false` and everything above agrees with itself, and the only reason
+            // the run still goes red is that a 1774 px row happens not to fit in 1182 px.
+            // This is the gate that names the threshold and the two heights, so a flipped
+            // comparison or a swapped pair of numbers is caught at the px, not downstream.
+            const auto wantHeight = transportBar->getWidth() >= TransportBar::oneRowWidth
+                                      ? TransportBar::oneRowHeight : TransportBar::twoRowHeight;
+
+            expect (transportBar->getHeight() == wantHeight,
+                    "one line at oneRowWidth and two below it, by the numbers",
+                    juce::String (transportBar->getHeight()) + " px for a "
+                        + juce::String (transportBar->getWidth()) + " px bar, want "
+                        + juce::String (wantHeight));
+
+            auto* swing = barSlider ("Swing");
+            auto* touch = barSlider ("Touch");
+            auto* mutate = barSlider ("Mutate");
+            auto* humanize = barSlider ("Humanize");
+            auto* master = barSlider ("Master");
+
+            if (swing == nullptr || touch == nullptr || mutate == nullptr
+                || humanize == nullptr || master == nullptr)
+            {
+                fail ("a bar fader is missing, so the line cannot be placed");
+                continue;
+            }
+
+            // Which line the variation band is on, said as overlap rather than as an
+            // equality of y: two bands laid out by different code can share a line
+            // without agreeing on a pixel, and a check that only passes when they do is
+            // a check that fails on a harmless refactor.
+            const auto sameLine = touch->getBounds().getY() <= swing->getBounds().getBottom()
+                                  && swing->getBounds().getY() <= touch->getBounds().getBottom();
+
+            expect (sameLine != wrapped,
+                    wrapped ? "the variation band is on a line of its own"
+                            : "the variation band is still in the row",
+                    "Touch y=" + juce::String (touch->getBounds().getY())
+                        + ", Swing y=" + juce::String (swing->getBounds().getY())
+                        + ".." + juce::String (swing->getBounds().getBottom()));
+
+            // The promise the wrap exists to keep: nothing on either line gives up width
+            // to fit the window, so every fader is still the fader the design chose.
+            const auto widths = juce::String (mutate->getWidth()) + "/" + juce::String (humanize->getWidth())
+                                + "/" + juce::String (touch->getWidth()) + "/"
+                                + juce::String (swing->getWidth()) + "/" + juce::String (master->getWidth());
+
+            expect (mutate->getWidth() == 96 && humanize->getWidth() == 96 && touch->getWidth() == 96
+                        && swing->getWidth() == 140 && master->getWidth() == 110,
+                    "no fader was squeezed to pay for the row", widths + " (want 96/96/96/140/110)");
+
+            for (int i = 0; i < transportBar->getNumChildComponents(); ++i)
+            {
+                auto* inner = transportBar->getChildComponent (i);
+
+                if (inner != nullptr && inner->isVisible())
+                    checkBounds (*transportBar, *inner, "bar child " + juce::String (i));
+            }
+
+            // All twelve strips, at every size. The `tight` branch in
+            // ChannelStrip::resized is a height rule, so this is the only way the walk
+            // ever runs the code that decides whether the bottom of a strip is on screen.
+            auto shortOnes = 0;
+
+            for (int lane = 0; lane < static_cast<int> (strips.size()); ++lane)
+            {
+                auto* strip = strips[(size_t) lane];
+                auto bad = 0, seen = 0;
+
+                for (int i = 0; i < strip->getNumChildComponents(); ++i)
+                {
+                    auto* inner = strip->getChildComponent (i);
+
+                    if (inner == nullptr || ! inner->isVisible())
+                        continue;
+
+                    ++seen;
+
+                    if (! fitsInside (*strip, *inner))
+                        ++bad;
+                }
+
+                if (strip->getHeight() < 219)
+                    ++shortOnes;
+
+                expectQuiet (bad == 0 && seen > 0 && strip->getSpareHeight() >= 0,
+                             "strip " + juce::String (lane) + " is whole",
+                             juce::String (bad) + " clipped of " + juce::String (seen)
+                                 + ", " + juce::String (strip->getHeight()) + " px tall, spare "
+                                 + juce::String (strip->getSpareHeight()));
+            }
+
+            // A strip shorter than its wanted 219 px takes `ChannelStrip::resized`'s
+            // tight branch, and two of its seventeen visible controls land outside it.
+            // Measured rather than guessed: a probe arm at 1832 x 500 put the strips at
+            // 236 px with spare 0 and twelve BAD lines, and was then removed again -- the
+            // run is in out/layout-tight-probe.log, the fix is 5.6's remaining half. No
+            // window the user can reach is that short (the floor is 1218 x 844), so the
+            // claim here is only that the broken code stays unreachable, and it is a claim
+            // that goes red the day someone lowers the floor again.
+            expect (shortOnes == 0,
+                    "no strip is short enough to need the tight rule at this size",
+                    juce::String (strips.front() != nullptr ? strips.front()->getHeight() : 0)
+                        + " px of strip, " + juce::String (shortOnes) + " of "
+                        + juce::String (static_cast<int> (strips.size())) + " under 219");
+
+            // The number under the pointer, asked of every corner it has to survive.
+            //
+            // All 192 of them, because the two that break are opposite ones: the top-left
+            // cell hangs the label above the grid's top edge, the top-right one off the
+            // right, and a check that only looks at the first cannot see the second. The
+            // size is part of the claim too -- a helper that pulled the rectangle's bottom
+            // edge up to the component's top edge would stay inside it, be 1 px tall, and
+            // print as a pass.
+            auto readoutOut = 0, readoutSquashed = 0, readouts = 0;
+
+            if (stepGrid != nullptr)
+            {
+                for (int lane = 0; lane < Layout::numChannels; ++lane)
+                {
+                    for (int step = 0; step < Layout::numSteps; ++step)
+                    {
+                        const auto cell = stepGrid->getCellBounds (lane, step);
+                        const auto readout = stepGrid->valueReadoutBoundsFor (lane, step);
+
+                        if (cell.isEmpty())
+                            continue;
+
+                        ++readouts;
+
+                        if (readout.getX() < 0 || readout.getY() < 0
+                            || readout.getRight() > stepGrid->getWidth()
+                            || readout.getBottom() > stepGrid->getHeight())
+                            ++readoutOut;
+
+                        if (readout.getWidth() < juce::jmax (cell.getWidth(), 22)
+                            || readout.getHeight() != 11)
+                            ++readoutSquashed;
+                    }
+                }
+            }
+
+            expect (stepGrid != nullptr && readouts == Layout::numChannels * Layout::numSteps
+                        && readoutOut == 0 && readoutSquashed == 0,
+                    "every hover readout is on screen at full size",
+                    juce::String (readouts) + " cells, " + juce::String (readoutOut)
+                        + " outside, " + juce::String (readoutSquashed) + " wrong size in a "
+                        + juce::String (stepGrid != nullptr ? stepGrid->getWidth() : 0) + " x "
+                        + juce::String (stepGrid != nullptr ? stepGrid->getHeight() : 0) + " grid");
+        }
+
+        std::printf ("\n  %d sizes laid out, %d problems so far\n",
+                     static_cast<int> (sizeof (sizes) / sizeof (sizes[0])), problems);
+
+        editor->setSize (preferredWidth, juce::jmax (preferredHeight, 790));
+    }
+
+    //======================================================================
     std::printf ("\n-- fader wiring: does a drag reach the processor? --\n");
 
     if (anyStrip != nullptr)
@@ -474,18 +734,23 @@ int main()
         checkBarFader ("Master",   [&processor] { return (double) processor.getMasterGainDb(); });
         checkBarFader ("Mutate",   [&processor] { return (double) processor.getMutate(); });
         checkBarFader ("Humanize", [&processor] { return (double) processor.getHumanize(); });
+        checkBarFader ("Touch",    [&processor] { return (double) processor.getTouch(); });
 
-        // Those drags leave all four parameters at the top of their range, and the
+        // Those drags leave all five parameters at the top of their range, and the
         // audio checks below measure levels and count hits, so put them back first.
         // The variation one matters most: a knob left open starts dropping steps, and
         // every level check underneath would then be measuring a different pattern.
         // The timing one is the same trap at one remove: an open Humanize does not
         // change which steps fire, but it moves when they fire, and the onset checks
-        // below measure the grid.
+        // below measure the grid. The level one is the trap the third time: an open
+        // Touch changes the level of every hit the checks underneath compare, so a
+        // threshold that is right with the knob shut is wrong by a quarter of itself
+        // with it open.
         processor.setSwing (0.0f);
         processor.setMasterGainDb (Layout::defaultMasterGainDb);
         processor.setMutate (0.0f);
         processor.setHumanize (0.0f);
+        processor.setTouch (0.0f);
     }
 
     //======================================================================
@@ -534,9 +799,9 @@ int main()
             else if (auto* b = dynamic_cast<juce::Button*> (child);
                      b != nullptr && b->getButtonText() == "Mute")
                 muteButton = b;
-            else if (auto* l = dynamic_cast<juce::Label*> (child);
-                     l != nullptr && l->getTooltip().startsWith ("Pitch offset"))
-                pitchLabel = l;
+            else if (auto* pl = dynamic_cast<juce::Label*> (child);
+                     pl != nullptr && pl->getTooltip().startsWith ("Pitch offset"))
+                pitchLabel = pl;
             else if (auto* c = dynamic_cast<juce::ComboBox*> (child))
                 chokeBox = c;
             else if (auto* e = dynamic_cast<EnvelopeControls*> (child))
@@ -803,68 +1068,86 @@ int main()
     }
 
     //======================================================================
-    // The timing knob, through the panel rather than through the processor.
+    // The knobs that are shut by default, through the panel rather than through the
+    // processor.
     //
-    // `checkBarFader ("Humanize", ...)` above already proved a drag reaches the
-    // engine. What a drag cannot prove is the other two directions: that a value the
-    // host writes with the panel untouched gets drawn back onto the fader, and that
-    // the double-click which is the only way to shut the knob from the bar actually
-    // shuts it. Both matter more here than for the neighbouring knobs, because this
-    // one defaults to shut and its whole point is being able to get back to that.
-    std::printf ("\n-- the timing knob answers the host, and the mouse can shut it --\n");
+    // `checkBarFader` above already proved a drag reaches the engine. What a drag
+    // cannot prove is the other two directions: that a value the host writes with the
+    // panel untouched gets drawn back onto the fader, and that the double-click — the
+    // only way to shut a knob from the bar — actually shuts it. Both matter most on
+    // these two because their shut end is the state a session is supposed to come back
+    // to, and because it is the state every audio threshold in this suite is tuned to.
+    std::printf ("\n-- the knobs that default to shut answer the host, and the mouse can shut them --\n");
 
     if (transportBar != nullptr)
     {
-        auto* humanize = findNamedSlider (*transportBar, "Humanize");
-        auto* humanizeParam = processor.getValueTreeState().getParameter (Params::humanizeId);
-
-        ++checked;
-
-        if (humanize == nullptr || humanizeParam == nullptr)
+        // Written as a rule with two arguments rather than as one block copied twice:
+        // the two directions a drag cannot prove are the same two directions for both
+        // knobs, and a second copy is a block that gets fixed once.
+        const auto checkShutKnob = [&] (const juce::String& name,
+                                        const juce::String& label,
+                                        const juce::String& paramId,
+                                        const std::function<float()>& read,
+                                        const std::function<void (float)>& write)
         {
-            fail ("the humanize fader or its parameter is not reachable");
-        }
-        else
-        {
-            pass ("the humanize fader and the host parameter are both there");
+            auto* fader = findNamedSlider (*transportBar, name);
+            auto* param = processor.getValueTreeState().getParameter (paramId);
+
+            ++checked;
+
+            if (fader == nullptr || param == nullptr)
+            {
+                fail ("the " + label + " fader or its parameter is not reachable");
+                return;
+            }
+
+            pass ("the " + label + " fader and the host parameter are both there");
 
             // A host write, with the notification path a drag does not use: the
             // parameter moves, the processor's atomics follow through
             // `parameterChanged`, and only `refresh()` tells the panel.
-            humanizeParam->setValueNotifyingHost (humanizeParam->convertTo0to1 (0.4f));
+            param->setValueNotifyingHost (param->convertTo0to1 (0.4f));
             transportBar->refresh();
 
             ++checked;
 
-            if (std::abs (humanize->getValue() - 0.4) < 0.01
-                 && std::abs (processor.getHumanize() - 0.4f) < 1.0e-3)
-                pass ("a host-written 0.4 is drawn on the fader and heard by the engine ("
-                        + juce::String (humanize->getValue(), 3) + ")");
+            if (std::abs (fader->getValue() - 0.4) < 0.01 && std::abs (read() - 0.4f) < 1.0e-3)
+                pass ("a host-written 0.4 is drawn on the " + label
+                        + " fader and heard by the engine (" + juce::String (fader->getValue(), 3) + ")");
             else
-                fail ("a host-written 0.4 left the fader at " + juce::String (humanize->getValue(), 3)
-                        + " and the engine at " + juce::String (processor.getHumanize(), 3));
+                fail ("a host-written 0.4 left the " + label + " fader at "
+                        + juce::String (fader->getValue(), 3) + " and the engine at "
+                        + juce::String ((double) read(), 3));
 
             // Double-click is the documented way back to shut. It is dispatched as
             // `mouseDoubleClick`, which is the handler the platform calls after it has
             // decided two clicks were close enough to be one — a pair of synthetic
             // mouseDowns never reaches that decision, because the click count comes
             // from the OS, not from the test.
-            humanize->setValue (0.8, juce::sendNotificationSync);
+            fader->setValue (0.8, juce::sendNotificationSync);
 
-            humanize->mouseDoubleClick (makeEvent (*humanize,
-                                                  humanize->getLocalBounds().getCentre().toFloat()));
+            fader->mouseDoubleClick (makeEvent (*fader, fader->getLocalBounds().getCentre().toFloat()));
 
             ++checked;
 
-            if (humanize->getValue() == 0.0 && processor.getHumanize() == 0.0f)
-                pass ("a double-click shuts the knob, in the panel and in the engine");
+            if (fader->getValue() == 0.0 && read() == 0.0f)
+                pass ("a double-click shuts the " + label + " knob, in the panel and in the engine");
             else
-                fail ("a double-click left the fader at " + juce::String (humanize->getValue(), 3)
-                        + " and the engine at " + juce::String (processor.getHumanize(), 3));
-        }
+                fail ("a double-click left the " + label + " fader at "
+                        + juce::String (fader->getValue(), 3) + " and the engine at "
+                        + juce::String ((double) read(), 3));
 
-        processor.setHumanize (0.0f);
-        transportBar->refresh();
+            write (0.0f);
+            transportBar->refresh();
+        };
+
+        checkShutKnob ("Humanize", "humanize", Params::humanizeId,
+                       [&processor] { return processor.getHumanize(); },
+                       [&processor] (float v) { processor.setHumanize (v); });
+
+        checkShutKnob ("Touch", "touch", Params::touchId,
+                       [&processor] { return processor.getTouch(); },
+                       [&processor] (float v) { processor.setTouch (v); });
     }
 
     //======================================================================

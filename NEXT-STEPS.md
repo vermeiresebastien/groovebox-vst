@@ -137,7 +137,7 @@ sample-exact clock invariant that test `[12]` protects.
 | **U2** | Kit workflow: multi-file drop fills lanes (`StepGridComponent.cpp`'s `filesDropped` uses `files[0]` and ignores the rest; its silence was fixed earlier, it raises the same error box the browse path does), lane menu from `getSampleIds()`, remembered folder, audition on click (B7) | 12 file dialogs → one gesture | 12-20 h | low | U3 |
 | **U3** | Live programs/kits (`getNumPrograms()==1`) = a free preset browser in Live's browser | makes the thing shareable and recallable | 16-24 h, partly blocked by path-only refs | med | — |
 | **U4** | Pattern → MIDI clip export by drag (`juce::MidiFile` already linked; `skulpt/Source/SequenceView.cpp:507` is the precedent) | gets your groove into the arranger | 4-8 h | low | — |
-| **U5** | Editor floor fits a 1366×768 laptop (830 px min when this was written; **1678×844** now, `PluginEditor.cpp`'s `editorWidth`/`editorHeight`), all-12-strip layout test | `Tests/LayoutTest.cpp:301` checks **one** size and **the first strip only**; the `tight` branch (`ChannelStrip.cpp:197-209`) is never executed | 4-6 h | low | — |
+| **U5** | Editor floor fits a 1366×768 laptop, all-12-strip layout test — **the row half is done** (2026-11-16, pulled into 4.3b): the bar wraps to two lines below 1774 px and the floor is **1218×844** (`TransportBar::oneRowWidth`/`wrappedRowWidth`; `editorWidth`/`editorHeight` are the *default*, not the minimum) | was: `LayoutTest.cpp` checked one size and the first strip only. Now six sizes × all twelve strips; the `tight` branch (`ChannelStrip.cpp:197-209`) is still never executed, and deliberately so — at 236 px of strip it puts 2 of 17 controls outside | ~2-3 h left | low | what is left is 5.6's height rule, not the row |
 | **V1** | `verify.ps1`: build → both test exes with `$LASTEXITCODE` checked → SHA-256 manifest of `launch/` vs artefacts | today `installer/build-installer.ps1:92-105` only `Test-Path`s 5 files; nothing hashes anything | 3-4 h | low | — |
 | **V2** | RT tripwire (counting allocator armed inside `processBlock`) + click metric (max \|x[n]−x[n−1]\|) + level-matched A/B render rig | makes "sounds better" falsifiable, which is your rule | 12-16 h | med — JUCE 8.0.4 has **no** `OfflineRenderer`, BS.1770 LUFS would be hand-rolled | everything audio |
 | **M1** | Positioning: free BYO-sample in-plugin sequencer is genuinely unoccupied (Triaz Player can't load custom samples; TerminalVST is one sound per instance; Hydrogen isn't a plugin; Battery/Maschine sequence nothing in-plugin) | decide what the next 20 hours are *for* | 2 h decision | n/a | — |
@@ -301,6 +301,9 @@ touches the velocity law. No step here is allowed to be reported as better becau
 - **4.3** Humanize: microtiming offsets applied inside `stepOnsetInSteps` (`:57-75`) so the ≤1-sample
   invariant is preserved, plus velocity jitter. Clamp offsets so no onset can land behind the head (that is
   the `:105` whole-bar skip path) and re-run T-PHASE. ~3-4 h after 4.1.
+  **Done as two steps (2026-11-16):** 4.3a shipped the timing half (`6439f0b`); the velocity half became
+  **4.3b** — its own fader, its own law, its own A/B — because one number on the panel cannot be judged by
+  one gate when it moves two things. See the 4.3b record at the end of section G.
 - **4.4** 4-slot pattern bank per channel (four pattern strings on the tree, no file browser), with a
   bar-counter evolve option. ~6 h.
 - **4.5** Sub-step onset keystone → ratchet/rolls. This rewrites the three onset functions into
@@ -329,7 +332,7 @@ touches the velocity law. No step here is allowed to be reported as better becau
 - **5.5** Pattern → MIDI clip export by drag. `juce::MidiFile` is already linked; the drag idiom exists in
   `skulpt/Source/SequenceView.cpp:507` and `redrum/Source/PluginProcessor.cpp:3502-3545`. ~4-8 h.
 - **5.6** Fit a laptop. The floor moved under this step twice: `PluginEditor.cpp`'s `editorWidth`
-  and `editorHeight` are **1678×844** now — both the default and the minimum, since the transport
+  and `editorHeight` were **1678×844** — both the default and the minimum, since the transport
   bar is one row, 4.2's panel half filled it and 4.3's timing fader needed room in it — which does
   not fit 1366×768 with
   Live's chrome at all. Trimming heights cannot win that; the row has to wrap to two lines
@@ -339,6 +342,15 @@ touches the velocity law. No step here is allowed to be reported as better becau
   `ChannelStrip::resized` is never executed), and should assert that the
   hover readout `StepGridComponent::paintValueOverlay` draws at `cell.getY() − 12` is not
   clipped on the top row. ~4-6 h.
+  **Split as of 4.3b (2026-11-16), and now mostly discharged:** the third fader had made the
+  floor worse (**1832×844**), so the *wrap rule* and the multi-size layout test were pulled
+  forward into 4.3b and shipped there — one row at **1774 px** and wider, two lines below it,
+  editor floor **1218×844**, which does fit 1366×768. What the wrap does *not* pay for is the
+  height half. The test now walks all twelve strips at six sizes and asserts `shortOnes == 0`,
+  i.e. that nothing reaches `ChannelStrip::resized`'s `tight` branch, because that branch is
+  broken: a probe arm at a 500 px window puts **2 of every strip's 17 visible controls outside
+  it**, at 236 px of strip with `getSpareHeight () == 0` — 12 BAD lines, `out/layout-tight-probe.log`.
+  The arm was removed again after measuring; 5.6 is that fix and nothing else, ~2-3 h not 4-6.
 - **5.7** Tell people the two gestures exist. Undo and redo are wired, tested and named in
   `LayoutTest` — `Ctrl/Cmd+Z`, `Ctrl+Y`, one press per *gesture* — and appear in **neither**
   README, while drag-a-sample-to-load does get a line in the header. A host that keeps its
@@ -652,7 +664,9 @@ stack array filled before the loop, `scratchWeights` is filled on the stack insi
 fall onto it. `Params::pitchDropId` (`chNPitchDrop`, `AudioParameterInt` 0..12, default 0) is the only way in:
 nothing in the engine picks a drop by itself, so the plan's "visible per-lane amount parameter only, never
 automatic" is the whole feature surface rather than a preference about it. The parameter count goes 100 to
-**112 (4 global + 12 x 9)** — 114 since 4.2's two variation parameters, 115 since 4.3's timing one —
+**112 (4 global + 12 x 9)** — 114 since 4.2's two variation parameters, 115 since 4.3's timing one,
+116 since 4.3b's Touch, and the number the check prints is the table's own size rather than a
+constant typed into it —
 and `[21]`'s "all 112 parameters are present" is exactly the check that would have
 caught the classic failure of this kind of step — parameter created, offered to the host, restored on load, and
 nobody listening for it.
@@ -1017,7 +1031,11 @@ both the default and the minimum, because the alternative to widening the window
 fader too narrow to drag or a button clipped to zero width — which is precisely what the
 layout test reads as an unclickable control. This makes **5.6's laptop floor worse**, not
 better: at 1366 px the bar cannot lay out, so that step now has to give the row somewhere
-else to go rather than only trim heights. It is no longer reachable from `1240×830`, and
+else to go rather than only trim heights. *(Closed 2026-11-16 by 4.3b, which is the step that
+gave it somewhere else to go: the row wraps below 1774 px and the floor came down to
+**1218×844**. The widening sentence above stayed true for the default size and stopped being
+true of the minimum the moment `editorWidth` became a default rather than a floor — which is
+what `PluginEditor.cpp`'s comment now says.)* It is no longer reachable from `1240×830`, and
 it cites `PluginEditor`'s `editorWidth`/`editorHeight` rather than a line number, because
 the comment block above them just moved both.
 
@@ -1132,7 +1150,8 @@ discovered after it.
 - **Velocity jitter is deferred to 4.3b.** A timing change and a level change in one step would put two
   sound-moving edits in the same commit, and the level half needs its own A/B — the tone law maps
   velocity to brightness, so jittering velocity is jittering timbre, and "it is the same samples, only
-  later" cannot be the gate for both.
+  later" cannot be the gate for both. *(Discharged by 4.3b below: its own fader, its own A/B, and the
+  tone cost measured and stated rather than bought back.)*
 
 **The bound is arithmetic, not taste.** `Layout::maxHumanizeLateSteps` is 0.25 steps because the
 closest two onsets this machine can put a bar at are **0.5000** steps apart — asked of
@@ -1193,8 +1212,10 @@ finds nothing, the dependent checks are skipped, and the run prints a green that
 knob is now opened before the scan, with the printed precondition (`darkDrawn >= 3 * watchBlock`)
 next to it. Both are in AGENTS.md with the numbers. A third, smaller one: the gate script's
 staleness guard scanned all of `Tests/`, so editing `SmokeTest.cpp` reported the *layout* exe as
-stale — true of nothing, since neither suite compiles the other's main (and
-`Tests/PatternPlanTest.cpp` is compiled by no CMake target at all). The guard now takes each
+stale — true of nothing, since neither suite compiles the other's main (and at the time
+`Tests/PatternPlanTest.cpp` was compiled by no CMake target at all — **superseded 2026-11-16 by
+`ecfe76c`**, which builds it and registers all four checks with CTest, so `ctest --test-dir
+build-new -C Release -V` is now the tracked way to go red from a clone). The guard now takes each
 target's own main plus `Source/**`; a guard that cries wolf on a correct build is a guard that
 gets skipped.
 
@@ -1227,7 +1248,112 @@ Run at the close of 4.3: **321 smoke checks / 0 failures**, **115 layout checks 
 guard 0 on both, `Tests/RtPathGuard.ps1` exit 0, `Groovebox` target exit 0. No audio changed at the
 default, and `launch/` still waits for Live (PID 43876) to be closed.
 
-Still open inside 4.3: velocity jitter (**4.3b**), and the amount is deliberately one number for the
+Still open inside 4.3: velocity jitter (**4.3b**, now closed — see its record below), and the amount is
+deliberately one number for the
 whole machine — per-lane timing depth is not on the parameter list, and the two ends of the fader are
 the whole design until someone needs the middle per lane.
 
+
+### 4.3b — Touch: a hit struck a little off what was written (done 2026-11-16)
+
+**What shipped.** A fourth global fader named **Touch**, in the Variation group beside Mutate
+and Humanize, 0..1, default **shut** (`Params::touchDefault = 0.0f`), double-click to shut,
+`Params::touchId` in `Parameters.h`, and a row in `Params::globalIds()` whose length is in its
+type so a forgotten row is a compile error — not hand-copied into `allParameterIds`, which is the
+trap that bit three times before and is now test [21]’s job: **116 parameters**, all written, all
+reaching the field they name, and the table compared against what the host is offered. The engine
+law is `SequencerEngine::struckVelocityFor`, and it is a **deviation**, not a redraw: the rung the
+step stores is the centre, the draw is `((key >> 24) & 0xffff) / 65536`, squared about zero
+(`away * |away|`), scaled by `Layout::maxTouchRatio` (0.25) and by the knob, and the result is
+clamped **into the 7-bit rung lattice the payload stores** — 127 in, 127 out, never 0.63. That
+last part is what keeps [28]’s baseline honest: `bit-identical at probability 1.0` is a machine
+answer only while the law cannot invent a value the record cannot carry, and the gate that says
+so runs on the cell deliberately drawn at 0.5 (63.5 of 127), the one rung where a law applied to
+the float rather than the rung answers differently on the two sides of a write.
+
+**Three readers, three slices.** `takeKey` is one splitmix64 per cell; the roll reads bits 40..63,
+timing 0..23 and level 24..39, and the timing permutation is untouched — 4.3a’s
+`maxHumanizeLateSteps` gate is the same code and the same limit, and [31] now proves a level knob
+cannot retune it (`the timing bound is the same with the level knob open as with it shut`, and the
+converse). Two checks were already there, one had to be invented:
+
+- the correlations were **not enough**. Mutating the level law to read the roll’s slice left both
+  green: `unit` is a 16-bit window of a 64-bit hash, so conditioned on a binary roll outcome it is
+  exactly uniform (each value four times in [0, 2^23)) and the point-biserial r is 0.0000 by
+  arithmetic. Reading the bottom 24 instead gives `unit_t = (unit_l + H) / 256`, measured
+  r = 0.0039 against a 3-sigma limit of 0.0674. A correlation gate is blind to a wrong slice; all
+  it can ever say is that two things are independent.
+- so [31] part c now **names the bits**: re-derive the key in the test, predict the struck rung,
+  the lateness in steps and the fire-or-not for all 4096 cells from the three slices as
+  documented, and require zero wrong in each. On the two mutated builds it reports 3519 and 3547
+  of 4096 disagreeing. `out/ab-43b.ps1`, 14 arms, second run: **14/14 red, restored green** — the
+  first run is what found this (`out/ab-43b-summary.txt` shows c and d green;
+  `out/ab-43b-summary-2.txt` does not).
+- gates follow the shipped philosophy, not 4-sigma-of-a-coin. The cross-seed stability limit is
+  the worst departure among 47 *other* seeds with the tested seed deliberately outside that
+  sample, compared against the engine’s own formula re-evaluated: `seed 1234 sits 0.00256 from
+  centred; the worst of 47 neighbours sits 0.00705`. Nothing rounded, nothing typed.
+- the one seed-hunting arm has the knob set **before** the loop and prints its precondition:
+  `precondition: Touch open for the search; seed 0 strikes rung 80 -17 steps off it`.
+
+**What it costs, measured and left in.** Same seed, same −3.5 dB trim in both arms, four bars of
+the whole 64-rung ladder: rms 0.0416536 → 0.0416878 (**+0.0071 dB**), 2..7 kHz 0.000412934 →
+0.000411705 (**−0.0259 dB**), peak 1.438488 → 1.485904 (**+0.28 dB**). The peak rise is not a gain
+and is stated as what it is: four voices at one step add together, and three of them pulling up
+beats a shut step whose loudest rung is only one. Asked of **one** voice — the rung-127 hit, where
+monotone gain and monotone tone make `<=` arithmetic rather than statistics — the direction is only
+ever down: peak 0.601509 → 0.577455, 6 kHz 0.00000835 → 0.00000798. No limiter, no hidden trim,
+nothing bought back. The level-matched claim is the bit-exact one: a jittered hit is the same
+samples as the hit *drawn* at the level the draw said, at 64, 256 and 1024 blocks.
+
+**The clamp is the asymmetric part and it is counted, not widened away.** Half the knob should be
+half the departure, and 101 of 4096 keys disagreed — by one step (the rounding bound is exactly
+one, so the gate now compares `round (d)` with `round (d / 2)` in steps) and by the ceiling (a rung
+near 127 has its positive departures cut off, so both arms land on 127 and are *equal* rather than
+halved). The exemption is printed and held under a quarter of the take, paired with the weaker
+claim that survives it: opening the knob never moves a hit back towards its rung.
+`37 held, 27 struck lighter` at the full rung, and `the full rung shows the clamp biting and not
+only existing`.
+
+**Migration.** A session written before the row existed opens with Touch **shut**, not at whatever
+the last take used, and keeps everything else it did store — the same `copyXmlToBinary`-shaped
+fixture as 4.3’s, with the new row deleted out of a saved state and what is left loaded.
+
+**5.6 pulled forward: the row wraps.** The third fader is 154 px of row, and the alternative to a
+rule was a floor that moved again (1678 → 1832 was already twice). So: `TransportBar` now owns
+`variationBandWidth / oneRowWidth (1774) / wrappedRowWidth (1182) / oneRowHeight (60) /
+twoRowHeight (96)` and `isWrappedForWidth / heightForWidth`; `layoutVariation()` was extracted so
+the same code lays the group out on either line; the editor asks `heightForWidth` with the width it
+is about to hand over and takes its floor from `wrappedRowWidth + margin * 2` = **1218×844**; the
+grid pays 36 px at the narrow end (405 → 369). The default is still 1832×844 and is now documented
+as a default rather than a floor. Widening past 1832 was rejected: the cost lands on the grid, which
+is the thing being looked at while the faders are not.
+
+**The layout gates that were false greens, and what each one asks now.** Six sizes × six claims.
+(i) The first version compared `height` with `heightForWidth (getWidth)` — the same function
+`resized ()` had just used, so it proved only that the editor and the bar read one rule, and stayed
+green on `return false`; the arm that bites states the numbers (`oneRowHeight` at `>= oneRowWidth`,
+`twoRowHeight` below), which is also the only thing that catches `<= oneRowWidth` at all. (ii) The
+rule is about **bar** widths, not window widths: the first sweep laid out at `1774` and wrapped
+inside a 60 px band, printing 14 problems. The test measures `barInset` off the running editor and
+the editor asks with `area.getWidth ()`. (iii) The hover readout check asked only about the top edge
+and passed on a **1 px tall** rectangle — `Rectangle::setTop`/`setBottom` move an edge and *resize*
+in 8.0.4 — so the helper now slides with `jlimit` on the far corner and the gate wants all 192 cells
+inside, 11 px tall and at least 22 wide. (iv) The strip walk is all twelve strips at every size,
+quiet, with one printed exception, and it says `no strip is short enough to need the tight rule`
+because that rule is broken and unreachable: probe at 1832×500 → 236 px strips, 2 of 17 controls
+outside, spare 0, 12 BAD lines (`out/layout-tight-probe.log`). That is what is left of 5.6.
+
+**Run.** `ctest --test-dir build-new -C Release -V` → **4/4**: 365 smoke checks / 0 failures, 374
+layout checks / 0 problems, 85 planner checks / 0 problems, `GUARD OK`. Both harnesses exited 0 on
+their own, `Tests/RtPathGuard.ps1` exit 0, the staleness guard in `out/run-gate.ps1` clean, no
+C4456 left in `LayoutTest.cpp`. Docs: README gained *How hard a hit is actually struck*, the
+feature-table row, the 116 count in both places that quote it, the three-slice bullet, the wrap
+sentence in **Layout**, the Touch bullet in **Verifying**, the planner suite in the test inventory
+and a limitation saying Touch is level-only and a deviation; `installer/README.txt` the plain-text
+version; AGENTS.md the three bullets (a wrong slice, bounds needing a size, a gate that may not
+borrow its own predicate) and the CTest correction the `ecfe76c` handover asked for. **Not done
+here, on purpose:** a feature commit ships no export — `launch/` and the export hashes AGENTS.md
+quotes belong to the shipping lane, and whoever builds it refreshes those hashes against that
+build’s SHA; the genre presets are still undocumented in the shipped README, which is 4.4’s to
+fix; and 4.4 itself stands on its own.

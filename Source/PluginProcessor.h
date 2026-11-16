@@ -142,6 +142,23 @@ public:
     }
 
     /**
+        The level the hit at (bar, step, channel) is struck at, given what its step
+        says right now.
+
+        The third of the three seams, and the one that reads the grid rather than the
+        clock: the draw is a proportion of the written velocity, so answering it needs
+        the cell's own level, taken from the same storage the audio thread reads. A
+        check asked through this therefore goes through `setStepVelocity`, which means it
+        goes through the float the session holds and comes back off the lattice the
+        session is written on — the two things the law is claimed not to depend on.
+    */
+    float wouldThisStepBeStruckAt (juce::int64 bar, int step, int channel) const
+    {
+        return engine.struckVelocityFor (bar, step, channel,
+                                         sequencerState.velocity[(size_t) channel][(size_t) step].load());
+    }
+
+    /**
         Where one step sits inside its bar, in steps from the top of it.
 
         The engine's own `stepOnsetInSteps`, pass-through for the same reason as the
@@ -300,11 +317,25 @@ public:
         The timing half of the same pair: closed, every hit starts on its onset; open,
         each one is drawn late out of the same seed the drops come out of, by at most
         `Layout::maxHumanizeLateSteps` of a step. Never early, and never enough to pass
-        the hit after it. See `SequencerEngine::humanizeLateInSamples`, which is the
+        the hit after it. See `SequencerEngine::humanizeLateInSteps`, which is the
         function both this and the tests ask.
     */
     float getHumanize() const noexcept;
     void setHumanize (float amount);
+
+    /**
+        How much of the grid's dynamic slack the machine may use, 0..1.
+
+        The level half of the same pair: closed, every hit is struck at the velocity its
+        step was written at; open, each one departs from it by at most
+        `Layout::maxTouchRatio` of that velocity, drawn out of the same seed the drops
+        and the lateness come out of. Multiplicative, so a rest stays a rest, and the
+        result stays on the lattice the record stores. See
+        `SequencerEngine::struckVelocityFor`, which is the function both this and the
+        tests ask.
+    */
+    float getTouch() const noexcept;
+    void setTouch (float amount);
 
     /** Which sequence of rolls this session is. Same number, same grid, same drops. */
     int getSeed() const noexcept;

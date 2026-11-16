@@ -6792,6 +6792,1375 @@ int main()
     }
 
     //======================================================================
+    /**
+        The level half of variation, measured the way the other two were.
+
+        Three things have to be true and none of them follows from the sections above.
+        The departure has to be bounded by arithmetic and centred on nothing: a level
+        that can only go down is a trim, and a level that wanders is a re-roll of the
+        dynamics the user painted. The take has to survive a save, because the record
+        stores a velocity as one of 127 and a law applied to the float before that
+        rounding answers differently on the two sides of a write. And the draw has to
+        reach the samples as the level it said and nothing else, because every
+        proportional gate above could sit next to an engine that never applies it.
+
+        Velocity in this machine is two laws — gain and tone — so a hit struck
+        differently is also a hit coloured differently. That is the mechanism working as
+        designed, and it is why the audio checks below do not ask for the same samples at
+        a different level. They ask for the samples the engine itself says it struck,
+        which is the stronger claim and the one a hidden renormalisation cannot pass.
+    */
+    std::printf ("\n[31] a hit is struck a little differently\n");
+    {
+        // `static` so the capture-less helpers below can read them: MSVC calls a use of a
+        // block-scope constexpr in a `[]` lambda odr-use and answers C3493, and static
+        // storage is the honest way to say these are fixtures, not locals.
+        static constexpr int touchBars  = 64;
+        static constexpr int touchLanes = 4;
+        static constexpr int touchCells = touchBars * Layout::numSteps * touchLanes;
+        static constexpr int ladder     = touchLanes * Layout::numSteps;
+
+        const auto touchClick = makeClickWav ("touch-click", 1200, sampleRate);
+
+        const auto indexOf = [] (int bar, int step, int lane)
+        {
+            return (size_t) ((bar * Layout::numSteps + step) * touchLanes + lane);
+        };
+
+        /**
+            The rung each cell of the grid was drawn at.
+
+            Sixty-four rungs from nothing to full, one per cell, so the take is asked
+            about the whole range at once: the bottom of it is where "a proportion, not
+            an offset" is visible, the top is where the clamp is, and the middle is where
+            the law has enough outcomes to be measured rather than counted.
+        */
+        const auto rungOf = [] (int lane, int step)
+        {
+            return (lane * Layout::numSteps + step) * 127 / (ladder - 1);
+        };
+
+        /**
+            How far a rung is allowed to move, in rungs.
+
+            The engine multiplies the rung by a draw that cannot exceed one in magnitude
+            and rounds the product, so this is the largest magnitude its own clamp can
+            reach — and twice this plus one is how many outcomes that rung admits, which
+            is what every "did a new seed really move it" limit below is derived from
+            rather than guessed at.
+        */
+        const auto maxDelta = [] (int rung)
+        {
+            return (int) std::floor ((double) rung * Layout::maxTouchRatio + 0.5);
+        };
+
+        /**
+            Four lanes painted through, one rung per cell, at one trim.
+
+            The globals go in before `prepareToPlay` for the reason [30] records: the
+            master trim moves through a 20 ms one-pole that only converges at the sample
+            rate, so a trim changed after the prepare would have the smoother still
+            travelling while the level was being measured.
+        */
+        const auto arm = [&] (GrooveboxProcessor& p, int forBlockSize)
+        {
+            p.setManualTempo (120.0);
+            p.setSwingGrid (4);
+            p.setSwing (0.0f);
+            p.setMasterGainDb (-3.5f);
+            p.setSeed (1234);
+            p.prepareToPlay (sampleRate, forBlockSize);
+
+            juce::String error;
+
+            for (int lane = 0; lane < touchLanes; ++lane)
+                p.loadSampleIntoChannel (lane, touchClick, error);
+
+            clearAllSteps (p);
+
+            for (int lane = 0; lane < touchLanes; ++lane)
+                for (int step = 0; step < Layout::numSteps; ++step)
+                {
+                    p.setStep (lane, step, true);
+                    p.setStepVelocity (lane, step, (float) rungOf (lane, step) / 127.0f);
+
+                    // Half, and `mutate` open in the checks that need a roll to have an
+                    // answer to correlate against; shut everywhere else, where the grid
+                    // is law and only the level moves.
+                    p.setStepChance (lane, step, 128.0f / (float) Layout::chanceLevels);
+                }
+
+            /**
+                One cell deliberately off the lattice.
+
+                0.5 is 63.5 of 127, so the float in memory and the rung the record writes
+                are two different numbers that round to the same place. The two claims
+                that need that are the shut knob handing back the first untouched, and the
+                open one handing back something a save cannot change — and without a cell
+                like this both of them are true of every cell for free, which is a green
+                that measured nothing.
+            */
+            p.setStepVelocity (2, 0, 0.5f);
+        };
+
+        /** Every key's struck level, in rungs, in a fixed slot per cell. */
+        const auto struck = [&] (GrooveboxProcessor& p, bool backwards)
+        {
+            std::vector<double> cells ((size_t) touchCells, -1.0);
+
+            for (int i = 0; i < touchBars; ++i)
+                for (int j = 0; j < Layout::numSteps; ++j)
+                    for (int k = 0; k < touchLanes; ++k)
+                    {
+                        const auto bar  = backwards ? touchBars - 1 - i : i;
+                        const auto step = backwards ? Layout::numSteps - 1 - j : j;
+                        const auto lane = backwards ? touchLanes - 1 - k : k;
+
+                        cells[indexOf (bar, step, lane)]
+                            = (double) p.wouldThisStepBeStruckAt (bar, step, lane) * 127.0;
+                    }
+
+            return cells;
+        };
+
+        const auto hashOf = [] (const std::vector<double>& cells)
+        {
+            return fnv1a (0xcbf29ce484222325ull, cells.data(), cells.size() * sizeof (double));
+        };
+
+        /**
+            The signed proportional departure of one key, or null when the key cannot
+            answer: a rung of nothing has no proportion, and the full rung is held by the
+            clamp, so its departure is the clamp's answer rather than the draw's.
+        */
+        const auto departure = [] (double rung, double got) -> double
+        {
+            if (rung <= 0.0 || rung >= 127.0)
+                return std::numeric_limits<double>::quiet_NaN ();
+
+            return ((double) std::llround (got) - rung) / rung;
+        };
+
+        std::vector<int> rungAt ((size_t) touchCells, 0);
+
+        for (int bar = 0; bar < touchBars; ++bar)
+            for (int step = 0; step < Layout::numSteps; ++step)
+                for (int lane = 0; lane < touchLanes; ++lane)
+                    rungAt[indexOf (bar, step, lane)] = rungOf (lane, step);
+
+        // The rungs with enough travel for the law to be *measured* rather than counted:
+        // below this, a rung admits so few outcomes that the rounding, not the draw, is
+        // what decides the answer.
+        auto fineCells = 0;
+
+        for (const auto rung : rungAt)
+            if (rung >= 64 && rung < 127)
+                ++fineCells;
+
+        GrooveboxProcessor probe;
+        arm (probe, blockSize);
+
+        //---- a. shut hands the number back; open is bounded, centred, on the lattice --
+        {
+            probe.setTouch (0.0f);
+
+            auto moved = 0;
+
+            for (int bar = 0; bar < touchBars; ++bar)
+                for (int step = 0; step < Layout::numSteps; ++step)
+                    for (int lane = 0; lane < touchLanes; ++lane)
+                        if (probe.wouldThisStepBeStruckAt (bar, step, lane)
+                                != probe.getStepVelocity (lane, step))
+                            ++moved;
+
+            check (moved == 0,
+                   "shut, every hit is struck at exactly the float its step holds",
+                   juce::String (moved) + " of " + juce::String (touchCells) + " keys moved");
+
+            // The precondition the two claims above and the save test below rest on:
+            // the fixture cell really is off the record's lattice while still rounding
+            // onto the rung the ladder gave it.
+            check (std::abs (0.5 * 127.0 - std::round (0.5 * 127.0)) > 0.1
+                       && rungAt[indexOf (0, 0, 2)] == (int) std::lround (0.5 * 127.0),
+                   "the fixture cell is off the lattice and still on rung 64",
+                   "63.5 of 127, ladder rung " + juce::String (rungAt[indexOf (0, 0, 2)]));
+
+            probe.setTouch (1.0f);
+
+            const auto open = struck (probe, false);
+
+            auto offLattice = 0, pastBound = 0, pastFull = 0, restMoved = 0;
+            auto fullHeld = 0, fullStruckLighter = 0, freeCells = 0;
+            auto sumFree = 0.0, sumAbsFine = 0.0;
+            auto nearFine = 0;
+
+            for (size_t i = 0; i < (size_t) touchCells; ++i)
+            {
+                const auto rung = (double) rungAt[i];
+                const auto steps = (double) std::llround (open[i]);
+
+                if (std::abs (open[i] - steps) > 1.0e-5)
+                    ++offLattice;
+
+                if (std::abs (steps - rung) > (double) maxDelta ((int) rung) + 1.0e-9)
+                    ++pastBound;
+
+                if (steps > 127.0)
+                    ++pastFull;
+
+                if (rung == 0.0 && steps != 0.0)
+                    ++restMoved;
+
+                if (rung == 127.0)
+                {
+                    if (steps == 127.0)
+                        ++fullHeld;
+                    else
+                        ++fullStruckLighter;
+                }
+
+                const auto away = departure (rung, open[i]);
+
+                if (! std::isnan (away))
+                {
+                    ++freeCells;
+                    sumFree += away;
+                }
+
+                if (rung >= 64.0 && rung < 127.0)
+                {
+                    sumAbsFine += std::abs (away);
+
+                    if (std::abs (away) <= Layout::maxTouchRatio * 0.25)
+                        ++nearFine;
+                }
+            }
+
+            const auto meanSigned = sumFree / (double) freeCells;
+            const auto meanAbs = sumAbsFine / (double) fineCells;
+
+            std::printf ("        %d keys: mean signed departure %s, mean absolute %s of travel %s;\n"
+                         "        %d of %d fine rungs within a quarter of the travel; full rung: %d held,"
+                         " %d struck lighter\n",
+                         touchCells, juce::String (meanSigned, 5).toRawUTF8(),
+                         juce::String (meanAbs, 5).toRawUTF8(),
+                         juce::String (Layout::maxTouchRatio, 5).toRawUTF8(),
+                         nearFine, fineCells, fullHeld, fullStruckLighter);
+
+            check (offLattice == 0,
+                   "open, what the law hands out is on the lattice the record stores",
+                   juce::String (offLattice) + " of " + juce::String (touchCells)
+                       + " departures were off it");
+
+            check (pastBound == 0,
+                   "and no hit departs by more than the travel of its own rung",
+                   juce::String (pastBound) + " past "
+                       + juce::String (Layout::maxTouchRatio, 3) + " of themselves");
+
+            // The clamp, not the bound: a rung of 127 admits departures up to 32 by the
+            // arithmetic above, so `pastBound` alone would let a law that overshoots the
+            // top of the range through. This is the check that says opening Touch cannot
+            // make the loudest thing in the set louder.
+            check (pastFull == 0,
+                   "and the full rung is never pushed past full",
+                   juce::String (pastFull) + " keys above 127");
+
+            check (restMoved == 0,
+                   "a step drawn at nothing is still drawn at nothing",
+                   juce::String (restMoved) + " rests given a level");
+
+            // Both halves of the clamp have to be present, or "never past full" could be
+            // paid for with "nothing ever reaches the top".
+            check (fullHeld > 0 && fullStruckLighter > 0,
+                   "the full rung shows the clamp biting and not only existing",
+                   juce::String (fullHeld) + " held at 127, "
+                       + juce::String (fullStruckLighter) + " taken below it");
+
+            // A uniform draw about zero would average half the travel in absolute terms;
+            // squaring the centred draw puts the average at a third, which is the whole
+            // claim that most hits are struck nearly as drawn. Measured on the fine rungs
+            // only, because a coarse one rounds to nothing and would flatter the law.
+            check (meanAbs > Layout::maxTouchRatio * 0.27
+                       && meanAbs < Layout::maxTouchRatio * 0.38,
+                   "the average departure is a third of the travel, not half of it",
+                   "mean " + juce::String (meanAbs, 5) + " of "
+                       + juce::String (Layout::maxTouchRatio, 5));
+
+            check (nearFine > fineCells * 4 / 10 && nearFine < fineCells * 6 / 10,
+                   "half the fine rungs move by less than a quarter of the travel",
+                   juce::String (nearFine) + " of " + juce::String (fineCells));
+
+            /**
+                Centred, and gated against its neighbours rather than against a saying.
+
+                The mean of the distribution is exactly nothing, but a take is 4096 keys,
+                not an integral, so the honest limit is how far the *other* seeds get from
+                zero. Seed 1234 is deliberately left out of that sample: a tolerance
+                estimated from the thing it is meant to judge would always be big enough.
+            */
+            auto worstNeighbour = 0.0;
+
+            for (int seed = 1; seed <= 48; ++seed)
+            {
+                if (seed == 1234)
+                    continue;
+
+                probe.setSeed (seed);
+
+                auto sum = 0.0;
+                auto n = 0;
+                const auto other = struck (probe, false);
+
+                for (size_t i = 0; i < (size_t) touchCells; ++i)
+                {
+                    const auto away = departure ((double) rungAt[i], other[i]);
+
+                    if (! std::isnan (away))
+                    {
+                        sum += away;
+                        ++n;
+                    }
+                }
+
+                if (n > 0)
+                    worstNeighbour = juce::jmax (worstNeighbour, std::abs (sum / (double) n));
+            }
+
+            probe.setSeed (1234);
+
+            std::printf ("        seed 1234 sits %s from centred; the worst of 47 neighbours sits %s\n",
+                         juce::String (std::abs (meanSigned), 5).toRawUTF8(),
+                         juce::String (worstNeighbour, 5).toRawUTF8());
+
+            check (std::abs (meanSigned) <= worstNeighbour,
+                   "the tested take is no further off centred than its neighbours are",
+                   juce::String (std::abs (meanSigned), 5) + " against "
+                       + juce::String (worstNeighbour, 5));
+
+            // Half the knob halves the departure, to within the one step the rounding can
+            // cost. The tolerance is not a band around a number: a law that rounded the
+            // delta to an integer step can never be further from half than half a step at
+            // each end, and one step is what the difference of two of those is.
+            probe.setTouch (0.5f);
+
+            const auto half = struck (probe, false);
+
+            /**
+                Twice the half-knob departure has to equal the full-knob one to within one
+                step — except where the ceiling has already taken the hit, which is the one
+                place the ratio is allowed to break, and it is allowed to break only in the
+                direction the clamp can go.
+
+                The engine rounds the product, so away from the ends of the range the two
+                arms are `round (d)` and `round (d / 2)` of the same real departure, and the
+                largest disagreement rounding can manufacture is one step at each end of the
+                halving, which is one step in the difference. Asked of the floats rather than
+                the steps the bound lands exactly on its own limit, and the last bit of the
+                `/ 127` in the seam's return is enough to put a hundred keys over it — the
+                harness being loose about units, not the law being wrong, and the lattice
+                gate above has already proven the values are whole rungs.
+
+                The exemption is not slack. A rung near the top has its positive departures
+                cut off by 127, so the half arm and the full arm can both land on the ceiling
+                and be equal rather than halved; that is the asymmetry the control ships with,
+                stated here instead of averaged away. It is counted, and the claim that
+                survives it is the weaker but still exact one: opening the knob wider never
+                brings a hit *closer* to the rung it was drawn at.
+            */
+            auto misaligned = 0, voidByCeiling = 0, notMonotone = 0;
+
+            for (size_t i = 0; i < (size_t) touchCells; ++i)
+            {
+                const auto rung = rungAt[i];
+
+                const auto fullStep = (int) std::llround (open[i]) - rung;
+                const auto halfStep = (int) std::llround (half[i]) - rung;
+
+                const auto atCeiling = rung + fullStep >= 127 || rung + fullStep <= 0;
+
+                if (std::abs (halfStep) > std::abs (fullStep))
+                    ++notMonotone;
+
+                if (std::abs (2 * halfStep - fullStep) > 1)
+                {
+                    if (atCeiling)
+                        ++voidByCeiling;
+                    else
+                        ++misaligned;
+                }
+            }
+
+            std::printf ("        half the knob: %d of %d keys agree to one step of halving, %d are"
+                         " exempt at the ceiling, %d are not monotone\n",
+                         touchCells - misaligned - voidByCeiling, touchCells,
+                         voidByCeiling, notMonotone);
+
+            check (misaligned == 0,
+                   "away from the ceiling, half the knob is half the departure to one step",
+                   juce::String (misaligned) + " keys did not halve");
+
+            check (notMonotone == 0,
+                   "and wherever the clamp bites, opening the knob further still moves away"
+                   " from the rung, never back towards it",
+                   juce::String (notMonotone) + " keys got closer with the knob open");
+
+            check (voidByCeiling > 0 && voidByCeiling < touchCells / 4,
+                   "the ceiling is doing real work in this take, and is not the whole of it",
+                   juce::String (voidByCeiling) + " of " + juce::String (touchCells)
+                       + " keys exempt");
+
+            probe.setTouch (1.0f);
+        }
+
+        //---- b. one key, one take -------------------------------------------------
+        {
+            probe.setTouch (1.0f);
+
+            const auto forward = struck (probe, false);
+            const auto again = struck (probe, false);
+            const auto backward = struck (probe, true);
+
+            check (hashOf (forward) == hashOf (again),
+                   "the same seed asked twice gives the same levels",
+                   hexOf (hashOf (forward)) + " vs " + hexOf (hashOf (again)));
+
+            check (hashOf (forward) == hashOf (backward),
+                   "and the answer does not depend on the order it was asked in",
+                   hexOf (hashOf (forward)) + " forwards, " + hexOf (hashOf (backward)) + " backwards");
+
+            probe.setSeed (1235);
+
+            const auto other = struck (probe, false);
+
+            auto moved = 0, agreed = 0, coarsest = 1 << 30;
+
+            for (size_t i = 0; i < (size_t) touchCells; ++i)
+            {
+                const auto rung = rungAt[i];
+
+                if (rung < 64 || rung >= 127)
+                    continue;
+
+                if (std::abs (other[i] - forward[i]) > 1.0e-9)
+                    ++moved;
+                else
+                    ++agreed;
+
+                coarsest = juce::jmin (coarsest, 2 * maxDelta (rung) + 1);
+            }
+
+            /**
+                Three quarters of the fine rungs have to change, and the reason that is
+                the right shape of claim is the coarsest one.
+
+                A rung of 64 admits seventeen outcomes and a rung of 126 admits
+                sixty-three, so two seeds agreeing on some cells is what independent draws
+                *predict* — one agreement in seventeen at the coarse end — and a check that
+                demanded a clean sweep would be a check that the law must ignore its own
+                lattice. What it must not do is leave the take where it was, which is what
+                the three quarters says, against the one in `coarsest` that luck predicts.
+            */
+            std::printf ("        seed 1235 moved %d of %d fine keys; the coarsest fine rung admits "
+                         "%d outcomes, so independent draws agree on about one in %d\n",
+                         moved, fineCells, coarsest, coarsest);
+
+            check (moved >= fineCells * 3 / 4,
+                   "a new seed re-draws the levels of the take, not a tweak of it",
+                   juce::String (moved) + " of " + juce::String (fineCells) + " fine keys");
+
+            auto sum = 0.0, absSum = 0.0;
+            auto n = 0;
+
+            for (size_t i = 0; i < (size_t) touchCells; ++i)
+            {
+                const auto away = departure ((double) rungAt[i], other[i]);
+
+                if (std::isnan (away))
+                    continue;
+
+                sum += away;
+                ++n;
+
+                if ((double) rungAt[i] >= 64.0)
+                    absSum += std::abs (away);
+            }
+
+            const auto otherMeanAbs = absSum / (double) fineCells;
+
+            std::printf ("        seed 1235: mean absolute departure %s, mean signed %s\n",
+                         juce::String (otherMeanAbs, 5).toRawUTF8(),
+                         juce::String (sum / (double) n, 5).toRawUTF8());
+
+            check (otherMeanAbs > Layout::maxTouchRatio * 0.27
+                       && otherMeanAbs < Layout::maxTouchRatio * 0.38,
+                   "and the new take obeys the same law as the old one",
+                   "mean " + juce::String (otherMeanAbs, 5) + " of "
+                       + juce::String (Layout::maxTouchRatio, 5));
+
+            probe.setSeed (1234);
+        }
+
+        //---- c. three readers, three slices of one key ----------------------------
+        {
+            /**
+                The two claims that make this a level knob rather than a second machine.
+
+                Opening it must leave *which* hits play exactly where they were and *when*
+                they land exactly where they were; closing the timing knob must leave the
+                levels where they were. Each is a hash over the whole take at both ends of
+                the other knob's travel, because a shared slice of the key does not change
+                the average of anything — it changes which cells move together, which is
+                only visible cell by cell.
+            */
+            probe.setMutate (1.0f);
+            probe.setHumanize (1.0f);
+            probe.setTouch (0.0f);
+
+            std::vector<juce::uint8> fired ((size_t) touchCells, 0);
+            std::vector<double> late ((size_t) touchCells, 0.0);
+            auto worstLate = 0.0;
+
+            const auto rollAndTime = [&] ()
+            {
+                for (int bar = 0; bar < touchBars; ++bar)
+                    for (int step = 0; step < Layout::numSteps; ++step)
+                        for (int lane = 0; lane < touchLanes; ++lane)
+                        {
+                            fired[indexOf (bar, step, lane)]
+                                = probe.wouldThisStepHit (bar, step, lane) ? 1 : 0;
+
+                            late[indexOf (bar, step, lane)]
+                                = probe.wouldThisStepStartLate (bar, step, lane);
+                        }
+            };
+
+            rollAndTime();
+
+            const auto firedShut = fnv1a (0xcbf29ce484222325ull, fired.data(), fired.size());
+            const auto lateShut = hashOf (late);
+
+            for (const auto value : late)
+                worstLate = juce::jmax (worstLate, value);
+
+            probe.setTouch (1.0f);
+            rollAndTime();
+
+            const auto firedOpen = fnv1a (0xcbf29ce484222325ull, fired.data(), fired.size());
+            const auto lateOpen = hashOf (late);
+
+            auto worstLateOpen = 0.0;
+
+            for (const auto value : late)
+                worstLateOpen = juce::jmax (worstLateOpen, value);
+
+            check (firedOpen == firedShut,
+                   "opening the level knob does not change which hits play",
+                   hexOf (firedShut) + " shut, " + hexOf (firedOpen) + " open");
+
+            check (lateOpen == lateShut,
+                   "and it does not change when they land",
+                   hexOf (lateShut) + " shut, " + hexOf (lateOpen) + " open");
+
+            // 4.3's own limit, re-measured with 4.3b's knob wide open: the bound is
+            // `Layout::maxHumanizeLateSteps` and nothing in the level law gets to move
+            // it, so the worst lateness is the same number on both sides.
+            check (worstLateOpen == worstLate
+                       && worstLate <= Layout::maxHumanizeLateSteps + 1.0e-12,
+                   "the timing bound is the same with the level knob open as with it shut",
+                   juce::String (worstLate, 6) + " against " + juce::String (worstLateOpen, 6)
+                       + ", bound " + juce::String (Layout::maxHumanizeLateSteps, 6));
+
+            probe.setHumanize (0.0f);
+            const auto levelsStraight = hashOf (struck (probe, false));
+
+            probe.setHumanize (1.0f);
+            const auto levelsShuffled = hashOf (struck (probe, false));
+
+            check (levelsStraight == levelsShuffled,
+                   "opening the timing knob does not change how hard a hit is struck",
+                   hexOf (levelsStraight) + " straight, " + hexOf (levelsShuffled) + " swung late");
+
+            probe.setHumanize (0.0f);
+            probe.setMutate (0.0f);
+
+            /**
+                And the slices do not lean on each other.
+
+                A level knob that read the same bits as the timing knob would make every
+                late hit also a loud or a quiet one, which reads as a groove that steers
+                itself: the two numbers are drawn from one 64-bit key, so the only thing
+                that keeps them apart is which bits each one looks at. Recovered here by
+                undoing the two mappings — the travel and the square for timing, the
+                travel, the proportion and the square for level — over the keys where both
+                are recoverable, and gated against three sigma of the sampling noise of a
+                take this size rather than against a number picked to pass.
+            */
+            const auto timingUnit = [&] (int bar, int step, int lane)
+            {
+                return std::sqrt (probe.wouldThisStepStartLate (bar, step, lane)
+                                  / Layout::maxHumanizeLateSteps);
+            };
+
+            const auto levelUnit = [&] (int bar, int step, int lane)
+            {
+                const auto rung = (double) rungOf (lane, step);
+                const auto away = departure (rung,
+                                             (double) probe.wouldThisStepBeStruckAt (bar, step, lane) * 127.0);
+
+                if (std::isnan (away))
+                    return away;
+
+                const auto signedPart = away < 0.0 ? -std::sqrt (-away / Layout::maxTouchRatio)
+                                                   :  std::sqrt ( away / Layout::maxTouchRatio);
+
+                return (signedPart + 1.0) * 0.5;
+            };
+
+            probe.setHumanize (1.0f);
+            probe.setTouch (1.0f);
+
+            auto n = 0;
+            auto sumA = 0.0, sumB = 0.0, squareA = 0.0, squareB = 0.0, cross = 0.0;
+
+            for (int bar = 0; bar < touchBars; ++bar)
+                for (int step = 0; step < Layout::numSteps; ++step)
+                    for (int lane = 0; lane < touchLanes; ++lane)
+                    {
+                        const auto rung = (double) rungOf (lane, step);
+
+                        if (rung < 64.0 || rung >= 127.0)
+                            continue;
+
+                        const auto a = timingUnit (bar, step, lane);
+                        const auto b = levelUnit (bar, step, lane);
+
+                        if (std::isnan (b))
+                            continue;
+
+                        ++n;
+                        sumA += a; sumB += b;
+                        squareA += a * a; squareB += b * b;
+                        cross += a * b;
+                    }
+
+            const auto count = (double) n;
+            const auto meanA = sumA / count, meanB = sumB / count;
+            const auto cov = cross / count - meanA * meanB;
+            const auto rTime = cov / std::sqrt ((squareA / count - meanA * meanA)
+                                                 * (squareB / count - meanB * meanB));
+            const auto noise = 3.0 / std::sqrt (count);
+
+            std::printf ("        %d keys where both are recoverable: r between lateness and level %s"
+                         " (three sigma of a take this size is %s)\n",
+                         n, juce::String (rTime, 4).toRawUTF8(), juce::String (noise, 4).toRawUTF8());
+
+            check (std::abs (rTime) < noise,
+                   "how late a hit is and how hard it is struck are drawn from separate bits",
+                   "r = " + juce::String (rTime, 4) + ", limit " + juce::String (noise, 4));
+
+            // The same question against the roll, as a point-biserial between firing and
+            // the level unit: with the roll's bits and the level's bits shared, the hits
+            // that survive would be systematically the loud ones.
+            probe.setMutate (1.0f);
+
+            auto firedCount = 0, pairs = 0;
+            auto sumAll = 0.0, sumFired = 0.0, squareAll = 0.0;
+
+            for (int bar = 0; bar < touchBars; ++bar)
+                for (int step = 0; step < Layout::numSteps; ++step)
+                    for (int lane = 0; lane < touchLanes; ++lane)
+                    {
+                        const auto rung = (double) rungOf (lane, step);
+
+                        if (rung < 64.0 || rung >= 127.0)
+                            continue;
+
+                        const auto b = levelUnit (bar, step, lane);
+
+                        if (std::isnan (b))
+                            continue;
+
+                        ++pairs;
+                        sumAll += b;
+                        squareAll += b * b;
+
+                        if (probe.wouldThisStepHit (bar, step, lane))
+                        {
+                            ++firedCount;
+                            sumFired += b;
+                        }
+                    }
+
+            const auto share = (double) firedCount / (double) pairs;
+            const auto meanAll = sumAll / (double) pairs;
+            const auto meanFired = sumFired / (double) firedCount;
+            const auto meanMissed = (sumAll - sumFired) / (double) (pairs - firedCount);
+            const auto sdAll = std::sqrt (squareAll / (double) pairs - meanAll * meanAll);
+            const auto rRoll = (meanFired - meanMissed) * std::sqrt (share * (1.0 - share)) / sdAll;
+            const auto rollNoise = 3.0 / std::sqrt ((double) pairs);
+
+            std::printf ("        %d of %d fine keys fired; r between firing and level %s"
+                         " (limit %s)\n",
+                         firedCount, pairs, juce::String (rRoll, 4).toRawUTF8(),
+                         juce::String (rollNoise, 4).toRawUTF8());
+
+            check (firedCount > pairs * 3 / 10 && firedCount < pairs * 7 / 10,
+                   "the roll leaves about half the fine keys standing, so a correlation could show",
+                   juce::String (firedCount) + " of " + juce::String (pairs));
+
+            check (std::abs (rRoll) < rollNoise,
+                   "which hits survive the roll and how hard they are struck are separate bits too",
+                   "r = " + juce::String (rRoll, 4) + ", limit " + juce::String (rollNoise, 4));
+
+            /**
+                And the slices themselves, which no correlation can see.
+
+                Both gates above ask whether one draw *leans* on another, and a wrong slice
+                need not lean: every 16-bit window of a splitmix64 output is uniform on its
+                own, and taking the level from the roll's low half moves its mean by nothing
+                once the mask wraps the top of the roll back over it. The anti-vacuity run
+                proved it — arming either swap left all 362 checks green. So the claim
+                "three readers, three slices" needs a gate that names the bits, and the only
+                way to have one from outside the engine is to re-derive the key and predict
+                the answer cell by cell, which is the layout as an executable statement: a
+                shared or moved slice, a changed travel or a changed clamp all land on the
+                same number of mismatches, and the number is zero or it is not.
+            */
+            const auto keyAt = [] (int bar, int step, int lane)
+            {
+                const auto where = ((juce::uint64) (bar & 0x0fffffffull) << 8)
+                                   | ((juce::uint64) (step & 0xf) << 4)
+                                   | (juce::uint64) (lane & 0xf);
+
+                auto value = (juce::uint64) 1234 ^ (where * 0x9E3779B97F4A7C15ull);
+
+                value += 0x9E3779B97F4A7C15ull;
+                value = (value ^ (value >> 30)) * 0xBF58476D1CE4E5B9ull;
+                value = (value ^ (value >> 27)) * 0x94D049BB133111EBull;
+
+                return value ^ (value >> 31);
+            };
+
+            auto levelWrong = 0, timingWrong = 0, rollWrong = 0;
+
+            const auto chance = 128.0f / (float) Layout::chanceLevels;
+            const auto through = 1.0f - 1.0f * (1.0f - chance);
+
+            for (int bar = 0; bar < touchBars; ++bar)
+                for (int step = 0; step < Layout::numSteps; ++step)
+                    for (int lane = 0; lane < touchLanes; ++lane)
+                    {
+                        const auto key = keyAt (bar, step, lane);
+
+                        // Level: bits 24..39, squared about zero, a quarter of the rung.
+                        // The association follows the engine's own lines, so a mismatch
+                        // can only be a moved slice or a changed law, not a last ulp.
+                        const auto levelUnit = (double) ((key >> 24) & 0xffffull) * (1.0 / 65536.0);
+                        const auto away = levelUnit * 2.0 - 1.0;
+                        const auto deviation = away * std::abs (away);
+                        const auto rung = rungOf (lane, step);
+
+                        const auto delta = juce::roundToInt ((double) rung * deviation
+                                                             * Layout::maxTouchRatio * (double) 1.0f);
+
+                        if (juce::jlimit (0, 127, rung + delta)
+                            != juce::roundToInt ((double) probe.wouldThisStepBeStruckAt (bar, step, lane)
+                                                 * 127.0))
+                            ++levelWrong;
+
+                        // Timing: bits 0..23, squared one-sided, the bound scaled by it.
+                        const auto timingUnit = (double) (key & 0xffffffull) * (1.0 / 16777216.0);
+
+                        if (std::abs (Layout::maxHumanizeLateSteps * (double) 1.0f
+                                      * (timingUnit * timingUnit)
+                                      - probe.wouldThisStepStartLate (bar, step, lane)) > 1.0e-12)
+                            ++timingWrong;
+
+                        // Roll: bits 40..63, against what the knob lets the cell's own
+                        // chance ask for -- the same two numbers `wouldThisHitFire` uses.
+                        const auto rollUnit = (float) ((double) (key >> 40) * (1.0 / 16777216.0));
+
+                        if ((rollUnit < through) != probe.wouldThisStepHit (bar, step, lane))
+                            ++rollWrong;
+                    }
+
+            std::printf ("        %d cells predicted from the named slices: level %d wrong, timing %d wrong,"
+                         " roll %d wrong\n",
+                         touchCells, levelWrong, timingWrong, rollWrong);
+
+            check (levelWrong == 0,
+                   "the level draw is the middle 16 bits, as named, cell for cell",
+                   juce::String (levelWrong) + " of " + juce::String (touchCells) + " disagree");
+
+            check (timingWrong == 0,
+                   "and the timing draw is the bottom 24, so the two never share one",
+                   juce::String (timingWrong) + " of " + juce::String (touchCells) + " disagree");
+
+            check (rollWrong == 0,
+                   "and the roll is the top 24, so all three are one key with nothing left over",
+                   juce::String (rollWrong) + " of " + juce::String (touchCells) + " disagree");
+
+            probe.setMutate (0.0f);
+            probe.setHumanize (0.0f);
+            probe.setTouch (1.0f);
+        }
+
+        //---- d. the level reaches the samples -------------------------------------
+        {
+            /**
+                One cell, one hit, and the two ways of asking for its level.
+
+                The claim cannot be "the same samples, quieter": velocity is two laws in
+                this engine, so a hit struck at 64 is not a hit struck at 80 turned down —
+                it is also darker. What can be claimed, and what is worth far more than a
+                ratio, is that the take with the knob open is bit-for-bit the grid's hit
+                drawn at the level the engine itself names. A renormalisation, a floor, a
+                rounding of the answer or an extra filter anywhere in the path breaks it.
+            */
+            constexpr int hitLane = 2;
+            constexpr int hitStep = 8;
+            const auto hitRung = (double) rungOf (hitLane, hitStep);
+
+            auto pickSeed = 0;
+            auto wantSteps = 0;
+
+            // Open before the search: the knob is what makes the departure non-zero, and
+            // a seed scan run with it shut finds nothing and reports that as a pass.
+            probe.setTouch (1.0f);
+
+            for (int candidate = 0; candidate < 2000; ++candidate)
+            {
+                probe.setSeed (candidate);
+
+                const auto got = (double) std::llround (
+                    (double) probe.wouldThisStepBeStruckAt (0, hitStep, hitLane) * 127.0);
+
+                const auto away = (int) std::llround (got - hitRung);
+
+                if (std::abs (away) >= 8)
+                {
+                    pickSeed = candidate;
+                    wantSteps = away;
+                    break;
+                }
+            }
+
+            std::printf ("        precondition: Touch open for the search; seed %d strikes rung %d "
+                         "%d steps off it (rung %d, travel %d)\n",
+                         pickSeed, (int) hitRung, wantSteps, (int) hitRung, maxDelta ((int) hitRung));
+
+            check (wantSteps != 0,
+                   "a seed exists whose first hit is struck eight steps off its rung",
+                   "searched 2000, found none");
+
+            // Read at `pickSeed`, which is the seed the search left the probe on: the rung
+            // the engine says it struck is what the second arm is built from, so it has to
+            // come from the same seed the audio is rendered at.
+            const auto struckRung = (int) std::llround (
+                (double) probe.wouldThisStepBeStruckAt (0, hitStep, hitLane) * 127.0);
+
+            probe.setSeed (1234);
+
+            /**
+                Everything that renders happens on its own processor.
+
+                The probe is the machine the seam checks run against, and its ladder is
+                still needed intact by the save test below; an audio arm clears the grid
+                down to one cell, so sharing it would quietly switch those arms off.
+            */
+            GrooveboxProcessor player;
+            arm (player, blockSize);
+
+            const auto take = [&] (GrooveboxProcessor& p, int block, int total)
+            {
+                {
+                    juce::AudioBuffer<float> settle (2, block);
+                    juce::MidiBuffer silent;
+
+                    for (int i = 0; i < 16; ++i)
+                    {
+                        settle.clear();
+                        p.processBlock (settle, silent);
+                    }
+                }
+
+                p.resetTransport();
+                p.setPlaying (true);
+
+                auto out = render (p, total, block, sampleRate);
+                p.setPlaying (false);
+
+                return out;
+            };
+
+            /** The one cell on, at the rung asked for, with the knob where it is asked. */
+            const auto oneHit = [&] (GrooveboxProcessor& p, int block, int rung, float amount)
+            {
+                clearAllSteps (p);
+                p.setStep (hitLane, hitStep, true);
+                p.setStepVelocity (hitLane, hitStep, (float) rung / 127.0f);
+                p.setStepChance (hitLane, hitStep, 1.0f);
+                p.setMutate (0.0f);
+                p.setHumanize (0.0f);
+                p.setSeed (pickSeed);
+                p.setTouch (amount);
+
+                // The cell is at step 8, which is a second in at this tempo, so the
+                // render has to be longer than the 40000 a hit at step 0 needs.
+                return take (p, block, 60000);
+            };
+
+            const auto drawn = oneHit (player, blockSize, (int) hitRung, 1.0f);
+            const auto asDrawn = oneHit (player, blockSize, (int) hitRung, 0.0f);
+            const auto asStruck = oneHit (player, blockSize, struckRung, 0.0f);
+
+            std::printf ("        rung %d struck at %d: peak %s as drawn, %s jittered, %s at that level\n",
+                         (int) hitRung, struckRung,
+                         juce::String ((double) peakOf (asDrawn.left), 9).toRawUTF8(),
+                         juce::String ((double) peakOf (drawn.left), 9).toRawUTF8(),
+                         juce::String ((double) peakOf (asStruck.left), 9).toRawUTF8());
+
+            check (firstDifference (drawn.left, asStruck.left, 0, (int) drawn.left.size()) == -1
+                       && firstDifference (drawn.right, asStruck.right, 0, (int) drawn.right.size()) == -1,
+                   "the jittered hit is bit-for-bit that hit drawn at the level the draw said",
+                   "rung " + juce::String (struckRung) + ", first difference at sample "
+                       + juce::String (firstDifference (drawn.left, asStruck.left, 0, (int) drawn.left.size())));
+
+            check (firstDifference (asDrawn.left, drawn.left, 0, (int) asDrawn.left.size()) != -1,
+                   "and opening the knob actually moves the audio");
+
+            /**
+                The same at three block sizes.
+
+                A level cannot in principle depend on a block — there is no countdown in
+                it — which is exactly why this is cheap to assert and why the pitch drop's
+                570-sample hole would have been caught by a line like it. What is being
+                ruled out is a jitter that lands on a voice mid-block, or an envelope that
+                is rebuilt with a different velocity for the tail of one. Each arm gets its
+                own processor armed at its own block, because a `prepareToPlay` at 256 and a
+                `processBlock` at 1024 is the harness lying about the host, not the engine
+                being tested.
+            */
+            auto sameAtEveryBlock = true;
+            juce::String perBlock;
+
+            for (const auto block : { 64, 256, 1024 })
+            {
+                GrooveboxProcessor walker;
+                arm (walker, block);
+
+                const auto jittered = oneHit (walker, block, (int) hitRung, 1.0f);
+                const auto matched = oneHit (walker, block, struckRung, 0.0f);
+
+                const auto diff = firstDifference (jittered.left, matched.left, 0, (int) jittered.left.size());
+
+                perBlock += juce::String (block) + "->" + (diff == -1 ? "same" : "differs") + " ";
+
+                if (diff != -1)
+                    sameAtEveryBlock = false;
+            }
+
+            check (sameAtEveryBlock,
+                   "the same at a 64, 256 and 1024 sample block",
+                   perBlock);
+
+            /**
+                A rest, in audio.
+
+                The proportionality claim is what separates a touch from an offset, and an
+                offset cannot be shown any other way: a step drawn at nothing, with the
+                knob wide open, has to come out of the machine at exactly nothing. Not
+                near nothing — the peak of a voice summed with a gain of zero is a bit
+                pattern, and one non-zero bit is a hit the grid never asked for.
+            */
+            const auto rest = [&] (GrooveboxProcessor& p, int block)
+            {
+                clearAllSteps (p);
+                p.setStep (0, 0, true);
+                p.setStepVelocity (0, 0, 0.0f);
+                p.setStepChance (0, 0, 1.0f);
+                p.setMutate (0.0f);
+                p.setHumanize (0.0f);
+                p.setSeed (pickSeed);
+                p.setTouch (1.0f);
+
+                return take (p, block, 88200);
+            };
+
+            const auto silence = rest (player, blockSize);
+
+            std::printf ("        a rung of nothing with the knob open: peak %s over %d samples\n",
+                         juce::String ((double) peakOf (silence.left), 9).toRawUTF8(),
+                         (int) silence.left.size());
+
+            check (peakOf (silence.left) == 0.0f && peakOf (silence.right) == 0.0f,
+                   "a step drawn at nothing makes no sound at all, however far the knob is open",
+                   "peak " + juce::String ((double) peakOf (silence.left), 9));
+
+            /**
+                One bin of the spectrum, as a magnitude a ratio can be taken of.
+
+                A single Goertzel bin rather than an FFT because the number being asked
+                for is relative, both arms are the same length, and the same bin read on
+                the same samples is the same measurement twice.
+            */
+            const auto goertzel = [&] (const std::vector<float>& data, double hz)
+            {
+                const auto omega = 2.0 * juce::MathConstants<double>::pi * hz / sampleRate;
+                const auto coeff = 2.0 * std::cos (omega);
+                auto s0 = 0.0, s1 = 0.0, s2 = 0.0;
+
+                for (const auto value : data)
+                {
+                    s0 = (double) value + coeff * s1 - s2;
+                    s2 = s1;
+                    s1 = s0;
+                }
+
+                return std::sqrt (s1 * s1 + s2 * s2 - coeff * s1 * s2)
+                         / (double) juce::jmax (1, (int) data.size());
+            };
+
+            /** The mean of seven bins across the band the README quotes. */
+            const auto bandOf = [&] (const std::vector<float>& data)
+            {
+                auto sum = 0.0;
+
+                for (const auto hz : { 2000.0, 2750.0, 3500.0, 4250.0, 5000.0, 6000.0, 7000.0 })
+                    sum += goertzel (data, hz);
+
+                return sum / 7.0;
+            };
+
+            /**
+                What the take costs, measured and stated.
+
+                Neither arm moves a fader: same trim, same seed, same grid, same tempo, and
+                what differs is only how hard the engine was told to strike the hits it was
+                already going to strike. That is the question a producer asks, and the
+                answer is the number below. The level-matched A/B is the block above, where
+                the second arm is the very same level arrived at by a route that never
+                touches the knob; nothing here buys the cost back with a trim, a sum gain
+                or a limiter, because the machine has no third thing for it to hide in.
+
+                The prediction is the law's own, re-evaluated on this grid rather than
+                quoted. A squared draw about zero leaves the mean where it was and adds its
+                mean square, so the power of one hit rises by (travel squared) / 5. Four
+                lanes at one step do not show that: the same *proportion* on a rung of 30
+                and a rung of 127 is dominated by the cross terms, so the rise for the take
+                is travel squared over five, times sum of rungs squared over the square of
+                the sum — a factor below what four bars of two hundred and fifty-six draws
+                can resolve. So the integrated number is reported, not gated against a
+                rounded saying of it, and the gate is the arithmetic ceiling below, where
+                one voice at a time makes the comparison exact.
+            */
+            const auto ladderTake = [&] (GrooveboxProcessor& p, int seed, float amount)
+            {
+                clearAllSteps (p);
+
+                for (int lane = 0; lane < touchLanes; ++lane)
+                    for (int step = 0; step < Layout::numSteps; ++step)
+                    {
+                        p.setStep (lane, step, true);
+                        p.setStepVelocity (lane, step, (float) rungOf (lane, step) / 127.0f);
+                        p.setStepChance (lane, step, 1.0f);
+                    }
+
+                p.setStepVelocity (2, 0, 0.5f);
+                p.setMutate (0.0f);
+                p.setHumanize (0.0f);
+                p.setSeed (seed);
+                p.setTouch (amount);
+
+                return take (p, blockSize, (int) (4 * (sampleRate * 2.0)));
+            };
+
+            auto rungSumSquared = 0.0, rungSquaresSummed = 0.0;
+
+            for (int step = 0; step < Layout::numSteps; ++step)
+            {
+                auto acrossLanes = 0.0;
+
+                for (int lane = 0; lane < touchLanes; ++lane)
+                {
+                    const auto rung = (double) rungOf (lane, step);
+                    acrossLanes += rung;
+                    rungSquaresSummed += rung * rung;
+                }
+
+                rungSumSquared += acrossLanes * acrossLanes;
+            }
+
+            const auto travel = Layout::maxTouchRatio * Layout::maxTouchRatio / 5.0;
+            const auto predicted = std::sqrt (1.0 + travel * rungSquaresSummed / rungSumSquared);
+            const auto singleVoice = std::sqrt (1.0 + travel);
+
+            const auto quietTake = ladderTake (player, 1234, 0.0f);
+            const auto touchTake = ladderTake (player, 1234, 1.0f);
+
+            const auto levelRatio = (double) rmsOf (touchTake.left) / (double) rmsOf (quietTake.left);
+
+            std::printf ("        take of 4 bars, both at the same -3.5 dB trim: peak %s shut / %s open\n"
+                         "        rms %s shut / %s open = x%s (%s dB). One voice's own expectation is"
+                         " x%s (%s dB); on this ladder, x%s (%s dB)\n"
+                         "        2..7 kHz bins: %s shut / %s open = x%s (%s dB)\n",
+                         juce::String ((double) peakOf (quietTake.left), 9).toRawUTF8(),
+                         juce::String ((double) peakOf (touchTake.left), 9).toRawUTF8(),
+                         juce::String ((double) rmsOf (quietTake.left), 9).toRawUTF8(),
+                         juce::String ((double) rmsOf (touchTake.left), 9).toRawUTF8(),
+                         juce::String (levelRatio, 6).toRawUTF8(),
+                         juce::String (20.0 * std::log10 (levelRatio), 4).toRawUTF8(),
+                         juce::String (singleVoice, 6).toRawUTF8(),
+                         juce::String (20.0 * std::log10 (singleVoice), 4).toRawUTF8(),
+                         juce::String (predicted, 6).toRawUTF8(),
+                         juce::String (20.0 * std::log10 (predicted), 4).toRawUTF8(),
+                         juce::String ((double) bandOf (quietTake.left), 9).toRawUTF8(),
+                         juce::String ((double) bandOf (touchTake.left), 9).toRawUTF8(),
+                         juce::String ((double) bandOf (touchTake.left) / (double) bandOf (quietTake.left), 6).toRawUTF8(),
+                         juce::String (20.0 * std::log10 ((double) bandOf (touchTake.left)
+                                                          / (double) bandOf (quietTake.left)), 4).toRawUTF8());
+
+            /**
+                The ceiling, asked where it is exact.
+
+                One voice, drawn at the top rung of the ladder, so the shut arm holds the
+                loudest and brightest hit the kit can make and the open arm can only meet it
+                or come down: the clamp says no struck rung is above 127, and both halves of
+                the velocity path are monotone in it — the gain is a multiply, and
+                `brightnessMixFor` is a straight line up to the bypass at full velocity. So
+                opening the knob cannot buy level or top end back at the top of the travel,
+                which is the same claim the pitch-drop and tone-law entries in the README
+                make about their own controls.
+
+                Asked of the four-lane take above it would be false, and saying so is why
+                this arm exists: three of four voices at one step pulling up is enough to
+                beat a shut step whose loudest rung is only one, so there is no exact
+                ceiling for a summed take and only a measured one.
+
+                The seed is searched with the knob already open, and only for a draw that
+                takes the top rung *down*, because an arm that came out at 127 again would
+                compare a hit with itself and report the ceiling as proven.
+            */
+            probe.setTouch (1.0f);
+
+            auto topSeed = 0;
+            auto topDown = 0;
+
+            for (int candidate = 0; candidate < 500; ++candidate)
+            {
+                probe.setSeed (candidate);
+
+                const auto got = (int) std::llround (
+                    (double) probe.wouldThisStepBeStruckAt (0, 15, 3) * 127.0);
+
+                if (got < 127)
+                {
+                    topSeed = candidate;
+                    topDown = got;
+                    break;
+                }
+            }
+
+            std::printf ("        precondition: Touch open for the search; seed %d strikes the top rung "
+                         "at %d of 127\n", topSeed, topDown);
+
+            check (topDown > 0 && topDown < 127,
+                   "a seed exists that takes the full rung down at all",
+                   "searched 500, rung came back " + juce::String (topDown));
+
+            const auto topHit = [&] (GrooveboxProcessor& p, float amount)
+            {
+                clearAllSteps (p);
+                p.setStep (3, 15, true);
+                p.setStepVelocity (3, 15, 1.0f);
+                p.setStepChance (3, 15, 1.0f);
+                p.setMutate (0.0f);
+                p.setHumanize (0.0f);
+                p.setSeed (topSeed);
+                p.setTouch (amount);
+
+                // Step 15 is seven eighths of a bar in, so the render has to clear the
+                // 88200 samples a 120 bpm bar takes before the hit even arrives.
+                return take (p, blockSize, 90000);
+            };
+
+            const auto topShut = topHit (player, 0.0f);
+            const auto topOpen = topHit (player, 1.0f);
+
+            const auto shutPeak = (double) peakOf (topShut.left);
+            const auto openPeak = (double) peakOf (topOpen.left);
+            const auto shutAir = goertzel (topShut.left, 6000.0);
+            const auto openAir = goertzel (topOpen.left, 6000.0);
+
+            std::printf ("        the rung-127 hit at seed %d: peak %s shut / %s open,"
+                         " 6 kHz %s / %s\n",
+                         topSeed,
+                         juce::String (shutPeak, 9).toRawUTF8(), juce::String (openPeak, 9).toRawUTF8(),
+                         juce::String (shutAir, 9).toRawUTF8(), juce::String (openAir, 9).toRawUTF8());
+
+            check (openPeak < shutPeak && openPeak > 0.0,
+                   "opening the knob takes the loudest hit in the kit down and never up",
+                   juce::String (shutPeak, 6) + " shut against " + juce::String (openPeak, 6) + " open");
+
+            check (openAir < shutAir && openAir > 0.0,
+                   "and the same at the top of the band, so Touch is not a tone control either",
+                   juce::String (shutAir, 6) + " shut against " + juce::String (openAir, 6) + " at 6 kHz");
+
+            // A second side of the same coin, stated as arithmetic: no struck rung anywhere
+            // in the take is above the ladder's own top, which is the one number a hidden
+            // renormalisation would have to break in order to hide.
+            check (peakOf (touchTake.left) <= peakOf (quietTake.left) * (float) (1.0 + Layout::maxTouchRatio)
+                       && peakOf (quietTake.left) > 0.0f,
+                   "the summed take stays inside one travel of where it was drawn",
+                   juce::String ((double) peakOf (quietTake.left), 6) + " -> "
+                       + juce::String ((double) peakOf (touchTake.left), 6)
+                       + ", ceiling x" + juce::String (1.0 + Layout::maxTouchRatio, 3));
+
+            probe.setSeed (1234);
+        }
+
+        //---- e. a session before this parameter, and one that goes through the record
+        {
+            const auto roundTrip = [] (GrooveboxProcessor& from, GrooveboxProcessor& to)
+            {
+                juce::MemoryBlock blob;
+                from.getStateInformation (blob);
+                to.setStateInformation (blob.getData(), (int) blob.getSize());
+            };
+
+            GrooveboxProcessor fresh;
+            fresh.prepareToPlay (sampleRate, blockSize);
+
+            check (fresh.getTouch() == 0.0f,
+                   "a processor built now starts with the level knob shut",
+                   juce::String (fresh.getTouch(), 4));
+
+            GrooveboxProcessor mover;
+            mover.prepareToPlay (sampleRate, blockSize);
+            clearAllSteps (mover);
+            mover.setStep (3, 7, true);
+            mover.setSwing (0.4f);
+            mover.setSeed (13579);
+            mover.setTouch (0.75f);
+
+            GrooveboxProcessor back;
+            back.prepareToPlay (sampleRate, blockSize);
+            roundTrip (mover, back);
+
+            check (std::abs (back.getTouch() - 0.75f) < 1.0e-4f,
+                   "and the amount comes back with the session",
+                   juce::String (back.getTouch(), 4));
+
+            /**
+                The take on both sides of a save.
+
+                This is the payoff of applying the law to the rung rather than to the
+                float: cell 2:0 was drawn at 0.5, which the record writes as 64 and reads
+                back as 64/127. A law of the float would have perturbed 0.5 before the
+                quantisation and 64/127 after it, and the same seed would stop meaning the
+                same take the moment the set was saved. The precondition is asserted first
+                — if the record had kept the float, this check would be vacuous.
+            */
+            probe.setTouch (1.0f);
+            probe.setSeed (1234);
+
+            std::vector<double> before ((size_t) touchBars, 0.0);
+
+            for (int bar = 0; bar < touchBars; ++bar)
+                before[(size_t) bar] = (double) probe.wouldThisStepBeStruckAt (bar, 0, 2) * 127.0;
+
+            const auto beforeFloat = probe.getStepVelocity (2, 0);
+
+            GrooveboxProcessor saved;
+            saved.prepareToPlay (sampleRate, blockSize);
+            roundTrip (probe, saved);
+
+            const auto afterFloat = saved.getStepVelocity (2, 0);
+
+            auto quantised = 0;
+            auto changed = 0;
+
+            for (int bar = 0; bar < touchBars; ++bar)
+            {
+                if (std::abs (afterFloat - (double) beforeFloat) > 1.0e-9)
+                    ++quantised;
+
+                if (std::abs ((double) saved.wouldThisStepBeStruckAt (bar, 0, 2) * 127.0
+                                  - before[(size_t) bar]) > 1.0e-9)
+                    ++changed;
+            }
+
+            std::printf ("        2:0 held %s through the session, restored %s; the take moved on %d"
+                         " of %d bars\n",
+                         juce::String ((double) beforeFloat, 9).toRawUTF8(),
+                         juce::String ((double) afterFloat, 9).toRawUTF8(), changed, touchBars);
+
+            check (quantised > touchBars / 2,
+                   "the record really did quantise the off-lattice velocity on the way out",
+                   juce::String (quantised) + " of " + juce::String (touchBars)
+                       + " bars show a different float");
+
+            check (changed == 0,
+                   "and the take it draws is the same take, rung for rung",
+                   juce::String (changed) + " of " + juce::String (touchBars) + " bars differ");
+
+            /**
+                The same session as the build before this parameter wrote it.
+
+                Deleting the child is the honest way to age it: the claim is about a reader
+                that has never seen the property, and a zero in the file is a value the old
+                build could have written, not an absence. It lands in a processor with the
+                knob open, because the failure worth catching is a restore that keeps a
+                level knob the session never asked for.
+            */
+            juce::MemoryBlock modern;
+            mover.getStateInformation (modern);
+
+            auto xml = juce::AudioProcessor::getXmlFromBinary (modern.getData(), (int) modern.getSize());
+            auto stripped = 0;
+
+            if (xml != nullptr)
+                for (auto* child : xml->getChildIterator())
+                    if (child->getStringAttribute ("id") == Params::touchId)
+                    {
+                        xml->removeChildElement (child, true);
+                        ++stripped;
+                        break;
+                    }
+
+            check (stripped == 1,
+                   "a session this build wrote does name the parameter in its state",
+                   juce::String (stripped) + " touch entries found in the saved XML");
+
+            juce::MemoryBlock aged;
+
+            if (xml != nullptr)
+                juce::AudioProcessor::copyXmlToBinary (*xml, aged);
+
+            GrooveboxProcessor inherits;
+            inherits.prepareToPlay (sampleRate, blockSize);
+            inherits.setTouch (1.0f);
+            inherits.setStateInformation (aged.getData(), (int) aged.getSize());
+
+            check (inherits.getTouch() == 0.0f,
+                   "a session that predates the parameter opens with it shut, not with whatever was live",
+                   juce::String (inherits.getTouch(), 4));
+
+            check (inherits.isStepOn (3, 7),
+                   "and the grid of that session still comes through",
+                   "step 3:7 was lost restoring a session with no touch entry");
+
+            check (std::abs (inherits.getSwing() - 0.4f) < 1.0e-4f
+                       && inherits.getSeed() == 13579,
+                   "so do the neighbouring globals, which the old build did write",
+                   "swing " + juce::String (inherits.getSwing(), 4)
+                       + ", seed " + juce::String (inherits.getSeed()));
+        }
+
+        touchClick.deleteFile();
+    }
+
+    //======================================================================
     std::printf ("\n%s  %d checks, %d failures\n",
                  failures == 0 ? "PASSED" : "FAILED", checks, failures);
 
