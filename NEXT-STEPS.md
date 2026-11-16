@@ -613,6 +613,25 @@ touches the velocity law. No step here is allowed to be reported as better becau
   would have had the identical failure and a one-command recovery; reconstruction recipes that live in
   `out/` only survive until someone runs `git clean -xdf`, which is the same `# base:` line's risk in
   AGENTS.md's own words, now with a cost attached to it.
+- **6.7a** The from-nothing run now exists, and it changes nothing about the item. `out/verify-clone.ps1`
+  clones over `file://` with `--no-hardlinks` into a folder that has never been seen, detaches the SHA,
+  configures (fetching JUCE 8.0.4 into `external/JUCE`, 58 s), builds the three suites per target,
+  freshness-checks each exe against its OWN inputs and then runs `ctest`. At `cad30ae`: 37 tracked files,
+  top level `installer Source Tests .gitignore AGENTS.md CMakeLists.txt NEXT-STEPS.md README.md`, no
+  `out/`, `external/`, `build/` or `launch/`; the only tracked scripts are `Tests/RtPathGuard.ps1` and
+  `installer/build-installer.ps1`; `stale=0` on 25 / 25 / 3 inputs (`3562F62E3846`, `A790C27D3245`,
+  `167A6273ED1A`); 546 smoke / 675 layout / 85 planner with 0 failures and 0 problems, `GUARD OK`, `[28]`
+  back at `4BC3AA231178C071`, `100% tests passed out of 4`, exit 0. So "the tracked file set alone is
+  enough to build and pass the suites" is a measurement, not an inference from a linked worktree that
+  shares this repo's object DB. What the run could not do is the item: a clone inherits 147 numbered
+  pointers -- 28 in `AGENTS.md`, 119 in `NEXT-STEPS.md`, none in `README.md`, which links rather than
+  numbers -- and zero of the four files that check them. `launch/` was not built either, and the installed
+  payload is still the `3c3f059` export: `git log --oneline 3c3f059..master -- Source Tests CMakeLists.txt`
+  is empty, so Program Files matches `master`'s compiled sources, and it is behind `lane-44` by three --
+  `ba7c953`, `8e49944`, `cad30ae` -- the first of which also rewords `installer/README.txt`, a payload
+  input. That costs the owner one repackage and one UAC click, not a recompile of what is installed today.
+  Promotion itself is still the open decision: `tools/cite/` plus a fifth `add_test`, or the four files
+  tracked with no CTest entry, or the prose saying plainly that the citation gate is a local harness.
 
 ---
 

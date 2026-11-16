@@ -628,6 +628,29 @@ gate. The two are not interchangeable and neither alone is the whole check; run 
   making, and the kind that only survives review until someone measures it. Print the number in the test, not
   in the comment.
 
+- **A gate's red line can be about the gate, and its evidence field can be empty on a green run.**
+  The from-nothing check that item **6.7** implies -- `git clone --no-hardlinks file://…`, `checkout
+  --detach <sha>`, configure (it fetches JUCE), the three suites built per target, `ctest` after them --
+  is now written, as `out/verify-clone.ps1`. Its first run printed `FAILED: clone` on a clone that had
+  succeeded: the `Run` helper both *printed* its status and *returned* the code, so the caller held an
+  array whose first element was a sentence, and `if ($rc -ne 0)` compared that array with 0 and got the
+  sentence back -- truthy. Nothing after stage 1 ran, so the verdict described the verifier. Two more of
+  the same shape came out of reading the log instead of the summary: `PASSED (\d+)` matched nothing
+  because both JUCE suites print `PASSED` then TWO spaces, and a field labelled "problem-count lines"
+  looked for a heading no suite prints, so a green run reported an empty evidence line. The rules: a
+  helper returns a value and reports on a different stream (`Write-Host`), and an evidence field is
+  copied out of a real log line, never described from memory -- this one now prints the three verdict
+  lines it gated on. Scope, stated the way the detached gate states it: suites and `ctest` only, no
+  plugin target, `launch/` untouched. And the clone carries no `out/`, so a run that proved the sources
+  could not check one of the 147 numbered pointers it inherits: **6.7** stands, and the runner's own
+  location is the item's complaint demonstrated by the run written to answer it.
+- **A grep-smell count in a doc is a snapshot of a script that other lanes edit.** The detached gate's
+  bullet says `grep -n launch` returns zero hits in its 131 lines, and today it returns one hit in 168:
+  `Write-Output "SCOPE: three test suites + ctest only -- no plugin target built, launch/ untouched."`,
+  which is the *disclaimer*, so the claim it exists to prove is still true and the count that proves it
+  is not. Ask the SCOPE line what it scopes -- a stated invariant checked by a line count dies the first
+  time someone names the thing it disclaims in order to disclaim it.
+
 ## Doc citations: a line number is a claim about one tree
 
 `README.md`, `AGENTS.md`, `NEXT-STEPS.md` and `installer/README.txt` point at code as
