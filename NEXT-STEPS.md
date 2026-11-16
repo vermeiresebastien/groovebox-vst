@@ -2294,6 +2294,20 @@ restored-good file, run against the *final* shape of the test file, with `FINAL 
 `PASSED 546 checks, 0 failures` at the bottom so the restore is proven by the log rather than asserted by
 this paragraph.
 
+**Off the tip, cold.** `8e49944` was then checked in a worktree that had never held a build — a new
+folder, a fresh `cmake` configure (it cloned JUCE into `external/JUCE`), the three suites built per
+target and `ctest` run after them, and no `Groovebox` plugin target: `out/planbuild/verify-sha.ps1
+-Sha 8e49944 -Tag 14a -Since d8bbeb8`. It prints `DIRTY FILES: 0`, `NAMED BY: lane-44`, `stale=0`
+beside each exe's own input count, then 546 smoke checks with 0 failures, 675 layout and 85 planner
+with 0 problems, `GUARD OK: the parameter path is allocation-free` and `100% tests passed out of 4`
+— and `[28]` comes back at the same `4BC3AA231178C071` in that tree. The run is
+`out/verify-14a.console.txt`, with the per-suite logs beside it. Scope is part of the claim: that
+proves the *sources*, not the deliverable. `launch/` was not touched and no setup was built, so
+Program Files stays behind the tree by every `Source/`-changing commit since `b603107`, and closing
+that gap is the owner's install step. This paragraph then lands as a docs-only commit on top of the
+tree that run was made in, touching no compiled input, so by the rule in `AGENTS.md` it is not owed
+a rebuild either.
+
 **Deliberately not here.** No UI and no "generate" button: the seam is the agreement, the wiring is the
 decision that still belongs to the owner. No undo-transaction wrapper — the fill is already one action because
 it is one property write, not because anything opened a transaction. No pointer move, no slot copy, no
