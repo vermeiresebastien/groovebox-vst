@@ -345,7 +345,7 @@ touches the velocity law. No step here is allowed to be reported as better becau
   **Split as of 4.3b (2026-11-16), and now mostly discharged:** the third fader had made the
   floor worse (**1832×844**), so the *wrap rule* and the multi-size layout test were pulled
   forward into 4.3b and shipped there — one row at **1774 px** and wider, two lines below it,
-  editor floor **1218×844**, which does fit 1366×768. What the wrap does *not* pay for is the
+  editor floor **1218×844**, which fits 1366 px of *width* and not 768 px of height. What the wrap does *not* pay for is the
   height half. The test now walks all twelve strips at six sizes and asserts `shortOnes == 0`,
   i.e. that nothing reaches `ChannelStrip::resized`'s `tight` branch, because that branch is
   broken: a probe arm at a 500 px window puts **2 of every strip's 17 visible controls outside

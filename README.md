@@ -371,9 +371,9 @@ and leaves it alone.
   the **Velocity** and **Chance** toggles with the shared **100%** reset, and the master
   trim and meter. A 1774 px bar lays all of that on one row; narrower, the Variation group
   moves to a second line and the bar grows 36 px to take it. Either way no control gives up
-  width to fit the window, which is what lets it go down to **1218 px** — a 1366 px laptop
-  now holds the whole machine. The grid is what pays for the second line, by 36 px at the
-  narrow end.
+  width to fit the window, which is what lets it go down to **1218 px** — the width a 1366
+  px laptop has. The height is not solved by the wrap: the editor cannot be made shorter
+  than 844 px, so a 768 px screen still cannot show all of it, and the grid pays 36 px.
 - **Middle** — the 16 × 12 step grid. Channel 11 is the top row and channel 0 the
   bottom, matching the web app, which reverses its lane list.
 - **Bottom** — one strip per channel: name (double-click to rename), colour
