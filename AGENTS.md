@@ -17,8 +17,8 @@ It is fully gitignored and nothing in it is authored in place.
 
 - Verify an export by **SHA-256 against the artefact tree**, never by timestamp or size:
   `copy_if_different` leaves an old mtime on a file that exported correctly, and rebuilds
-  often coincide on size. Current export: `Groovebox.exe 6F9E5D48...`,
-  bundle binary `7483D04A...`.
+  often coincide on size. Export shipped 2026-11-16 from `4e6a7ef`: `Groovebox.exe
+  577CA690...`, bundle binary `079F9B44...` -- both equal in `launch/` and in Program Files.
 - The bundle is **removed before being rewritten** ([CMakeLists.txt:152-163](CMakeLists.txt))
   so a file that no longer belongs to the build cannot survive in it.
 - `launch` is a **target, not a POST_BUILD step**, on purpose: a host with the plugin
