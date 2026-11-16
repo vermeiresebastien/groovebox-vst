@@ -536,12 +536,27 @@ gate. The two are not interchangeable and neither alone is the whole check; run 
   copy a constant.
 - **Verify a SHA another lane names in a detached worktree, and assert the ref, not just the SHA.**
   `out/planbuild/verify-sha.ps1 -Sha <sha> -Tag <tag> -Since <prev>` checks the tree out detached,
-  builds each suite **per target**, refuses any exe older than its own inputs, runs the suites and
-  `ctest`, then re-hashes `launch/` against the artefact tree -- in that order, because CTest does not
-  build. It prints `NAMED BY:` deliberately: a worktree made with `--detach` leaves the commit named by
-  no branch, one `git worktree prune` from unverifiable, which is how a first commit landed on a
-  detached HEAD while the branch sat where it was. The script lives in gitignored `out/` -- item **6.7**
+  builds each suite **per target**, refuses any exe older than its own inputs, then runs the suites
+  and `ctest` -- in that order, because CTest does not build. It is **suites-only**: `grep -n launch`
+  returns zero hits in its 131 lines, so it says nothing about the plugin binaries. The
+  `launch/`-against-artefact-tree re-hash is the *tree-side* gate's step, `out/planbuild/gate-merged.ps1`
+  -- the sentence that used to claim otherwise here was written in `aa22b44` and is the reason for the
+  bullet below. It prints `NAMED BY:` deliberately: a worktree made with `--detach` leaves the commit
+  named by no branch, one `git worktree prune` from unverifiable, which is how a first commit landed on
+  a detached HEAD while the branch sat where it was. The script lives in gitignored `out/` -- item **6.7**
   is the same hazard for the citation tooling -- so this describes a working tree, not a clone.
+- **A guard covers only what it measures, and a verification worktree is reused, not fresh.** The
+  detached gate freshness-checks the three *test* exes it builds; the plugin artefacts sitting in the
+  same `build/` tree belong to whatever commit was checked out when they were last linked, and the
+  directory is reused for the next SHA -- its name is not an identity (`out/wt-990e4c2` was holding
+  `d8bbeb8` on 2026-11-16). An A/B that reads them prints a disagreement that is about the reader: a
+  04:06-stamped bundle compared against a 16:55 build came back "sizes differ", which looked like a
+  peer's quoted hash being wrong and was in fact the superseded `b603107` export -- its two prefixes
+  are recorded above, which is the only way it got identified. So a script that compares two binaries
+  names each side before it diffs anything -- worktree HEAD, dirty count, exe mtime beside that tree's
+  newest compiled input -- and refuses when a side is older than its own sources.
+  `out/planbuild/ab-hash-53.py` does exactly that and exits 3 on a stale side; the cross-build
+  four-byte rule then has to be tested on a pair that actually exists, which costs one plugin build.
 
 ## Doc citations: a line number is a claim about one tree
 
