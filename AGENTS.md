@@ -24,9 +24,9 @@ It is fully gitignored and nothing in it is authored in place.
   so a file that no longer belongs to the build cannot survive in it.
 - `launch` is a **target, not a POST_BUILD step**, on purpose: a host with the plugin
   loaded holds the DLL open, and failing a compile over a copy only the release step
-  needs would hide the real build result. Check `tasklist` -- the process is
-  `Ableton Live 12 Suite.exe`, not `Live.exe` -- and let the user close it rather than
-  killing it: the standalone does not autosave.
+  needs would hide the real build result. `tasklist` only finds a candidate (`Ableton
+  Live 12 Suite.exe`, not `Live.exe`); `(Get-Process -Id <pid>).Modules` says whether it
+  holds Groovebox -- prove that, then let the user close it, never kill it: no autosave.
 - `--parallel 2` and no `/MP`: MSVC 14.51 emits intermittent D8040 internal compiler
   errors on JUCE's larger modules when both layers parallelise
   ([CMakeLists.txt:9-17](CMakeLists.txt)).

@@ -928,7 +928,7 @@ green after.
 
 Run at the close of 4.1: **252 smoke checks / 0 failures**, **82 layout / 0 problems**, `RtPathGuard.ps1` exit
 0, and a full `cmake --build build-new --config Release` (VST3 + Standalone + both console apps) clean.
-`launch/` still waits for Live and the standalone to be closed.
+`launch/` was not refreshed then — the Live wait behind that was a `tasklist` inference, not a lock proof (corrected at the end of this file).
 
 Found on the way, **not fixed**: a shift is two stores per cell, so shifting a row *while playing* can let the
 audio thread read a half-rotated bar for one block — one hit duplicated or missing, then self-correcting. It is
@@ -1123,8 +1123,8 @@ checks / 0 problems**, staleness guard 0 on both, `Tests/RtPathGuard.ps1` exit 0
 ("the parameter path is allocation-free"), and the `Groovebox` target (VST3 + Standalone)
 exit 0. `[28]`'s golden fingerprint is still `4BC3AA231178C071` after the codec bump and two
 new parameters, which is the "bit-identical at probability 1.0" half of the gate answered on
-the whole 161280-sample take rather than on two bars. `launch/` still waits for Live and the
-standalone to be closed.
+the whole 161280-sample take rather than on two bars. `launch/` was not refreshed then either, on
+the same unproven Live wait — corrected at the end of this file.
 
 Still open from 4.1 and unchanged by this: a shift is two stores per cell, so shifting a row *while playing* can
 let the audio thread read a half-rotated bar for one block. The probability now makes it three.
@@ -1246,7 +1246,7 @@ plain-text version, including the old-sessions-open-shut behaviour.
 
 Run at the close of 4.3: **321 smoke checks / 0 failures**, **115 layout checks / 0 problems**, staleness
 guard 0 on both, `Tests/RtPathGuard.ps1` exit 0, `Groovebox` target exit 0. No audio changed at the
-default, and `launch/` still waits for Live (PID 43876) to be closed.
+default, and `launch/` was not refreshed — the "Live (PID 43876) holds the bundle" behind that was inferred from `tasklist` and was wrong (corrected at the end of this file).
 
 Still open inside 4.3: velocity jitter (**4.3b**, now closed — see its record below), and the amount is
 deliberately one number for the
@@ -1357,3 +1357,22 @@ here, on purpose:** a feature commit ships no export — `launch/` and the expor
 quotes belong to the shipping lane, and whoever builds it refreshes those hashes against that
 build’s SHA; the genre presets are still undocumented in the shipped README, which is 4.4’s to
 fix; and 4.4 itself stands on its own.
+
+### Correction — the "`launch/` waits for Live" claim was an inference, and it was wrong (2026-11-16)
+
+Three run records above (4.1, 4.2, 4.3) say `launch/` still waits for Live to be closed, and 4.3's
+names PID 43876. This lane wrote that from `tasklist` output alone: AGENTS.md says a host with the
+plugin loaded holds the DLL open, so *seeing* Live was reported as *a lock*. It was never measured as
+one, and the shipping lane disproved it two ways — `(Get-Process -Id 43876).Modules` enumerated 2
+`.vst3` modules with no Groovebox among them, and under `CloseApplications=no` a Setup that ends
+`Installation process succeeded` can only have found the bundle unlocked. The state, re-hashed here
+rather than recalled: `tasklist` returns no Live process; `out/planbuild/install-b603107.out` records
+`HOST PROCESSES: 0`, `SETUP EXIT: 0` and success at 04:15:50; and `launch/` and Program Files hold the
+same two files, standalone `a3948e47b34a…` and bundle binary `cf3f8318c1bc…` — i.e. the machine is
+already running the `b603107` payload, which `4724922` documents. Two consequences: a release base of
+`4e6a7ef` would ship a build six commits back, without Humanize (`6439f0b`) or Touch and the row wrap
+(`b603107`) — the likelier cause being `4724922` reusing `4e6a7ef`'s exact subject line; and since
+`b603107..71c04fd` is docs-only (`AGENTS.md`, `NEXT-STEPS.md`, `README.md`), so the artefacts in
+`launch/` are byte-for-byte what a build of `71c04fd` produces. The rule that was missing from
+AGENTS.md and is now in it: `tasklist` says which process *might* hold the bundle, module enumeration
+says whether it does.
