@@ -40,22 +40,56 @@ It is fully gitignored and nothing in it is authored in place.
   a mismatch confined to those four bytes is the link time, and **anything bigger means the sources
   genuinely differ, which is the answer you were looking for.** Compare per file within one build
   (the rule above, the gate); across builds, strip the stamps first, then believe the diff.
-- **Those four bytes are a relink, not a rebuild -- and a rebuild is 4,222.** The bullet above was
-  measured by relinking one tree's own objects, and it holds exactly there: delete the smoke exe,
-  relink with no source touched (the build log prints no compile line), and the two exes differ in
-  4 of 8,693,248 bytes at `0x128` and `0x6fe4b4` -- the same two clocks at JUCE-linked size. Two
-  *cold* builds in two different directories of byte-identical sources do not: `8e49944` against
-  `a942cd0`, whose only difference is `NEXT-STEPS.md`, gives smoke **4,222** differing bytes
-  (.data 2,551, .text 1,660, .rdata 8, header 3), layout **4,784**, and only the std-only planner
-  its documented 4. The section table itself moves -- `.data` VirtualSize differs by 16 bytes on both
-  suites -- so this is not content that forgot a stamp. The cause is upstream of the link: **all 69
-  `.obj` files in the two build trees differ** (`SequencerEngine.obj`: 5,147 of 233,603 bytes). It is
-  *not* the embedded build path -- that appears once per object, explains 6 of those 5,147 bytes, and
-  appears zero times in either exe, in either encoding. Mechanism not identified; the fact is enough.
-  So the sentence "anything bigger means the sources genuinely differ" is valid **within one build**
+- **Four bytes is a relink; two *directories* are thousands, because MSVC salts a `.cpp`-defined
+  closure's type key with the path of the file it is compiling.** Every figure below names the pair it
+  belongs to, because one phrase -- "two builds of the same sources" -- covers two different phenomena.
+  *One tree, relink*: `out/wt-990e4c2` (HEAD `d8bbeb8`, dirty 0), the smoke exe the 5.3 receipt hashed
+  (`7ef0e28a3fb36c80...`) against that exe deleted and rebuilt with no source touched -- the build log
+  prints no compile line (`3aa8c869f169eb8c...`): **4** of 8,693,248 bytes, at `0x128`/`0x129` and
+  `0x6fe4b4`/`0x6fe4b5`, stamp-zeroed EQUAL. *Two cold trees, sources differing only in
+  `NEXT-STEPS.md`*: `out/wt-8e49944` (HEAD `8e49944`) against `out/wt-a942cd0` (HEAD `a942cd0`), each
+  side identified in `out/planbuild/ab-4222-labelled.txt` with its worktree HEAD, exe sha and COFF stamp
+  beside that tree's own newest compiled input -- both fresh, both 8,739,840 bytes -- gives smoke
+  (`363ca899fec4180c` vs `ae18b104fa748c1a`) **4,222** and layout **4,784**, and the **std-only planner
+  of those same two trees its documented 4** (`out/planbuild/relink-probe.txt`). Stamp-zeroing the smoke
+  pair leaves it different (`f1481f572d667059` vs `37807f8026b4ac69`), so this is not the clock
+  difference grown larger -- and the planner's 4 across the very same pair of directories is the arm
+  that proves it: a docs-only pair *does* reproduce the relink number when nothing but the clocks is
+  in play.
+  **Where the 4,222 are:** .data 2,551, .text 1,660, .rdata 8, header 3 (layout: 3,103 / 1,670 / 8 / 3).
+  The only section-table move is `.data` VirtualSize `0x27b34` -> `0x27b24`, and `.data` is *not* a
+  shifted copy -- its 107,149-byte middle is the same length on both sides and no +-8/16/32 shift
+  reconstructs it (`out/planbuild/shift-test.txt`). **2,500 of the 4,222 -- 59.2% -- sit inside
+  `<lambda_32hex>` type keys**: 475 digest sites at *identical offsets* in both exes, 84 sites (42 of
+  236 distinct keys) with a different value; layout 3,052 of 4,784, 102 of 493 sites.
+  **Why, measured on 3 KB objects rather than argued** (`out/planbuild/lambda-path-probe.txt`): compile
+  one TU twice at its own path and its four keys do not move -- 10 bytes of the object differ, none of
+  them inside a digest, and they are its own timestamps; rename the file (same bytes, same length) and
+  all 86 digest sites move, 2,681 of 2,989 differing bytes inside one; move it to a deeper directory and
+  the keys move again and the object grows by the 4 characters the path gained. A second probe splits
+  *which* lambdas are keyed: move only the included header -> 0 of 4 keys change, move only the includer
+  -> 2 of 4. A closure declared in a `.cpp` therefore carries that file's path in its type key and one
+  declared in a header carries nobody's -- which is the partition the exe shows: the 42 keys that moved
+  are the closures declared in `.cpp` files (this suite's own plus JUCE's; an opener scan over the tree
+  finds 226 candidate sites in `.cpp` against 11 in `Source/*.h`, and the exe cannot attribute a key to a
+  file), and the 194 that held are header-declared, which is what lets one header lambda keep one type
+  across twenty translation units. So the sentence this bullet used to carry -- "it is *not* the embedded build path, which
+  appears once per object and zero times in either exe" -- was true of the *string* and wrong about the
+  cause: the path is hashed into the name and then dropped, and the exe holds the difference without
+  holding what produced it. There is no lever: `/d1trimfile:<root>` on the same probe gives a *third*
+  pair of keys -- trimmed, not canonicalised. The residual 1,722 bytes are about 1,560 mostly isolated
+  single-byte edits, 91% of them in .text, spread over the whole 6 MB rather than clustered in one TU's
+  code, and three quarters of them are a value *decrease* of exactly 8 or exactly 16 (1,033 at -16 and
+  285 at -8; 65 more sit at 0xF0, which is a -16 that borrowed a byte) -- the sign and magnitude address
+  operands would show if their target moved 16 bytes down, which is what the `.data` VirtualSize delta
+  reports for B; and two 12-byte .text runs are the same instruction
+  with its two `mov` operands emitted in the opposite order, so at least some of the residual is codegen
+  and not reference. Characterised, not fully attributed.
+  So the sentence "anything bigger means the sources genuinely differ" is valid **within one build tree**
   -- `launch/` against its artefact tree, which is what the gate hashes -- and invalid **across two
-  trees**, where it would testify that a docs-only commit changed the DSP. Across trees compare
-  verdicts (check counts, the `[28]` fingerprint); within one, compare hashes.
+  directories**, where it would testify that a docs-only commit changed the DSP. Across trees compare
+  verdicts (check counts, the `[28]` fingerprint); within one, compare hashes -- and put the pair in the
+  sentence, because 4, 4,222 and 4,784 are three claims about three different pairs, not one scale.
 - The bundle is **removed before being rewritten** ([CMakeLists.txt:152-163](CMakeLists.txt))
   so a file that no longer belongs to the build cannot survive in it.
 - `launch` is a **target, not a POST_BUILD step**, on purpose: a host with the plugin

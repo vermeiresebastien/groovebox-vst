@@ -2027,10 +2027,19 @@ table rows 19, pinned 31, repaired 0, baseline-qualified 3, `UNPINNED miss ... :
 this tree. So the two 60s and two 0s differ only by which list was loaded, and `miss: 0` is not
 evidence until the pin file's hash is printed next to it; that is the AGENTS.md rule this run
 re-measures rather than first states.
-Hashes: the exes from the two cold runs differ by far more than the two link clocks -- the std-only
-planner by exactly 4 bytes, the smoke and layout suites by 4222 and 4784, because all 69 `.obj` in
-the two trees differ (measured at `8e49944` vs `a942cd0`; same tree, objects untouched, relink =
-4 bytes). Cross-tree comparison is therefore about verdicts, not hashes; `AGENTS.md` now says so.
+
+Hashes, with the pair named in each clause, because these are three claims about three pairs and not
+one scale. The two cold trees are `out/wt-8e49944` (HEAD `8e49944`) and `out/wt-a942cd0` (HEAD
+`a942cd0`), equal in every compiled input and differing only in this file, each side identified in
+`out/planbuild/ab-4222-labelled.txt` by worktree HEAD, exe sha and COFF stamp beside that tree's own
+newest compiled input. Across those two directories the std-only planner differs by exactly 4 bytes --
+its two link clocks -- while smoke differs by 4,222 and layout by 4,784; and in one tree, objects
+untouched, a relink of the smoke exe is also 4 (`out/planbuild/relink-probe.txt`). The mechanism is no
+longer open: MSVC salts a `.cpp`-declared lambda's `<lambda_...>` type key with the path of the file it
+is compiling, so 42 of the smoke exe's 236 distinct keys move (84 of 475 sites, 2,500 of the 4,222
+bytes), header-declared closures keep theirs, and all 69 `.obj` differ because every `.cpp` in the tree
+sits at a new path. The probes are recorded in `AGENTS.md`; the rule this closes is unchanged -- across
+directories compare verdicts, within one compare hashes.
 The citation census reproduced at its ref (31/73/19/29/2/1, `UNPINNED miss ... : 0`) with the
 current tooling in `out/wt-44/out/`, and its probe log reddens three planted errors with hashed
 restores. But this tree's `out/cite-pin.txt` (17 entries) is not just shorter than the working set
@@ -2038,7 +2047,11 @@ restores. But this tree's `out/cite-pin.txt` (17 entries) is not just shorter th
 line 114 of this file cites PluginProcessor.h lines 333-338 for a declaration that is at line 519 in
 `9c872f7`. `8e49944` repaired that pointer to 602-612 on the lane; master carries the base's number,
 so item 22 has a concrete first job: the merged tree is audited with the current six-file set and
-this citation is re-derived, not inherited from either side.
+this citation is re-derived, not inherited from either side. The sweep is not a way out of it, and
+this run caught why: over this tree it offers lines 370-375 for that same citation, which is
+`formatEnvelopeValue`'s neighbourhood rather than the declaration now at line 519 -- the
+stale-at-the-base case the `AGENTS.md` rule describes in `SequencerEngine.h` history, reproduced live
+on a pointer this file still carries.
 
 The merge preview the handover closed with -- "AGENTS.md ... still the only conflicted path" -- was
 true when it was written and is not true now, and the second path is mine. Measured on this tree:
