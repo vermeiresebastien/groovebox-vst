@@ -103,6 +103,16 @@ It is fully gitignored and nothing in it is authored in place.
   caller), that there is no MIDI note input (there is, C1-B1 = notes 36-47,
   `Layout::firstMidiNote` in [Source/Common.h:28](Source/Common.h)), and that Live scans
   `Documents\VST3` (it does not -- see Host folders below).
+- **A fit claim states both axes and names the code that decides each.** 4.3b shipped that the
+  wrap "lets it go down to **1218 px** — a 1366 px laptop" (README.md:374) and that the
+  "editor floor **1218×844**, which does fit 1366×768" (NEXT-STEPS.md:348) -- in the same
+  paragraph that then admitted the height half was not paid for. The width is true (1218 <=
+  1366); the height is not, because [Source/PluginEditor.cpp:101](Source/PluginEditor.cpp)
+  passes 844 straight to `setResizeLimits` as the editor's *minimum* while a 768 px screen has
+  roughly 730 px of it -- the bottom strip sits off-screen and no resize brings it back.
+  `Tests/LayoutTest.cpp:607` prints that floor already, so this was one subtraction away rather
+  than a measurement away: a claim that survives checking only one axis is the dangerous shape.
+  Both sentences were corrected by the shipping lane in `71c04fd`.
 
 ## Tests: three console apps plus a source guard, gated by CTest
 
