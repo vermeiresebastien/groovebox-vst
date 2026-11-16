@@ -8167,8 +8167,8 @@ int main()
                    juce::String (shutAir, 6) + " shut against " + juce::String (openAir, 6) + " at 6 kHz");
 
             // A second side of the same coin, stated as arithmetic: no struck rung anywhere
-            // in the take is above the ladder's own top, which is the one number a hidden
-            // renormalisation would have to break in order to hide.
+            // in the take is above the ladder's own top -- the number a hidden renormalisation
+            // would break to hide. Not a headroom gate: nothing here bounds the summed peak.
             check (peakOf (touchTake.left) <= peakOf (quietTake.left) * (float) (1.0 + Layout::maxTouchRatio)
                        && peakOf (quietTake.left) > 0.0f,
                    "the summed take stays inside one travel of where it was drawn",

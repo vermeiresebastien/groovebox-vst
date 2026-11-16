@@ -149,7 +149,7 @@ It is fully gitignored and nothing in it is authored in place.
   When shipped copy quotes a measured level it states the fixture that produced it, whether that
   fixture is a playing state, and which trim was in place -- and the same test arm's relative ceiling
   (`<= shut * 1.25`, `Tests/SmokeTest.cpp:8172`) is an anti-renormalisation gate, not a headroom gate,
-  which is worth saying in its comment because nothing else in the suite bounds the summed peak.
+  which its comment now says, because nothing else in that arm bounds the summed take's level.
   Corrected by the shipping lane in `fbf973c`.
 
 ## Tests: three console apps plus a source guard, gated by CTest
