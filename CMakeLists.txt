@@ -229,3 +229,107 @@ target_link_libraries(GrooveboxLayoutTest PRIVATE
     juce::juce_recommended_config_flags
     juce::juce_recommended_warning_flags
 )
+
+# ---------------------------------------------------------------------------
+# Genre table / planner check
+#
+# One std-only file against the two headers it reads: GenrePatterns.h is the
+# ported table, PatternPlanner.h the placement rule. Deliberately a plain
+# add_executable with no JUCE link and no generated header -- that is what keeps
+# it at about a second and independent of the plugin's own build -- so it must
+# not be turned into a juce_add_console_app or given GROOVEBOX_SOURCES.
+#
+# It is in ALL on purpose: a suite that only runs when someone remembers to name
+# it is a suite that rots, and this one costs a compile of a single file.
+# ---------------------------------------------------------------------------
+add_executable(GrooveboxPatternPlanTest
+    Tests/PatternPlanTest.cpp
+)
+
+# No target_include_directories on purpose. Both includes in the test are relative to the
+# file (../Source/...), and PatternPlanner.h includes GenrePatterns.h from its own directory,
+# so nothing here needs a search path. Keeping one would make the build and the gate answer
+# "where is this include?" differently: the gate resolves a quoted include from the including
+# file's directory only, so an -I Source would let a bare `#include "GenrePatterns.h"` compile
+# while dropping that header out of the staleness scan -- the guard would stop looking at the
+# file that changed. Without the search path the build fails instead, loudly.
+
+# The manual command documented at the top of the test is
+# `cl /std:c++17 /EHsc /W4`; the language level and /EHsc come from the project
+# settings (CMAKE_CXX_STANDARD, MSVC's default), so only /W4 is repeated here.
+if (MSVC)
+    target_compile_options(GrooveboxPatternPlanTest PRIVATE /W4)
+endif()
+
+# ---------------------------------------------------------------------------
+# CTest: the tracked gate
+#
+# The three suites above are compiled by every configure, but until now only the
+# gitignored harness (out/gate-plan.ps1) ran them -- so a fresh clone satisfied
+# "wired into a build target" and still had no tracked way to go red. These
+# add_test entries are that way: `ctest --test-dir <build> -C Release -V` runs the
+# same checks from outside the source root, with no script that .gitignore hides.
+#
+# The harness keeps building and launching the exes itself instead of calling
+# ctest. Measured, not preferred: ctest does not build, so with a changed source
+# and no rebuild it runs the previous binary and reports green (the table at
+# GenrePatterns.h:101 was broken and ctest still passed until the exe was
+# rebuilt); and ctest reports a failed test as exit 8, which the harness's 1/2/3
+# taxonomy (1 build, 2 no trustworthy state, 3 ran and failed) would have to
+# translate. The harness's per-target staleness guard is what keeps a binary and
+# its sources honest; ctest is the tracked replay.
+#
+# enable_testing() sits here, at EOF, and not near the top: AGENTS.md and
+# README.md cite CMakeLists.txt line ranges (:166-231, and this appended block),
+# and a call higher up would shift every one of them.
+# ---------------------------------------------------------------------------
+enable_testing()
+
+# Every suite was written to run from the source root -- the harness does
+# Set-Location $Root before each run -- while ctest starts a test in the build
+# tree. Pin the directory the suites were verified in rather than inheriting
+# wherever ctest was launched from. The suites are already cwd-independent (the
+# smoke test's scratch wavs sit next to the executable, the other two read no
+# files, and the guard resolves its source relative to $PSScriptRoot), so this
+# pins a measured-good state rather than fixing a known break; it keeps a later
+# file-reading test from silently reading the wrong tree.
+set(GROOVEBOX_TEST_WORKING_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
+
+# The suites' value is the line they print last: "PASSED  N checks, 0 failures"
+# (smoke), "PASSED  N checks, 0 problems" (layout) and "N checks, 0 problems"
+# (planner). PASS_REGULAR_EXPRESSION is a test condition, not a convenience: if
+# no pattern matches, CTest marks the test Failed even when the process exited
+# 0. That is what makes both a run that prints nothing -- a walk that ran zero
+# checks -- and a run that prints "N checks, 1 problems" fail the tracked path.
+# The patterns require ", 0 " on purpose; matching "checks" alone would score a
+# problem count as green, which is the one outcome a test may not have.
+add_test(NAME GrooveboxSmokeTest COMMAND GrooveboxSmokeTest)
+set_tests_properties(GrooveboxSmokeTest PROPERTIES
+    WORKING_DIRECTORY "${GROOVEBOX_TEST_WORKING_DIR}"
+    PASS_REGULAR_EXPRESSION "PASSED  [0-9]+ checks, 0 failures")
+
+add_test(NAME GrooveboxLayoutTest COMMAND GrooveboxLayoutTest)
+set_tests_properties(GrooveboxLayoutTest PROPERTIES
+    WORKING_DIRECTORY "${GROOVEBOX_TEST_WORKING_DIR}"
+    PASS_REGULAR_EXPRESSION "PASSED  [0-9]+ checks, 0 problems")
+
+add_test(NAME GrooveboxPatternPlanTest COMMAND GrooveboxPatternPlanTest)
+set_tests_properties(GrooveboxPatternPlanTest PROPERTIES
+    WORKING_DIRECTORY "${GROOVEBOX_TEST_WORKING_DIR}"
+    PASS_REGULAR_EXPRESSION "[0-9]+ checks, 0 problems")
+
+# The fourth check the harness runs is the source-shape guard, so it is wired
+# too: otherwise a clone could replay three suites and still never look at the
+# rule that keeps parameterChanged allocation-free. It is guarded by WIN32
+# because the script is PowerShell; on other platforms the test is absent, not
+# failed. The guard reads its source through $PSScriptRoot, so it does not
+# actually depend on the pinned directory -- it is set anyway so every test in
+# this list states its directory instead of inheriting one.
+if (WIN32)
+    add_test(NAME RtPathGuard
+        COMMAND powershell -NoProfile -ExecutionPolicy Bypass
+                -File "${CMAKE_CURRENT_SOURCE_DIR}/Tests/RtPathGuard.ps1")
+    set_tests_properties(RtPathGuard PROPERTIES
+        WORKING_DIRECTORY "${GROOVEBOX_TEST_WORKING_DIR}"
+        PASS_REGULAR_EXPRESSION "GUARD OK")
+endif()

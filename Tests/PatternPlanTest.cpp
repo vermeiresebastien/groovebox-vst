@@ -2,10 +2,10 @@
 //
 //   cl /std:c++17 /EHsc /nologo /W4 /I..\Source PatternPlanTest.cpp /Fe:..\out\PatternPlanTest.exe
 //
-// Deliberately NOT wired into CMake and NOT linking JUCE. The two headers it exercises are
-// std-only by design (GenrePatterns.h is generated data, PatternPlanner.h is the placement
-// rule), so they can be compiled and run by themselves in a second, and the smoke suite --
-// which currently belongs to another session's in-flight work -- stays untouched.
+// Built by CMake as GrooveboxPatternPlanTest and replayed by the tracked ctest gate -- see the
+// block appended to CMakeLists.txt; the cl line above is only the manual fallback. It still links
+// no JUCE: the two headers it exercises are std-only by design (GenrePatterns.h is generated data,
+// PatternPlanner.h the placement rule), so it compiles and runs in about a second on its own.
 
 #include <cstdint>
 #include <cstdio>
