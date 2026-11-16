@@ -295,6 +295,92 @@ public:
     */
     int duplicateChannelRowToNextSlot (int channel);
 
+    /**
+        One lane's whole row, in the shape a bulk write takes it: the four facts a cell.
+
+        Constructed as the *neutral* row — off, full level, fires every time, one strike —
+        which is exactly what `Layout::cellSaysAnything` calls a cell that says nothing, so a
+        caller that sets only `on` gets a grid whose silence costs no bytes in the session.
+        The three numbers are unclamped here; `writeSlotRows` clamps them through the same
+        helpers the codec and the grid use, so a plan that arrives with 0.0 for silence cannot
+        write a level the record would then have to disagree about.
+    */
+    struct SlotRowWrite
+    {
+        std::array<bool, (size_t) Layout::numSteps> on {};
+        std::array<float, (size_t) Layout::numSteps> level {};
+        std::array<float, (size_t) Layout::numSteps> chance {};
+        std::array<int, (size_t) Layout::numSteps> strikes {};
+
+        SlotRowWrite()
+        {
+            level.fill (1.0f);
+            chance.fill (1.0f);
+            strikes.fill (1);
+        }
+    };
+
+    /**
+        Writes whole rows into one bank slot and serialises that slot exactly once.
+
+        This is the door a generated pattern comes through, and it exists because the cell
+        seams cannot serve that shape. `setStep`, `setStepVelocity`, `setStepChance` and
+        `setStepRatchet` all resolve the slot themselves — with `selectedSlotOf (channel)` —
+        so a grid painted through them can only ever land on the slot the lane is already
+        playing, and each of them ends in `pushPatternToState`, which re-serialises the whole
+        row: four fields by twelve lanes by sixteen steps is 768 encodings of one 768-byte
+        record for one pattern, of which 240 move it — the rest set the string the property
+        already holds, so the tree hears nothing while the codec runs anyway. The undo
+        history is not where that cost lands: a transaction is the editor's per gesture, not
+        the cell's, and `UndoManager::perform` coalesces successive `SetPropertyAction`s on
+        one property, so those 240 writes are two undo actions against this seam's one. What
+        the one push buys is 768 encodings down to one and 240 host notifications down to
+        one, with the slot here as an argument instead of whatever the lane was already
+        playing: the selection is never read, never written, and nothing is audible until a
+        pointer moves to it.
+
+        Consequences worth stating, because each one is a check:
+
+        * A slot no lane points at is inaudible while it fills, which is what makes a
+          generated grid non-destructive: the grid the user drew is not what is being
+          rewritten, and no pointer has to move to hear the result later. Writing a slot that
+          some lane *does* point at is allowed — it simply becomes audible cell by cell — and
+          the stores are ordered neighbours-then-flag for that case, so a step that comes on
+          arrives with the level, probability and strike count that go with it rather than a
+          block's worth of the old ones.
+        * The whole ask is checked before anything is stored. A refusal therefore leaves no
+          half-written slot, no tree write and no repaint, which is the only reason the
+          return value is worth reading.
+        * A lane named twice is written twice and the later row wins, since a caller that
+          builds a lane list can easily name one twice and a silent last-write rule is the
+          one that matches what the list says.
+        * Lanes not named keep every cell they hold, in this slot and in all the others.
+
+        Returns false without touching anything when the slot is not one of the
+        `Layout::numPatternSlots`, when `lanes` or `rows` is null, when the count is outside
+        `1..Layout::numChannels`, or when any named lane is outside the twelve. Those are the
+        only ways to be refused: nothing about what the machine already holds can say no.
+    */
+    bool writeSlotRows (int slot, const int* lanes, const SlotRowWrite* rows, int numLanes);
+
+    /**
+        The tree property one slot's cells live in: `pattern` for slot 0, `pattern1` to
+        `pattern3` for the rest.
+
+        Slot 0 keeps the name it has always had, and with it the bytes: a session written
+        before the bank is loaded by this build unchanged, and this build's file is still
+        readable by the build before it — which sees its own grid in `pattern` and ignores
+        three properties it has never heard of. Renaming the working slot to make the bank
+        symmetrical would have cost both of those.
+
+        Public because a caller that aims at a slot has to be able to name it: the bank's
+        records are sparse, so slot 2's property is only there when something wrote it, and
+        the census-and-index route reads `pattern1`'s bytes when a slot in front of it is
+        absent. Asking this function is the one way to look a slot's record up that cannot
+        be wrong about which slot it is.
+    */
+    static juce::String slotPropertyName (int slot);
+
     //==========================================================================
     // Channels
     //==========================================================================
@@ -553,18 +639,6 @@ private:
 
     /** Writes every slot this build is responsible for, and takes none it is not. */
     void pushPatternToState();
-
-    /**
-        The tree property one slot's cells live in: `pattern` for slot 0, `pattern1` to
-        `pattern3` for the rest.
-
-        Slot 0 keeps the name it has always had, and with it the bytes: a session written
-        before the bank is loaded by this build unchanged, and this build's file is still
-        readable by the build before it — which sees its own grid in `pattern` and ignores
-        three properties it has never heard of. Renaming the working slot to make the bank
-        symmetrical would have cost both of those.
-    */
-    static juce::String slotPropertyName (int slot);
 
     /** Does any lane have anything at all in this slot — a step on, or a cell that is not
         at full level and every-time probability? The test for whether a record is worth writing. */

@@ -380,6 +380,27 @@ namespace Layout
     }
 
     /**
+        The one rung of the probability lattice a byte means, and the snap of any float onto
+        the rung it would be written as.
+
+        These were spelled out at each call site — the panel's `setStepChance` did the
+        round-and-divide inline, the codec's reader divided the raw byte by the lattice — and
+        a bulk writer asking for the same thing would have been the third spelling of a
+        lattice that exists in exactly one number, `chanceLevels`. The snapping rule is not
+        cosmetic: a probability is the one field the panel shows as a percentage, so a value
+        that reaches the engine unrounded is a screen that lies about the file.
+    */
+    inline float chanceFromByte (juce::uint8 byte) noexcept
+    {
+        return (float) byte / (float) chanceLevels;
+    }
+
+    inline float chanceRungFor (float chance) noexcept
+    {
+        return chanceFromByte (chanceByte (chance));
+    }
+
+    /**
         The fourth byte: the number of strikes, written as itself.
 
         Clamped rather than validated, because the field it comes from is an atomic a host

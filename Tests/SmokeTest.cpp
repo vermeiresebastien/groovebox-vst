@@ -1913,6 +1913,21 @@ int main()
         // Meanwhile the message thread does what a player dropping files does:
         // decode, publish, reassign the channel to the new id. Every reassign is
         // a race with a voice trigger on the other thread.
+        //
+        // "Meanwhile" has to be paid for. Two hundred loads can finish before the
+        // scheduler has even started the render thread, and then this section races
+        // nothing at all while still printing three greens — it was seen to do exactly
+        // that, 0 blocks beside a pass, under a build that had just finished linking.
+        // So wait for the first block before the hammering starts, bounded so a thread
+        // that never runs is a failure this section reports rather than one it hangs on.
+        for (auto waited = 0; blocksRendered.load() == 0 && waited < 200000; ++waited)
+            std::this_thread::yield();
+
+        check (blocksRendered.load() > 0,
+               "the render thread was actually running before the loads began, which is what"
+               " makes the overlap below an overlap rather than a hope",
+               juce::String (blocksRendered.load()) + " blocks after 200000 yields");
+
         constexpr int loads = 200;
         int loaded = 0;
 
@@ -10588,6 +10603,765 @@ int main()
                    "cut, which is the difference between a choke and a quieter hit",
                    "choked tail peak " + juce::String (chokedPeak, 6));
         }
+    }
+
+    //======================================================================
+    std::printf ("\n[35] a whole pattern can be written into one slot in one push\n");
+    {
+        /**
+            What this seam exists for: a generated grid arrives as twelve rows at once, aims at
+            a slot the user is not looking at, and has to be one edit: one record in the
+            session, one pass through the codec, one thing said to the host.
+
+            The cell seams cannot serve that shape. `setStep`, `setStepVelocity`, `setStepChance`
+            and `setStepRatchet` each resolve `selectedSlotOf (channel)` for themselves, so they
+            can only paint the slot a lane is already playing, and each ends in
+            `pushPatternToState`, which re-serialises the whole row. Twelve lanes by sixteen
+            steps by four fields through those doors is 768 encodings of the same 768 bytes for
+            one pattern — 240 of them move the record, and part d counts both — and the half
+            the plan was written in is audible on the way there because the slot being filled is
+            the slot being heard.
+
+            So the checks below are about four claims: a refusal is only ever about the shape of
+            the ask and leaves nothing behind; an accepted fill lands where it was aimed and
+            nowhere else, including not at the selection; it costs one serialisation rather than
+            240 notifications' worth of them, counted as the notifications a state listener
+            receives and as the changes the one open transaction holds; and the record
+            it writes obeys the bank's own sparseness rule, which is the same rule the dots use.
+        */
+        auto click = makeClickWav ("slotwrite", 4000, sampleRate);
+
+        /** Every property the root holds, as sorted `name=value` pairs. */
+        auto treeCensus = [] (GrooveboxProcessor& p)
+        {
+            juce::StringArray lines;
+            const auto& state = p.getValueTreeState().state;
+
+            for (auto i = 0; i < state.getNumProperties(); ++i)
+            {
+                const auto name = state.getPropertyName (i);
+                lines.add (name.toString() + "=" + state.getProperty (name).toString());
+            }
+
+            lines.sort (false);
+
+            return lines.joinIntoString (";");
+        };
+
+        /**
+            The slot's own record, read by the name production gives that slot.
+
+            A census-and-index read is what [32] uses, and it is right to there: the claim
+            is about the four names, and indexing the present properties is how a wrong
+            grammar gets seen. Here the claim is usually about a slot that is *absent* —
+            that is the bank's sparseness rule, and it is the subject of parts c and e — and
+            an absent slot shifts every later name down one index, so `names[2]` is slot 1's
+            record in a tree that holds three. A name taken from `slotPropertyName` cannot
+            fail that way, and it is not an unfalsifiable restatement either: the census
+            below is a literal list of what the tree holds, checked as a string in parts a
+            and c, so a build that renamed its slots would go red there rather than agreeing
+            with itself in both directions. An absent slot comes back as an empty string.
+        */
+        auto slotRecord = [] (GrooveboxProcessor& p, int slot) -> juce::String
+        {
+            return p.getValueTreeState().state
+                .getProperty (juce::Identifier (p.slotPropertyName (slot))).toString();
+        };
+
+        /**
+            The `pattern*` names the tree actually holds, sorted.
+
+            Kept as a literal census beside the lookup above on purpose: if a future build
+            renamed the slots, `slotPropertyName` would be wrong on both sides of a save and
+            every read here would still agree with it. This is the one list that cannot agree
+            with a mistake, and the two checks that use it state the names as strings.
+        */
+        auto recordCensus = [] (GrooveboxProcessor& p)
+        {
+            juce::StringArray names;
+            const auto& state = p.getValueTreeState().state;
+
+            for (auto i = 0; i < state.getNumProperties(); ++i)
+            {
+                const auto name = state.getPropertyName (i).toString();
+                if (name.startsWith ("pattern"))
+                    names.add (name);
+            }
+
+            names.sort (false);
+            return names;
+        };
+
+        /** One cell as the record holds it, decoded with test-local arithmetic. */
+        struct StoredCell
+        {
+            int on = -1, level = -1, chance = -1, strikes = -1;
+            int bytes = 0;
+        };
+
+        auto storedCell = [] (const juce::String& record, int channel, int step) -> StoredCell
+        {
+            StoredCell cell;
+            const int stride = 4;
+
+            if (! record.startsWith ("v4:"))
+                return cell;
+
+            juce::MemoryBlock bytes;
+            juce::MemoryOutputStream sink (bytes, false);
+
+            if (! juce::Base64::convertFromBase64 (sink, record.fromFirstOccurrenceOf (":", false, false)))
+                return cell;
+
+            // Flush before the size and the pointer: the stream rounds the block up as it
+            // grows and only shrinks it to what was written in `flush` (which is exactly
+            // `trimExternalBlockSize`, and it can move the data pointer).
+            sink.flush();
+
+            const auto at = (channel * Layout::numSteps + step) * stride;
+            if (bytes.getSize() < (size_t) (at + stride))
+                return cell;
+
+            const auto* raw = static_cast<const juce::uint8*> (bytes.getData());
+            cell.on = raw[at];
+            cell.level = raw[at + 1];
+            cell.chance = raw[at + 2];
+            cell.strikes = raw[at + 3];
+            cell.bytes = (int) bytes.getSize();
+            return cell;
+        };
+
+        auto row = [] (bool hit)
+        {
+            GrooveboxProcessor::SlotRowWrite r;
+            for (auto s = 0; s < Layout::numSteps; ++s)
+                r.on[(size_t) s] = hit;
+            return r;
+        };
+
+        auto liveGrid = [] (GrooveboxProcessor& p)
+        {
+            juce::String out;
+            for (auto c = 0; c < Layout::numChannels; ++c)
+                for (auto s = 0; s < Layout::numSteps; ++s)
+                    out += juce::String (" ") + juce::String ((int) p.isStepOn (c, s))
+                         + juce::String (Layout::levelByte (p.getStepVelocity (c, s)))
+                         + juce::String (Layout::chanceByte (p.getStepChance (c, s)))
+                         + juce::String (p.getStepRatchet (c, s)) + "|";
+            return out;
+        };
+
+        auto selections = [] (GrooveboxProcessor& p)
+        {
+            juce::String out;
+            for (auto c = 0; c < Layout::numChannels; ++c)
+                out += juce::String (p.getChannelSlot (c));
+            return out;
+        };
+
+        // Counts what a host or the panel is told about the tree, which is the currency the
+        // economy claim is actually about.
+        struct TreeCounter : juce::ValueTree::Listener
+        {
+            int changes = 0;
+            void valueTreePropertyChanged (juce::ValueTree&, const juce::Identifier&) override
+            {
+                ++changes;
+            }
+        };
+
+        GrooveboxProcessor machine;
+        machine.prepareToPlay (sampleRate, blockSize);
+        clearAllSteps (machine);
+        rearm (machine);
+
+        for (auto c = 0; c < Layout::numChannels; ++c)
+        {
+            juce::String error;
+            machine.loadSampleIntoChannel (c, click, error);
+        }
+
+        TreeCounter counter;
+        machine.getValueTreeState().state.addListener (&counter);
+
+        int repaints = 0;
+        machine.onStateChanged = [&repaints] { ++repaints; };
+
+        //======================================================================
+        // a. the shape of the bank this build writes
+        {
+            // The fixture every later part reads its absence from: a session that has
+            // never touched a second slot carries one record, not four. Without this,
+            // "the neutral fill removed slot 2's record" would be an absence compared
+            // against an absence — which is not the same trap as [32]'s positional
+            // census, gated there on all four names being present.
+            check (recordCensus (machine).joinIntoString (" ") == "pattern",
+                   "a fresh session holds slot 0's record under that literal name and nothing "
+                   "else, which is what makes a later emptiness a removal rather than a never-was",
+                   "records on the tree: " + recordCensus (machine).joinIntoString (" "));
+
+            check (selections (machine) == "000000000000" && slotRecord (machine, 2).isEmpty(),
+                   "the fixture starts where a fresh session starts: every lane on slot 0, and "
+                   "slot 2 holding nothing a save would bother to write",
+                   "selections " + selections (machine) + ", slot 2 record length "
+                       + juce::String (slotRecord (machine, 2).length()));
+
+            check (! slotRecord (machine, 0).isEmpty(),
+                   "and the same helper finds the record that is there, so the emptiness above "
+                    "is the helper reading a real tree rather than never matching anything",
+                   "slot 0 record length " + juce::String (slotRecord (machine, 0).length()));
+        }
+
+        //======================================================================
+        // b. every way to be refused, asked while nothing else could say no
+        {
+            GrooveboxProcessor refuser;
+            refuser.prepareToPlay (sampleRate, blockSize);
+            clearAllSteps (refuser);
+            rearm (refuser);
+
+            for (auto c = 0; c < Layout::numChannels; ++c)
+            {
+                juce::String error;
+                refuser.loadSampleIntoChannel (c, click, error);
+                refuser.setChannelSlot (c, 2);
+                refuser.setStep (c, c, true);
+                refuser.setStepVelocity (c, c, 0.5f);
+            }
+
+            int refusedRepaints = 0;
+            refuser.onStateChanged = [&refusedRepaints] { ++refusedRepaints; };
+
+            const auto beforeGrid = liveGrid (refuser);
+            const auto beforeCensus = treeCensus (refuser);
+
+            const int oneLane = 3;
+            const int badLaneList[] = { 3, Layout::numChannels };
+            const int twelveLanes[] = { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11 };
+            GrooveboxProcessor::SlotRowWrite rows [13];
+
+            /**
+                The refused asks have to be *shaped* before they are refused. A default row is
+                every cell off, and every cell off is exactly what this grid already holds at
+                step 0, so a store that landed ahead of the pre-scan would have written the
+                value that was already there — the check below would then read its own fixture
+                rather than the write, and stay green on the build it exists to catch. Step 0
+                of every row is therefore asked for ON, at a level the grid does not hold: the
+                grid at lane 3, step 0 is off and at full, and that difference is the control.
+            */
+            for (auto& r : rows)
+            {
+                r.on[0] = true;
+                r.level[0] = 0.25f;
+                r.strikes[0] = 2;
+            }
+
+            // The precondition next to the arms that depend on it: if the ask and the grid
+            // already agree at the cell a leak would touch, then every "a refusal leaves
+            // nothing behind" below is satisfied by the fixture and not by the code, and the
+            // seven of them mean nothing. This line is the difference the controls spend.
+            check (rows[0].on[0] && rows[0].level[0] != 1.0f && rows[0].strikes[0] != 1
+                       && ! refuser.isStepOn (3, 0) && refuser.isStepOn (3, 3),
+                   "the refused ask disagrees with the grid it aims at in the flag, the level and"
+                   " the strike count, so a store made before the pre-scan cannot hide in equality",
+                   "lane 3 holds step 0 at " + juce::String ((int) refuser.isStepOn (3, 0))
+                       + " while the ask says 1, and holds step 3 at "
+                       + juce::String ((int) refuser.isStepOn (3, 3)));
+
+            struct Refusal
+            {
+                const char* what;
+                int slot;
+                const int* lanes;
+                int count;
+                bool nullRows = false;
+            };
+
+            const Refusal refusals[] =
+            {
+                { "slot below the bank", -1, &oneLane, 1 },
+                { "slot above the bank", Layout::numPatternSlots, &oneLane, 1 },
+                { "no row at all", 2, &oneLane, 1, true },
+                { "null lane list", 2, nullptr, 1 },
+                { "an empty lane list", 2, twelveLanes, 0 },
+                { "more lanes than the machine has", 2, twelveLanes, Layout::numChannels + 1 },
+                { "a lane outside the twelve", 2, badLaneList, 2 },
+            };
+
+            for (const auto& r : refusals)
+            {
+                const auto rowsPtr = (r.lanes == nullptr || r.nullRows) ? nullptr : rows;
+                const auto answered = refuser.writeSlotRows (r.slot, r.lanes, rowsPtr, r.count);
+
+                check (! answered,
+                        juce::String ("a write refuses ") + r.what
+                            + ", which is the only kind of reason this seam is allowed to give",
+                        juce::String (r.what) + " came back " + (answered ? "accepted" : "refused"));
+
+                check (liveGrid (refuser) == beforeGrid,
+                        juce::String ("and the refusal leaves every cell of the slot it was aimed at "
+                                      "as it found it (") + r.what + ")",
+                        "the grid moved, which means the list was written before it was checked");
+
+                check (treeCensus (refuser) == beforeCensus,
+                        juce::String ("and a refusal writes no record at all (") + r.what + ")",
+                        "the tree changed on a write that said no");
+            }
+
+            check (refusedRepaints == 0,
+                   "seven refusals cost the panel nothing: the repaint is the fill's, not the ask's",
+                   "repaints after the refusal sweep: " + juce::String (refusedRepaints));
+
+            // The bad lane sat second in the list, so this is the arm that says the whole list
+            // is checked before the first store rather than element by element.
+            check (refuser.isStepOn (3, 3) && ! refuser.isStepOn (3, 0),
+                   "the lane named first in a refused list is still holding its own grid",
+                   "lane 3 step 3 is " + juce::String ((int) refuser.isStepOn (3, 3))
+                       + ", which would be 0 if the fill had started before it was refused");
+        }
+
+        //======================================================================
+        // c. an accepted fill lands where it was aimed, and nowhere else
+        {
+            for (auto c = 0; c < Layout::numChannels; ++c)
+                machine.setStep (c, c, true);
+
+            // Rearm *before* the counters are zeroed: `resetTransport` releases and
+            // re-prepares the engine, and if it ever wrote state the fill's single
+            // change below would be reading its own fixture.
+            rearm (machine);
+            machine.setPlaying (true);
+
+            counter.changes = 0;
+            repaints = 0;
+            const auto censusBefore = treeCensus (machine);
+            const auto gridBefore = liveGrid (machine);
+            const auto untouched = render (machine, stepSamples * 32, blockSize, sampleRate);
+
+            // Two silences are bit-identical too, so the equality below is only a control
+            // if this render has something in it.
+            check (lastAbove (untouched.left, 0.005f) >= 0,
+                   "the grid the fixture plays actually sounds, which is what makes 'the fill "
+                   "changed nothing audible' a comparison rather than a pair of absences",
+                   "the 32-step render of the selected slots is silence");
+
+            int lanes[] = { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11 };
+            GrooveboxProcessor::SlotRowWrite full [Layout::numChannels];
+            for (auto c = 0; c < Layout::numChannels; ++c)
+                for (auto s = 0; s < Layout::numSteps; ++s)
+                {
+                    full[(size_t) c].on[(size_t) s] = (s % (c + 1)) == 0;
+                    full[(size_t) c].level[(size_t) s] = 0.25f + 0.05f * (float) c;
+                    full[(size_t) c].strikes[(size_t) s] = (c % Layout::maxRatchetHits) + 1;
+                }
+
+            const auto filled = machine.writeSlotRows (2, lanes, full, Layout::numChannels);
+
+            check (filled,
+                   "a twelve-lane fill of a slot the bank has is accepted",
+                   "writeSlotRows (2, all twelve lanes) said no");
+
+            check (counter.changes == 1,
+                   "one fill of the whole grid is one property change on the tree, which is the "
+                   "number the cell seams would have paid sixteen times over for the same row",
+                   "state changes heard: " + juce::String (counter.changes));
+
+            check (repaints == 1,
+                   "and the panel is told once, because a generated grid is one edit",
+                   "repaints: " + juce::String (repaints));
+
+            const auto record2 = slotRecord (machine, 2);
+            check (! record2.isEmpty() && record2.startsWith ("v4:"),
+                   "the slot now holds a v4 record of its own",
+                   "record length " + juce::String (record2.length()));
+
+            // The hole that makes the census-and-index route unsafe, stated as a literal:
+            // slot 2 written while slot 1 was never touched leaves two records, and the
+            // second name in sorted order is `pattern2`, not slot 2's index in a list of
+            // what happens to exist. `slotRecord` reads the name production gives the slot,
+            // and this is what says that name is the one the file is supposed to have.
+            check (recordCensus (machine).joinIntoString (" ") == "pattern pattern2",
+                   "a bank with only slot 2 filled names its records `pattern` and `pattern2`, "
+                   "so the lookup above cannot be a second copy of a wrong grammar",
+                   "records on the tree: " + recordCensus (machine).joinIntoString (" "));
+
+            int wrongCells = 0;
+            for (auto c = 0; c < Layout::numChannels; ++c)
+                for (auto s = 0; s < Layout::numSteps; ++s)
+                {
+                    const auto cell = storedCell (record2, c, s);
+                    if (cell.on != (full[(size_t) c].on[(size_t) s] ? 1 : 0)
+                        || cell.level != Layout::levelByte (full[(size_t) c].level[(size_t) s])
+                        || cell.chance != Layout::chanceByte (1.0f)
+                        || cell.strikes != full[(size_t) c].strikes[(size_t) s])
+                        ++wrongCells;
+                }
+
+            check (wrongCells == 0,
+                   "every one of the 192 cells the fill asked for is in the record, with the "
+                   "neutral chance and the strike count it was given",
+                   juce::String (wrongCells) + " of 192 cells disagree with the ask");
+
+            check (storedCell (record2, 0, 0).bytes == Layout::numChannels * Layout::numSteps * 4,
+                   "and it is a whole-grid record, not a row: the bank writes all twelve lanes "
+                   "or none, which is what makes an empty slot removable",
+                   "payload bytes " + juce::String (storedCell (record2, 0, 0).bytes));
+
+            check (selections (machine) == "000000000000",
+                   "filling slot 2 moved no lane's pointer, which is the half of the claim that "
+                   "makes a generated grid non-destructive",
+                   "selections after the fill: " + selections (machine));
+
+            check (liveGrid (machine) == gridBefore,
+                   "and the grid the user is looking at — slot 0, the slot every lane points at — "
+                   "is exactly the one it was",
+                   "the slot being edited changed when a different slot was written");
+
+            check (treeCensus (machine) != censusBefore,
+                   "the tree did change, so the record above is not a comparison of two absences",
+                   "census identical, which means nothing was serialised");
+
+            rearm (machine);
+            machine.setPlaying (true);
+            const auto after = render (machine, stepSamples * 32, blockSize, sampleRate);
+            check (after.left == untouched.left && after.right == untouched.right,
+                   "and nothing sounded different: a fill of a slot no lane points at is silent "
+                   "while it is being built, sample for sample",
+                   "the two renders diverge at sample "
+                       + juce::String (firstDifference (untouched.left, after.left, 0,
+                                                       (int) untouched.left.size())));
+        }
+
+        //======================================================================
+        // d. what the one push bought, measured against the door a drag uses
+        {
+            GrooveboxProcessor seams;
+            seams.prepareToPlay (sampleRate, blockSize);
+            clearAllSteps (seams);
+
+            for (auto c = 0; c < Layout::numChannels; ++c)
+                seams.setChannelSlot (c, 3);
+
+            TreeCounter seamCounter;
+            seams.getValueTreeState().state.addListener (&seamCounter);
+            seams.getUndoManager().clearUndoHistory();
+
+            for (auto c = 0; c < Layout::numChannels; ++c)
+                for (auto s = 0; s < Layout::numSteps; ++s)
+                {
+                    seams.setStep (c, s, s % 4 == 0);
+                    seams.setStepVelocity (c, s, 0.5f);
+                    seams.setStepChance (c, s, 1.0f);
+                    seams.setStepRatchet (c, s, 1);
+                }
+
+            GrooveboxProcessor bulk;
+            bulk.prepareToPlay (sampleRate, blockSize);
+            clearAllSteps (bulk);
+
+            for (auto c = 0; c < Layout::numChannels; ++c)
+                bulk.setChannelSlot (c, 3);
+
+            TreeCounter bulkCounter;
+            bulk.getValueTreeState().state.addListener (&bulkCounter);
+            bulk.getUndoManager().clearUndoHistory();
+
+            int lanes[] = { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11 };
+            GrooveboxProcessor::SlotRowWrite same [Layout::numChannels];
+            for (auto c = 0; c < Layout::numChannels; ++c)
+                for (auto s = 0; s < Layout::numSteps; ++s)
+                {
+                    same[(size_t) c].on[(size_t) s] = (s % 4 == 0);
+                    same[(size_t) c].level[(size_t) s] = 0.5f;
+                }
+
+            const auto wrote = bulk.writeSlotRows (3, lanes, same, Layout::numChannels);
+
+            check (wrote && bulkCounter.changes == 1,
+                   "the same grid through the bulk seam is one property change",
+                   "changes " + juce::String (bulkCounter.changes));
+
+            /**
+                The measured price of the same grid through the four cell seams.
+
+                192 level writes all move a byte (every cell starts at full), and of the 192
+                flag writes only the 48 that turn a step on do — the other 144 ask for the off
+                the cell already holds. The chance and ratchet writes ask for 1.0 and 1, which
+                is what `PatternCells` starts at, so they never move the record either. A
+                `ValueTree::setProperty` of a value the property already has sends no
+                notification, and the listener counts notifications, not calls: 192 + 48 = 240.
+
+                What that number does *not* cover is the CPU, and it is the bigger half. Each
+                of the 768 seam calls ends in `pushPatternToState`, with no early return for an
+                unchanged cell (`setStep`, `setStepVelocity`, `setStepChance`, `setStepRatchet`
+                at PluginProcessor.cpp:374, 443, 482, 533), so the row is encoded to base64 768
+                times — 589,824 bytes of payload through the codec — to arrive at one record.
+                The bulk seam encodes it once. The notification count is what a host and the
+                panel feel; the encode count is what the audio-thread-facing code does not,
+                because none of this runs on that thread.
+            */
+            check (seamCounter.changes == Layout::numChannels * Layout::numSteps
+                                     + Layout::numChannels * 4,
+                   "the same grid through the cell seams is 240 property changes — the 192 level "
+                   "moves and the 48 flags that actually flip — which is what 'pushes once per "
+                   "slot' is paying for",
+                   "cell-seam changes " + juce::String (seamCounter.changes)
+                       + ", bulk " + juce::String (bulkCounter.changes));
+
+            check (slotRecord (seams, 3) == slotRecord (bulk, 3),
+                   "and the two records agree, so the economy is not bought by writing less",
+                   "the bulk record differs from the drag record for the same ask");
+
+            // The undo half, measured rather than assumed — and the assumption does not
+            // survive. Nothing in the processor begins a transaction; that is the editor's,
+            // once per gesture (StepGridComponent.cpp:935 "Paint steps"), so a dragged grid
+            // is already one undo. And `UndoManager::perform` coalesces a new action with
+            // the last one in the same transaction when `createCoalescedAction` says they
+            // are the same property — which `SetPropertyAction` does for every pair of
+            // `pattern3` writes that are not an add or a remove. So 240 writes to one
+            // property land as two actions: the add that created the record, then everything
+            // after it merged. The fill is one, because it only ever adds.
+            //
+            // Which means the seam does not save the undo history in any way worth claiming.
+            // What it saves is the 768 encodings and the 240 notifications, and this check
+            // exists to stop a future comment from restating the cheaper-sounding story.
+            const auto seamActions = seams.getUndoManager().getNumActionsInCurrentTransaction();
+            const auto bulkActions = bulk.getUndoManager().getNumActionsInCurrentTransaction();
+
+            check (seamActions == 2 && bulkActions == 1,
+                   "the dragged grid's 240 writes are two undo actions and the fill's one write "
+                   "is one, because the undo manager coalesces a property with itself",
+                   "actions " + juce::String (seamActions) + " against " + juce::String (bulkActions));
+
+            check (seamActions < seamCounter.changes,
+                   "and the action count is not the notification count, which is the claim this "
+                   "section's own summary had to drop once it was measured",
+                   "actions " + juce::String (seamActions)
+                       + " against changes " + juce::String (seamCounter.changes));
+
+            const auto seamsBack = seams.getUndoManager().undo()
+                                     && slotRecord (seams, 3).isEmpty();
+            const auto bulkBack = bulk.getUndoManager().undo()
+                                    && slotRecord (bulk, 3).isEmpty();
+
+            check (seamsBack && bulkBack,
+                   "and one undo restores both to the absent record they came from: the merged "
+                   "action puts back what the add left, then the add's own undo removes the "
+                   "property, which is the pair the coalescing has to keep straight",
+                   "seams " + juce::String ((int) seamsBack) + ", bulk " + juce::String ((int) bulkBack));
+        }
+
+        //======================================================================
+        // e. an empty slot still costs no record, in either direction
+        {
+            int lanes[] = { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11 };
+            GrooveboxProcessor::SlotRowWrite neutral [Layout::numChannels];
+
+            check (! slotRecord (machine, 2).isEmpty(),
+                   "the precondition the removal needs: slot 2 holds something before the "
+                   "neutral fill takes it away",
+                   "slot 2 was already empty, so the absence below would prove nothing");
+
+            machine.writeSlotRows (2, lanes, neutral, Layout::numChannels);
+
+            check (slotRecord (machine, 2).isEmpty(),
+                   "a fill that leaves every lane at off, full, every-time and one strike "
+                   "removes the slot's record, exactly as clearing a row does",
+                   "record length " + juce::String (slotRecord (machine, 2).length()));
+
+            int dotsLit = 0;
+            for (auto c = 0; c < Layout::numChannels; ++c)
+                if (machine.isChannelSlotFilled (c, 2))
+                    ++dotsLit;
+
+            check (dotsLit == 0,
+                   "and the bank's marks agree with the record rather than with the gesture that "
+                   "made it, which is the pairing 4.4 had to learn the hard way",
+                   juce::String (dotsLit) + " lanes still say slot 2 holds something");
+
+            GrooveboxProcessor zero;
+            zero.prepareToPlay (sampleRate, blockSize);
+            clearAllSteps (zero);
+
+            for (auto c = 0; c < Layout::numChannels; ++c)
+            {
+                int one[] = { c };
+                GrooveboxProcessor::SlotRowWrite neutralOne;
+                zero.writeSlotRows (0, one, &neutralOne, 1);
+            }
+
+            const auto record0 = slotRecord (zero, 0);
+            check (! record0.isEmpty(),
+                   "slot 0 is exempt, as the save path says it is: a neutral fill there still "
+                   "writes the all-zeros record an empty machine has always saved",
+                   "slot 0's record vanished");
+
+            bool everyCellNeutral = true;
+            for (auto c = 0; c < Layout::numChannels && everyCellNeutral; ++c)
+                for (auto s = 0; s < Layout::numSteps; ++s)
+                {
+                    const auto cell = storedCell (record0, c, s);
+                    if (cell.on != 0 || cell.level != 127 || cell.chance != 255 || cell.strikes != 1)
+                    {
+                        everyCellNeutral = false;
+                        break;
+                    }
+                }
+
+            check (everyCellNeutral,
+                   "and it says nothing in every one of its 192 cells, which is what the neutral "
+                   "defaults of a row write are there to make true",
+                   "a neutral fill left a byte behind in slot 0");
+        }
+
+        //======================================================================
+        // f. it sounds when a lane is pointed at it, and only then
+        {
+            GrooveboxProcessor loud;
+            loud.prepareToPlay (sampleRate, blockSize);
+            clearAllSteps (loud);
+
+            juce::String error;
+            const auto loaded = loud.loadSampleIntoChannel (3, click, error);
+
+            check (click.existsAsFile() && loaded,
+                   "the lane this part sounds has a sample in it, which is the precondition every "
+                   "render below rests on", error.isNotEmpty() ? error : "the wav is not on disk");
+
+            // One hit in the slot the lane *does* point at. Without it the two unpointed
+            // renders are two silences, and "the fill changed nothing" would be an equality
+            // between absences — which is the trap [32]'s census was written against.
+            loud.setStep (3, 2, true);
+            rearm (loud);
+            loud.setPlaying (true);
+
+            int lane3[] = { 3 };
+            GrooveboxProcessor::SlotRowWrite fourOnTheFloor;
+            fourOnTheFloor.on[0] = true;
+            fourOnTheFloor.on[4] = true;
+            fourOnTheFloor.on[8] = true;
+            fourOnTheFloor.on[12] = true;
+
+            const auto before = render (loud, stepSamples * 16, blockSize, sampleRate);
+
+            check (lastAbove (before.left, 0.005f) >= 0,
+                   "the grid the lane is pointing at plays, so the identity below is a control",
+                   "the pointed-at grid renders silence");
+
+            const auto acceptedFill = loud.writeSlotRows (2, lane3, &fourOnTheFloor, 1);
+            rearm (loud);
+            loud.setPlaying (true);
+            const auto whileUnselected = render (loud, stepSamples * 16, blockSize, sampleRate);
+
+            check (acceptedFill,
+                   "the one-lane fill of slot 2 is accepted",
+                   "writeSlotRows (2, one lane) said no");
+
+            check (firstDifference (before.left, whileUnselected.left, 0, (int) before.left.size()) == -1,
+                   "a fill of the slot nobody points at changes nothing audible, even on a lane "
+                   "that holds a sample and is armed",
+                   "samples differ at "
+                       + juce::String (firstDifference (before.left, whileUnselected.left, 0,
+                                                       (int) before.left.size())));
+
+            loud.setChannelSlot (3, 2);
+            rearm (loud);
+            loud.setPlaying (true);
+            const auto armed = render (loud, stepSamples * 17, blockSize, sampleRate);
+
+            std::vector<int> hits;
+            for (auto at = 0; at >= 0 && at < (int) armed.left.size(); )
+            {
+                const auto onset = onsetAfter (armed.left, at);
+                if (onset < 0)
+                    break;
+                hits.push_back ((int) std::lround ((double) onset / exactStepSamples));
+                at = onset + 300;
+            }
+
+            // The render is one step longer than a bar, so step 16 is the *next* bar's step
+            // 0 — the pattern repeating, not a cell firing twice. Stated in the expectation
+            // rather than trimmed out of it, because the fifth entry is the evidence that
+            // the fill is on the same grid the transport is on.
+            check (hits == std::vector<int> { 0, 4, 8, 12, 16 },
+                   "pointing the lane at the filled slot sounds exactly the grid the fill asked "
+                   "for, through the render path and not a second door, with the bar's wrap at "
+                   "16 rather than a fifth cell",
+                   "hits at steps " + [&] { juce::StringArray l; for (auto h : hits) l.add (juce::String (h));
+                                            return l.joinIntoString (" "); } ());
+
+            check (firstDifference (before.left, armed.left, 0, (int) before.left.size()) != -1,
+                   "and the two arms disagree, which is what says the render resolved the slot "
+                   "rather than the fixture being silent throughout",
+                   "the pointed and unpointed renders are identical");
+
+            int lane7[] = { 7 };
+            GrooveboxProcessor::SlotRowWrite wild;
+            wild.on[2] = true;
+            wild.level[2] = 3.0f;
+            wild.chance[2] = 0.3f;
+            wild.strikes[2] = 60;
+            wild.level[9] = -2.0f;
+
+            loud.writeSlotRows (1, lane7, &wild, 1);
+            loud.setChannelSlot (7, 1);
+
+            check (loud.getStepVelocity (7, 2) == 1.0f && loud.getStepVelocity (7, 9) == 0.0f,
+                   "a level outside 0..1 is clamped the way the fader's own seam clamps it, not "
+                   "written as a number the record cannot hold",
+                   "levels " + juce::String (loud.getStepVelocity (7, 2)) + " and "
+                       + juce::String (loud.getStepVelocity (7, 9)));
+
+            check (loud.getStepChance (7, 2) == Layout::chanceRungFor (0.3f),
+                   "a probability is snapped to the rung the record can hold before it reaches "
+                   "the engine, which is the same rule setStepChance applies to a drag",
+                   "chance " + juce::String (loud.getStepChance (7, 2), 6) + " against rung "
+                       + juce::String (Layout::chanceRungFor (0.3f), 6));
+
+            /**
+                What this check does and does not gate. It says the end-to-end rule holds for
+                this door — a caller cannot ask a cell for sixty hits — and it holds. It is
+                NOT a gate on the clamp inside `writeSlotRows`: arm w8 of `out/mut14.py`
+                deletes that clamp and this check stays green, because the value is clamped
+                again on the way out of `getStepRatchet`, again by the codec, and again at the
+                one place the number becomes sound (`SequencerEngine.cpp:874`, where 4.5's own
+                `setStepRatchet (3, 7, 999)` arm does gate it). The seam's clamp is there so
+                both write doors leave the atomic holding the same representation, and this
+                line is here so the next reader does not count it as the control for that.
+            */
+            check (loud.getStepRatchet (7, 2) == Layout::maxRatchetHits,
+                   "and a roll of sixty strikes is clamped to the ceiling the codec uses, rather "
+                   "than becoming sixty hits on one onset",
+                   "strikes " + juce::String (loud.getStepRatchet (7, 2)));
+
+            int twice[] = { 9, 9 };
+            GrooveboxProcessor::SlotRowWrite two [2];
+            two[0].on[1] = true;
+            two[1].on[1] = false;
+            two[1].on[5] = true;
+
+            const auto dupChanges = counter.changes;
+            const auto dup = machine.writeSlotRows (1, twice, two, 2);
+
+            // Read the record rather than the lane: the seam takes a slot, so the proof has to
+            // be asked of a named slot, not of whatever a lane happens to point at. A record
+            // that is not there at all comes back as -1s, which fails both of these.
+            const auto dupRecord = slotRecord (machine, 1);
+            const auto leftBehind = storedCell (dupRecord, 9, 1);
+            const auto laterRow = storedCell (dupRecord, 9, 5);
+
+            check (dup && laterRow.on == 1 && leftBehind.on == 0,
+                   "a lane named twice in one fill is written twice and the later row wins, "
+                   "which is the rule a caller building a lane list can rely on",
+                   "step 1 held " + juce::String (leftBehind.on) + " and step 5 "
+                       + juce::String (laterRow.on) + " of the record slot 1 carries");
+
+            check (counter.changes == dupChanges + 1,
+                   "and even a fill that names one lane twice is one property change",
+                   "changes " + juce::String (counter.changes - dupChanges));
+        }
+
+        click.deleteFile();
     }
 
     //======================================================================

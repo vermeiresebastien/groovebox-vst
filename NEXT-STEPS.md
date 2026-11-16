@@ -95,7 +95,7 @@ Zero coverage today: `setPlayHead` / `PositionInfo` / `AudioPlayHead` appear **n
 
 **B3 — The kit goes silent after enough recalls, and RAM creeps until it does.**
 `applyMetadata` calls `samples.addFile()` for all 12 lanes on **every** `setStateInformation`
-(`PluginProcessor.cpp:994-1009`) with no path dedupe, and the registry is append-only — an id is
+(`PluginProcessor.cpp:1102-1117`) with no path dedupe, and the registry is append-only — an id is
 "never removed, never moved, never reused" (`SampleStore.h:49`) up to `maxSamples = 512`
 (`SampleStore.h:62`), after which `addSample` returns 0 forever (`SampleStore.cpp:123-131`). Live calls
 state-set on set load, preset recall, track duplicate and its own device undo: ~12 ids a pop, so after
@@ -105,18 +105,18 @@ wasted each time. No test catches it — all four round-trip tests build a fresh
 
 **B4 — Undo is cosmetic and self-erasing.**
 Edits push the encoded 395-char pattern string into the tree with the undo manager
-(`PluginProcessor.cpp:864`), and transactions exist, so Ctrl+Z would restore the *string* — but
+(`PluginProcessor.cpp:972`), and transactions exist, so Ctrl+Z would restore the *string* — but
 `GrooveboxProcessor` is only an APVTS listener, never a `ValueTree::Listener` (no such listener exists
 anywhere in `Source/`), so the engine atomics are untouched; the next edit or save re-encodes the live
 atomics over the undone string. Also `getUndoManager()` (`PluginProcessor.h:244`) has **no callers**: there
 is no `KeyPressMapping` / `ApplicationCommandTarget` in the repo, so undo cannot be invoked at all. A
-mis-drag that paints a run across a row (`StepGridComponent.cpp:507-520`) is unrecoverable, and "Clear
+mis-drag that paints a run across a row (`StepGridComponent.cpp:599-612`) is unrecoverable, and "Clear
 pattern" (`TransportBar::handleClearPatternClicked`) / "Clear row" (`ChannelStrip::handleClearRowClicked`) fire with no confirmation.
 
 **B5 — A host-automated parameter allocates on the audio thread, and the header says it cannot.**
 `parameterChanged` parses the id with two `juce::String::substring` calls (`PluginProcessor.cpp:92,97`).
 Its own doc comment states *"It can therefore arrive on the audio thread, so it only ever stores atomics"*
-(`PluginProcessor.h:333-338`) — JUCE notifies listeners synchronously from the parameter write, so a
+(`PluginProcessor.h:602-612`) — JUCE notifies listeners synchronously from the parameter write, so a
 Live automation ramp runs exactly that code inside `processBlock`, allocating twice per parameter per
 block across up to 88 lanes. Low severity, but it is a stated invariant that is false.
 
@@ -180,7 +180,7 @@ single sound. It is also the only tier where the current tests are *blind*, so i
 buys the most protection.
 
 **2. Make hits stop clicking and start choking (C1 + C2 + C5).**
-The oldest defect on the list (voice stealing with no fade, `SequencerEngine.cpp:152-160`) is still open,
+The oldest defect on the list (voice stealing with no fade, `SequencerEngine.cpp:197-205`) is still open,
 sample-end cuts click the same way, and choke groups are the one feature the paid competition assumes and
 you do not have. Redrum already solved all three shapes — `DrumEngine.cpp:304-339`, `DrumVoice.cpp:465-492`
 — so this is a port with a known answer, not an invention. Judge it with the level-matched protocol in E3.
@@ -267,7 +267,7 @@ own rule: a test that passes on old code proves nothing.
   (`TransportBar::handleClearPatternClicked`) and "Clear row" (`ChannelStrip::handleClearRowClicked`). ~3-4 h.
 - **2.7** Fix B6: light the correct swing-grid button for grid 3, or make the UI write only 2/4 and stop the
   engine honouring 3 — pick one and make the comment and the code agree. ~1 h.
-- **2.8** Re-check the two claims we rejected (`SequencerEngine.h:373` atomic read; no `PresetManager`) —
+- **2.8** Re-check the two claims we rejected (`SequencerEngine.h:397` atomic read; no `PresetManager`) —
   nothing to do, but confirm in the commit message that they were examined. ~0.2 h.
 - **2.9** Green sweep: both test exes, `--parallel 2` build, `launch/` SHA-256 against the artefact tree.
 
@@ -294,7 +294,7 @@ touches the velocity law. No step here is allowed to be reported as better becau
   test. ~3-4 h. **Do not touch any gain constant to make this sound better — that is the silent-compensation
   line.**
 - **3.4** Kernel edge renormalisation: taps that fall off either end of the source are skipped, costing level
-  over the first/last ~12 samples of a hit — exactly where a transient lives (`SequencerEngine.cpp:514-534`,
+  over the first/last ~12 samples of a hit — exactly where a transient lives (`SequencerEngine.cpp:567-587`,
   the comment admits it). Renormalise by the weights actually used. Hoist `kernelTable.getWeights` out of the
   per-sample loop where the increment is constant (`:511-512`). Gate: level of the first 12 samples of a
   pitched-up kick, old vs new, level-matched overall. ~4-6 h.
@@ -310,7 +310,7 @@ touches the velocity law. No step here is allowed to be reported as better becau
 ### E4 — Phase 4: variation (the first new features, on a payload that can hold them)
 
 - **4.1** Per-step payload **v2**: one byte per step (or a compact parallel property) instead of the 395-char
-  string that currently encodes on/off and 1/100-quantised velocity (`PluginProcessor.cpp:844-864`), with v1
+  string that currently encodes on/off and 1/100-quantised velocity (`PluginProcessor.cpp:952-972`), with v1
   still readable, **a `stateVersion` on the root tree** (there is no version today — compatibility rests on
   `hasProperty("swing")` at `:1040` and `row.length() == 16` at `:958`, and rows are silently truncated at
   `:952`), and `shiftChannelRow` (`:334-374`) taught to carry every per-step field it now moves — today it
@@ -411,7 +411,7 @@ touches the velocity law. No step here is allowed to be reported as better becau
   at any height, and `spare` could not say so because it was `area.getHeight()` after a
   `removeFromTop`, which clamps: a strip 44 px short leaves a rectangle of exactly 0, so the
   check built on it had no red state to reach. Fixed as one budget-chosen rule.
-  `Layout::stripPlan (room)` (`Source/Common.h:490`) returns four stages priced at exactly
+  `Layout::stripPlan (room)` (`Source/Common.h:511`) returns four stages priced at exactly
   their own cost — **268** full / **246** gaps in / **210** rows at their floors / **166**
   captions gone — over a hard floor of **123 px** of room, and `ChannelStrip::resized`
   (`Source/ChannelStrip.cpp:241`) asks it for every row height instead of holding a copy of
@@ -436,7 +436,7 @@ touches the velocity law. No step here is allowed to be reported as better becau
   **The editor-height half, paid for the same day.** The strip held its 285 px down to a 585 px
   window, so the debt was never the strip: it was that `editorHeight 844` did double duty as the
   default *and* the minimum, and nobody had ever asked what the layout costs at its cheapest.
-  `Layout::editorPlan (interior, barHeight, gridFloor)` (`Source/Common.h:609`) answers that in
+  `Layout::editorPlan (interior, barHeight, gridFloor)` (`Source/Common.h:630`) answers that in
   four stages, each giving up exactly one thing, in a fixed order: the GROOVEBOX row — 34 px that
   holds the mark, the one-line load/MIDI hint *and* the rule, all three drawn inside it — then the
   strip's slack and its rows down to the floors `stripPlan` already prices, then the strip's four
@@ -538,14 +538,14 @@ touches the velocity law. No step here is allowed to be reported as better becau
   | B2 | `SequencerEngine.cpp:525-532` (position from PPQ, disarm) | yes | `:1508-1528`, with `position = hostHead` at `:1555` |
   | B4 | `SampleStore.h:62` (the 512 ceiling) | yes | unchanged, `SampleStore.h:62` |
   | B4 | `SampleStore.cpp:123-131` (`addSample` returns 0) | yes | `SampleStore.cpp:151` |
-  | B5 | `PluginProcessor.h:244` (`getUndoManager`, "no callers") | yes | `PluginProcessor.h:497`; **it has a caller now** — `PluginEditor.cpp:182` |
+  | B5 | `PluginProcessor.h:244` (`getUndoManager`, "no callers") | yes | `PluginProcessor.h:590`; **it has a caller now** — `PluginEditor.cpp:182` |
   | B6 | `PluginProcessor.cpp:92,97` (two `substring` parses) | yes | `parameterChanged` at `:113`, and the parse is **gone** — ids are looked up in `Params::laneTargets()` |
   | B7 | `TransportBar.cpp:235-237` (audition) | **no — that is the swing grid** | no audition call exists in `TransportBar.cpp` at all; since 5.3 there is exactly one, in `StepGridComponent.cpp:912` |
-  | B7 | `PluginProcessor.cpp:884` (`previewChannel`) | yes | `PluginProcessor.cpp:1748` — **it has a UI caller now**, the lane-name click, and it queues instead of playing (5.3) |
+  | B7 | `PluginProcessor.cpp:884` (`previewChannel`) | yes | `PluginProcessor.cpp:1808` — **it has a UI caller now**, the lane-name click, and it queues instead of playing (5.3) |
   | B7 | `SampleStore.h:88` (`getSampleIds`) | yes | `SampleStore.h:108`, `SampleStore.cpp:225` |
-  | F1 | `PluginProcessor.cpp:673-693` (1/100-quantised velocity) | yes, and discharged by 4.1/4.2 | the codec is `slotPropertyName`/`pushPatternToState`/`applySlotFromState` at `:1185-1358` |
-  | F1 | `:334-361` (`shiftChannelRow`) | yes | `PluginProcessor.cpp:563` |
-  | U5 | `ChannelStrip.cpp:197-209` (the `tight` branch) | yes | **discharged by 5.6** — that branch is gone: the row heights come from `Layout::stripPlan` (`Common.h:490`), which `ChannelStrip.cpp:241-332` asks once per strip |
+  | F1 | `PluginProcessor.cpp:673-693` (1/100-quantised velocity) | yes, and discharged by 4.1/4.2 | the codec is `slotPropertyName`/`pushPatternToState`/`applySlotFromState` at `:1245-1526` |
+  | F1 | `:334-361` (`shiftChannelRow`) | yes | `PluginProcessor.cpp:560` |
+  | U5 | `ChannelStrip.cpp:197-209` (the `tight` branch) | yes | **discharged by 5.6** — that branch is gone: the row heights come from `Layout::stripPlan` (`Common.h:511`), which `ChannelStrip.cpp:241-332` asks once per strip |
   | E2 | `SequencerEngine.cpp:368,457` (`free()` via a refcount) | **no — no refcount, no `free` in that file, at any baseline** | the registry is append-only with dedupe-not-free; the sentence is describing a design that was rejected |
   | 3.x | `SequencerEngine.cpp:290,138` (velocity is gain only) | **half — 138 was the gain line, 290 a MIDI argument** | the gain is `SequencerEngine.cpp:385`, inside `trigger` at `:343` — and the sentence is out of date too, since 4.3b velocity is gain *and* tone |
   | 2.8 | `SequencerEngine.h:317` (the only read of `soundingChannels`) | **no — 317 was `double position = 0.0;`, the read was 309** | `SequencerEngine.h:682` |
@@ -605,6 +605,14 @@ touches the velocity law. No step here is allowed to be reported as better becau
   promotion has to make an absent `cite-pin.txt` a **refusal**, not an empty exemption list. The same
   hazard now covers a second harness: the new `AGENTS.md` bullet points at `out/planbuild/verify-sha.ps1`
   as the way to verify a peer's SHA, and a fresh clone does not have it either.
+  **A third consequence, measured the hard way the same day.** A scripted probe of these gates truncated
+  `AGENTS.md` and `NEXT-STEPS.md` to zero bytes, and the only copies of this phase's prose were `HEAD`
+  plus four files in this folder — the section text and the three scripts that write it — and a session
+  transcript. The replay is checked rather than claimed: the same scripts, `git diff --numstat` back to
+  the same two pairs, and the audit's log byte-identical to the pre-loss one. A tracked `tools/cite/`
+  would have had the identical failure and a one-command recovery; reconstruction recipes that live in
+  `out/` only survive until someone runs `git clean -xdf`, which is the same `# base:` line's risk in
+  AGENTS.md's own words, now with a cost attached to it.
 
 ---
 
@@ -746,7 +754,7 @@ designed around, and the strip now reports 5 px to spare. *(Dated record, and th
 changed meaning under 5.6: it used to be the leftover of the layout rectangle and is now the plan's
 own deficit. They are the same number wherever the old roomy set fitted — stage 0 is priced at that
 set — and differed only where it did not, which is where the old reading was the lie. The strip is 285
-px today, `Layout::stripDesignHeight` at `Source/Common.h:540`.)* The box is a 34 px `ComboBox` sharing the last row
+px today, `Layout::stripDesignHeight` at `Source/Common.h:561`.)* The box is a 34 px `ComboBox` sharing the last row
 with Mute (40 px), items `0 1 2 3` at ids `1 2 3 4` because JUCE keeps 0 for "no selection"; a combo box
 rather than a popup menu because it shows the value without a click and `setSelectedId` fires synchronously,
 which is what makes both directions testable headless.
@@ -1092,7 +1100,7 @@ it, so it waits for the apps to be closed rather than fighting them.
 **4.1 — the step payload says what a step is (done 2026-11-15).** The grid now travels as `v2:` + base64 of two
 bytes a step — the switched-on flag, then the level as a 7-bit MIDI number — with `stateVersion: 2` on the root
 of the tree beside it. `[27]` is the new section, `[19]`'s record probe was rewritten to read the bytes, and
-`Source/PluginProcessor.cpp:943-1132` is the codec.
+`Source/PluginProcessor.cpp:1245-1526` is the codec.
 
 | | v1 rows, on this build | v2 |
 |---|---|---|
@@ -1643,8 +1651,8 @@ item 14 lands, which is the honest state and is what `README.md`'s limitations r
 **The law, in one place.** `Layout::numPatternSlots` is 4 (`Source/Common.h:34`) and slot 0 is the grid that
 already existed: the property is still `pattern`, with the same bytes, so a session written before the bank
 opens as one lane, one pattern, pointed at slot 0, counter shut. The other three are **sparse** —
-`slotPropertyName` (`Source/PluginProcessor.cpp:1185`) names them and `slotCarriesAnything` (the next function,
-at `:1192`) decides whether they are on the tree at all, so an empty slot costs a session nothing and the
+`slotPropertyName` (`Source/PluginProcessor.cpp:1245`) names them and `slotCarriesAnything` (the next function,
+at `:1252`) decides whether they are on the tree at all, so an empty slot costs a session nothing and the
 census a test can read is *which names are present*, not a count. Which slot a bar sounds is
 `SequencerEngine::slotPlaying` (`Source/SequencerEngine.cpp:277`): it starts at the lane's selected slot and
 walks **forward over the filled ones only**, so two filled slots of four alternate those two rather than going
@@ -1666,8 +1674,8 @@ retunes a kit, and it already bit once this year with `allParameterIds`.
 marks — solid when filled, outline when not, a white ring on the selected one and a dot inside a mark when the
 sounding slot is not the selected one — then a copy mark, then the rotate chip. Copy duplicates the row into
 the next *unfilled* slot starting after the selected one and moves the pointer there
-(`GrooveboxProcessor::duplicateChannelRowToNextSlot`, `Source/PluginProcessor.cpp:686`, which ends by storing
-the new pointer at `:676`); it is wrapped in `beginTransaction ("Duplicate row")` at
+(`GrooveboxProcessor::duplicateChannelRowToNextSlot`, `Source/PluginProcessor.cpp:683`, which ends by storing
+the new pointer at `:722`); it is wrapped in `beginTransaction ("Duplicate row")` at
 `Source/StepGridComponent.cpp:871` so one undo takes the copy and the pointer back together, and a half-copied
 bank cannot be a thing. `cycleChannelEvolve` (`:615`) walks the ladder and wraps back to off,
 because off has to be reachable by the same gesture that turns it on.
@@ -1676,7 +1684,7 @@ because off has to be reachable by the same gesture that turns it on.
 patterns, and a lane the user is editing must not change under them because a bar boundary arrived.
 
 **It is state, not a parameter.** `slots` and `evolve` are tree properties on the atomics (`pushBankToState`
-at `Source/PluginProcessor.cpp:1468`, `applyBankFromState` at `:1500`, gated by `isGridProperty` at `:1523`)
+at `Source/PluginProcessor.cpp:1528`, `applyBankFromState` at `:1560`, gated by `isGridProperty` at `:1583`)
 and they are deliberately **not** in the 116-parameter table, so the host cannot ramp a slot change and Live's
 arrangement cannot draw one. The README says so next to the limitation about no song mode, and the reason it
 stays that way is that a slot is a *pattern*, and the other patterns — the grid itself — are not automatable
@@ -1800,7 +1808,7 @@ than overrunning.
 
 **State, and the fourth byte.** The step record is generation 4: stride 4, 768 bytes a slot,
 1027 characters of payload (`[27]` prints the width it wrote). `Layout::maxRatchetHits` is 8
-(`Source/Common.h:305`) and `Layout::ratchetByte` (`:389`) is the one clamp, applied on the way
+(`Source/Common.h:305`) and `Layout::ratchetByte` (`:410`) is the one clamp, applied on the way
 in, on the way out of the codec, and again where the engine reads the atomic — so a byte that
 meant 60 costs eight strikes, not sixty, and a hand-edited preset cannot ask for a hundred
 voices. A record with no fourth byte — every session written before this — reads as one strike
@@ -1911,11 +1919,11 @@ which is the failure mode `cite-sweep.py`'s own docstring records from the 4.4 s
 by a different road. A fifth of them, `StepGridComponent.cpp:468` for `restingStrikeMarks`, has
 since moved for real: 5.3 put the audition above it and it is `:481` today. That is the honest
 asymmetry in a refused shift — refusing a move is a verdict about the tree as it stands, not a
-pin, so the next lane has to re-check the number rather than inherit the refusal.
+pin, so the next lane has to re-check the number rather than inherit the refusal. `:389` has since moved for real, and it is `Common.h:410` today: 14a's two chance helpers went in above it, which is what re-checking rather than inheriting is for.
 And one correction was not a move
 at all: 5.6's record says "the strip is 285 px today, `PluginEditor.cpp:47`", and 47 is the
 editor's own initialiser list at every recent commit — the number is `Layout::stripDesignHeight`,
-`Source/Common.h:540`, and the sentence says that now. Wrong the day it was typed, not drift, and
+`Source/Common.h:561`, and the sentence says that now. Wrong the day it was typed, not drift, and
 the difference only shows up if something reads the line rather than shifting it.
 `cite-pin.txt`'s `base:` stays at `bcd6188`: the seventeen ranges under it are coordinates in
 that commit, and advancing it means re-checking every one in the same pass — a 23-pointer fix
@@ -1982,12 +1990,16 @@ handing over now — so Program Files is behind the tree by every `Source/`-chan
 4.4, 5.6 and 4.5 among them, and the payload has to be re-hashed against this lane's artefact tree. Current
 numbers for the next verification: **465 smoke / 651 layout / 85 planner checks, 0 problems, guard OK**, and
 `[28]`'s fingerprint is the same `4BC3AA231178C071` — 4.5 was required not to move it, and did not.)*
+*(Later again — 5.6's height half, 4.5, 5.3 and the 14a seam have all landed in this lane since that
+sentence: **546 smoke / 675 layout / 85 planner checks, 0 problems, guard OK**, and the same
+`4BC3AA231178C071`. Program Files is behind the tree by every `Source/`-changing commit since `b603107`,
+and closing that gap is the owner's install step, not this lane's.)*
 
 **Still open, and whose.** Item 14 stays with the owner: `PatternPlanner.h` and `GenrePatterns.h` still have
 no UI or state caller, only the planner suite — the three planner/panel contracts are decisions, not work to
 invent under commit pressure. 5.6's height half, 4.4 and 4.5 stay in this lane. *(Written before any of the
 three landed; all three have now shipped from it, and the lane's open list is 6.5's false spec sentence and
-nothing else it owns.)* The duplicate subject line
+nothing else it owns. 14a has since landed the one seam that item 14 named as its own prerequisite -- `writeSlotRows` -- so the planner has a door and still no caller: what is left of item 14 is the wiring and the three contracts, and both stay with the owner.)* The duplicate subject line
 (`4724922` reusing `4e6a7ef`'s text verbatim while containing two lines of `AGENTS.md`) is recorded under
 `AGENTS.md` "Commit log" conventions, with the replacement subject the export lane asked for. Measured there
 before recommending anything: the rewrite would be *local* — `origin/master` is `ecfe76c` and nothing from
@@ -2174,3 +2186,117 @@ a click has no duration, and the release path belongs to a note. No preview on t
 menu from `getSampleIds()` — that half of B7 is still 5.2's. And nothing about the queue is a parameter,
 recorded, saved or undone: an audition is a question about a sound, not an event in the pattern, which is why
 one undo step cannot be filled with twelve clicks.
+
+### 14a — the door a generated pattern comes through (done 2026-11-16)
+
+**What was ruled, and what this is not.** Item 14's plan sentence closed on a dependency rather than a
+feature — *a generator therefore needs a slot-taking writer that pushes once per slot; that seam is the thing
+to agree with the sequencer lane before writing any wiring* — and the owner's ruling was that this lane writes
+it. So 14a is the door and nobody walks through it yet: `writeSlotRows` (`Source/PluginProcessor.h:364`,
+defined at `Source/PluginProcessor.cpp:736`, row struct `SlotRowWrite` at `Source/PluginProcessor.h:308`) has **no caller in
+`Source/`**. `PatternPlanner` and the genre table are still caller-less, and the three planner/panel contracts
+item 14 also names are still open. What is settled is the shape a generated take arrives through: into a slot
+the user is not pointing at, in one push, without moving a pointer.
+
+**Why the four cell seams cannot serve the shape.** `setStep`, `setStepVelocity`, `setStepChance` and
+`setStepRatchet` each resolve the slot for themselves, with `selectedSlotOf (channel)`, so a grid painted
+through them can only ever land on the slot the lane is already playing — which is precisely the thing a
+generated take must not do to what the user is hearing. And every one of them ends in `pushPatternToState`,
+which re-serialises the whole row: four fields by twelve lanes by sixteen steps is **768 encodings of one
+768-byte record for one pattern**. `writeSlotRows` takes the slot as an argument, never reads the selection,
+and pushes once.
+
+**The economy, measured — and two numbers this lane had written down wrong.** The first cut of the header
+comment said the cell seams pay "192 tree writes and 192 undo commands". Neither is what happens. Of the 768
+encodings, **240** move the property — 192 level moves and the 48 flags that actually flip — because
+`ValueTree::setProperty` does not notify when the value is unchanged, so the codec runs 768 times and the tree
+hears 240. And those 240 writes are **two** undo actions, not 240 or 192: a transaction is the editor's per
+gesture rather than the cell's, and `UndoManager::perform` coalesces successive `SetPropertyAction`s on one
+property (`juce_UndoManager.cpp:141`). So what the one push buys is 768 encodings down to one and 240 host
+notifications down to one, with the undo history saving one action out of two — a different and much smaller
+claim than the one the sentence was making. Both numbers are now printed by the section that gates them
+(`[35]` part d) rather than asserted by a comment, which is the only reason they can be re-checked next phase:
+**a count inside a comment is a claim, and a count nobody measured is a guess wearing a number.**
+
+**The contract, in the four consequences the header states.** A refusal is only ever about the *shape* of the
+ask — slot outside the bank, null `lanes` or `rows`, count outside `1..12`, a named lane outside the twelve —
+and never about what the machine already holds, so the return value is worth reading. Every one of those is
+checked before a single cell moves, which is what makes a refusal leave the session byte-identical. A slot no
+lane points at is inaudible while it fills, and filling the slot a lane *does* point at is allowed; for that
+case the four fields are stored neighbours-then-flag, so a step that comes on arrives with the level,
+probability and strike count that go with it instead of a block's worth of the old ones. A lane named twice is
+written twice and the later row wins, because a caller assembling a lane list can easily name one twice and
+last-write is the rule that matches what the list says. Lanes not named keep every cell they hold, in this
+slot and in every other.
+
+**One helper went public on purpose.** `slotPropertyName` (`Source/PluginProcessor.cpp:1245`) was private until
+this seam needed a test that reads the record it wrote. The bank is sparse — slot 0 is `pattern`, the others
+`pattern1..3`, and only when filled — so a caller that aims at a slot has to be able to *name* it, and a test
+or a host that spells the name out is a second grammar for the same property. The section now gates both
+halves at once: it asks the function for the name, and it asserts that a bank with only slot 2 filled names
+its records exactly `pattern` and `pattern2`.
+
+**Gates: section `[35]`, 61 of the suite's 546 checks.** Six parts. (a) a fresh session holds slot 0's record
+under that literal name and nothing else, which is what makes a later emptiness a *removal* rather than a
+never-was. (b) seven refusals, each asked while nothing else could say no, each followed by the whole 192-cell
+live grid and the tree census being byte-for-byte what they were, a printed precondition that the refused ask
+*disagrees* with the grid in the flag, the level and the strike count, and the zero-repaint rule. (c) an
+accepted twelve-lane fill: one property change, one repaint, a v4 record on the slot the bank has, all 192
+cells equal to the ask, no lane's pointer moved, the user's grid unchanged, and the two renders identical
+sample for sample while nothing points at the filled slot. (d) the same grid through the bulk seam (one
+change), the same grid through the cell seams (240 changes, printed), the two records agreeing so the economy
+is not bought by writing less, the undo actions two against one, and one undo restoring both routes to the
+absent record. (e) the neutral fill removing a slot's record, the bank's marks agreeing with the record rather
+than with the gesture, slot 0 being exempt exactly as the save path says it is, and the render: a fill of the
+slot nobody points at sounds nothing on an armed lane with a sample in it, and pointing that lane at the slot
+sounds `0 4 8 12 16` — four hits and the bar's own wrap at 16, through the transport rather than a second
+door. (f) the three clamps and the duplicate lane.
+
+**Ten arms in `out/mut14.py`, eight red and two green on purpose.**
+
+    w1  store before the pre-scan            2   the refusal's grid, and the first lane's own cell
+    w2  flag before its neighbours           0   declared: no single-threaded harness sees a row mid-write
+    w3  a push per cell                      4   the notification counts, in both directions
+    w4  the panel is never told              1   the repaint count
+    w5  slot read from the selection        16   everything that says "aimed at a slot", plus the render
+    w6  level stored unclamped               1   the clamp
+    w7  probability stored off the lattice   1   the rung
+    w8  strike count stored past the ceiling 0   declared: discharged at every reachable read
+    w9  only the trues are written           3   the removal, the dots, the duplicate lane
+    w10 an empty lane list accepted          2   the refusal and the zero-repaint rule
+
+**Three things the lap taught.**
+
+- **w1 came back green, and the fixture was the bug, not the arm.** A default `SlotRowWrite` is every cell
+  off, and every cell off is exactly what that grid already held at step 0 — so the leak wrote the value that
+  was already there and the check read its own fixture. The refused asks are now *shaped* to disagree with the
+  grid in all three of flag, level and strikes, and the section prints that difference as its own precondition.
+  A control that cannot bite indicts the pair it is comparing first.
+- **w8 is green for the opposite reason: the rule it breaks is real and gated, just not at that door.** The
+  stored atomic is clamped again on the way out of `getStepRatchet`, again by `cellSaysAnything` and the codec,
+  and again at the one place the number becomes sound — `SequencerEngine.cpp:874`, where 4.5's own
+  `setStepRatchet (3, 7, 999)` check does gate "sixty cannot become sixty hits". So the seam's clamp keeps the
+  two write doors storing one representation and is not the load-bearing one, and no observation this harness
+  can reach tells the two builds apart. The check's comment now says so, so the next reader does not count it
+  as the control for that.
+- **w4 reddened two checks that have nothing to do with it, and they were lying beforehand.** "The audio thread
+  ran throughout [0 blocks]" is section `[11]`, the two-hundred-load concurrency hammer: two hundred loads can
+  finish on one core before the scheduler starts the render thread, so the section was able to measure no
+  overlap at all and still print three greens. `[11]` now waits, bounded, for the first block before the
+  loads begin, and says so if it never gets one. Found by an unrelated arm, which is the usual way a fixture
+  that has always been flaky under load gets noticed.
+
+**Run.** 546 smoke / 675 layout / 85 planner checks, 0 problems, RT-path guard exit 0, `Groovebox` target 0,
+`ctest` 4/4 (`out/gate14-run2.txt`, suite logs in `out/smoke-14-final-utf8.txt` and its twins), and `[28]`'s
+fingerprint is still `4BC3AA231178C071` over 161280 samples (peak 0.68136, rms 0.16312) — a door nobody
+walks through must not retune a hit. The falsification lap is `out/arms14-run-c.txt`: ten arms, each from a
+restored-good file, run against the *final* shape of the test file, with `FINAL BUILD exit: 0` and
+`PASSED 546 checks, 0 failures` at the bottom so the restore is proven by the log rather than asserted by
+this paragraph.
+
+**Deliberately not here.** No UI and no "generate" button: the seam is the agreement, the wiring is the
+decision that still belongs to the owner. No undo-transaction wrapper — the fill is already one action because
+it is one property write, not because anything opened a transaction. No pointer move, no slot copy, no
+clear-on-write: `writeSlotRows` fills, and the only way a slot goes away is by holding nothing. No validation
+of what a caller asks for beyond the shape of the ask, and no gate on the store's strike clamp, for the w8
+reason above.
