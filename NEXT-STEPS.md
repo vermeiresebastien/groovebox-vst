@@ -1651,5 +1651,10 @@ fingerprint `4BC3AA231178C071` unchanged.
 no UI or state caller, only the planner suite — the three planner/panel contracts are decisions, not work to
 invent under commit pressure. 5.6's height half, 4.4 and 4.5 stay in this lane. The duplicate subject line
 (`4724922` reusing `4e6a7ef`'s text verbatim while containing two lines of `AGENTS.md`) is recorded under
-`AGENTS.md` "Commit log" conventions; amending published history another lane may have fetched is not this
-lane's to do, and the proposed replacement subject is in that section for the user to approve or drop.
+`AGENTS.md` "Commit log" conventions, with the replacement subject the export lane asked for. Measured there
+before recommending anything: the rewrite would be *local* — `origin/master` is `ecfe76c` and nothing from
+`b603107` up is published — but it moves 5 descendant SHAs on `master` plus this branch's 2, and `bcd6188`
+is the commit `out/cite-pin.txt` writes its pin ranges in while six of those ids are quoted in the tracked
+docs as the provenance of a corrected claim. So the recommendation is **leave the log, fix retrieval**: the
+collision is disambiguated in the carrier a reader actually opens, and an amend costs a re-anchored pin base
+and a renamed SHA in another lane's verification worktree to buy nothing. The owner's call either way.

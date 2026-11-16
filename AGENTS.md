@@ -616,6 +616,18 @@ on purpose: see the two bolded rules below.
   history another lane may already have fetched is not any lane's to do unilaterally, and this
   subject was disclosed and left alone on purpose: *"Move the export-hash bullet to the build it
   now describes."* A new subject states what the diff changes, not what release it travelled with.
+  **Measured before recommending it.** `origin/master` is `ecfe76c`, so nothing from `b603107` up is
+  published -- the rewrite is local, and the exposure is two lanes' worktrees rather than GitHub. Its
+  cost, though, is this file's own evidence: `4724922` has **5** descendants on `master` (`71c04fd`,
+  `10fabec`, `bbd8cb1`, `fbf973c`, `bcd6188`) plus `lane-44`'s two on top, and every one of those SHAs
+  changes. `bcd6188` is the base that `out/cite-pin.txt` is written in and `README.md`/`AGENTS.md`/
+  `NEXT-STEPS.md` quote all six as the provenance of a corrected claim -- so an amend means re-anchoring
+  the pin base, re-sweeping the ids the prose cites as evidence, and re-naming the SHA another lane
+  verified in a detached worktree, to fix a subject that this bullet has already disambiguated.
+  **Recommendation: leave the log alone, and make retrieval safe instead** -- `git log --grep` finds
+  both, the bodies differ on the first line, and the durable fix for "which commit is the release base"
+  was the ancestry rule below, not a new subject line. The owner's call, and the amend stays theirs to
+  approve either way.
 - **Prove ancestry with `merge-base`; use `rev-list --count` only with its direction named.**
   `git rev-list --count A..HEAD` counts A's *descendants*, so release commits appear in the set and
   a number read as "how far back the base is" inverts the claim. Both `b603107` and `4e6a7ef` are
