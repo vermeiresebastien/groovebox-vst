@@ -18,6 +18,36 @@ namespace Layout
     inline constexpr int maxVoices   = 64;
 
     /**
+        How many pattern slots one channel owns.
+
+        Four rather than the eight the nearest thing to this in the family ships
+        (`drumgen`/SliceForge: 16 pads x 32 steps, 8 banks), because a bank the user never
+        fills is a row of controls that overstates the machine. Four is one slot a bar over
+        a four-bar phrase — the shortest cycle that still reads as an arrangement instead of
+        a flip — and it is the number the panel can show as one small square per slot inside
+        the label column without pushing anything else off it.
+
+        A slot is a whole grid for one channel: the same sixteen steps with their own level
+        and their own chance, so switching slots switches the pattern and everything drawn
+        on it together. See `SequencerEngine::slotPlaying` for which slot is audible.
+    */
+    inline constexpr int numPatternSlots = 4;
+
+    /**
+        The periods the evolve control cycles through, in bars.
+
+        Zero first and off, so what a lane does before anyone touches this is play the slot
+        it is pointing at. 1, 2, 4 and 8 after it because those are the lengths a bar-counted
+        change stays musical against a 4-bar loop; a 3-bar step deliberately walks out of
+        phase with it, which is a different idea and not what this control is for.
+
+        The ladder belongs to the control, not to the law: `slotPlaying` divides by whatever
+        number of bars the state holds, so a session edited outside the panel is read rather
+        than corrected. Only `cycleChannelEvolve` knows this list.
+    */
+    inline constexpr std::array<int, 5> evolvePeriods { 0, 1, 2, 4, 8 };
+
+    /**
         The note the first channel answers to.
 
         Channels are consecutive from here, so the default layout is C1 upwards
@@ -290,6 +320,47 @@ namespace Layout
         one the record cannot round. The panel still says it as a percentage.
     */
     inline constexpr int chanceLevels = 255;
+
+    /**
+        The two bytes a cell is written as, apart from its flag.
+
+        Named, and in the header rather than beside the writer, because the same two
+        roundings are needed by a second question: "is there anything in this slot worth
+        writing down". A slot that carries a level of 0.999 would be written as 127, which
+        is what full is, and a test that compared floats would spend a record on a
+        difference the record cannot hold.
+
+        One definition is also the whole reason the bank's marks and its copy rule cannot
+        drift apart. `SequencerEngine::isSlotFilled` and the save path's
+        `slotCarriesAnything` ask about the same three fields of the same cell, and two
+        spellings of that question is how a duplicate starts overwriting a level the user
+        set on a step that is switched off — data that no dot on screen would have
+        admitted was there.
+    */
+    inline juce::uint8 levelByte (float level) noexcept
+    {
+        return (juce::uint8) juce::jlimit (0, 127, juce::roundToInt (level * 127.0f));
+    }
+
+    inline juce::uint8 chanceByte (float chance) noexcept
+    {
+        return (juce::uint8) juce::jlimit (0, chanceLevels,
+                                           juce::roundToInt (chance * (float) chanceLevels));
+    }
+
+    /**
+        Does one cell say anything a session without it does not already mean?
+
+        Off, full and every-time is the state a missing record means, so a cell counts as
+        carrying information when it disagrees with that in any of the three ways. The
+        comparison is on the bytes for the reason above: a level that rounds to 127 says
+        nothing the defaults do not, however many digits the float has.
+    */
+    inline bool cellSaysAnything (bool on, float velocity, float chance) noexcept
+    {
+        return on || levelByte (velocity) != 127
+                   || chanceByte (chance) != (juce::uint8) chanceLevels;
+    }
 }
 
 /** Palette lifted from the Earworm Studio drum page. */

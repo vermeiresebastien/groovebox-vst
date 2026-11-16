@@ -82,6 +82,7 @@ void SequencerEngine::prepare (double sampleRate, int /*maximumBlockSize*/)
     numNoteEvents = 0;
     nextNoteEvent = 0;
     currentStep.store (-1);
+    currentBar.store (0);
 }
 
 void SequencerEngine::releaseResources()
@@ -199,6 +200,94 @@ double SequencerEngine::onsetPositionInSteps (int step) const
     return candidate >= position - positionSlipInSteps()
              ? candidate
              : candidate + (double) Layout::numSteps;
+}
+
+//==============================================================================
+// Pattern bank
+
+bool SequencerEngine::isSlotFilled (int channel, int slot) const noexcept
+{
+    if (! juce::isPositiveAndBelow (channel, Layout::numChannels)
+          || ! juce::isPositiveAndBelow (slot, Layout::numPatternSlots))
+        return false;
+
+    const auto& cells    = state.slots[(size_t) slot];
+    const auto& pattern  = cells.pattern[(size_t) channel];
+    const auto& velocity = cells.velocity[(size_t) channel];
+    const auto& chance   = cells.chance[(size_t) channel];
+
+    // All three fields, through the codec's own rounding — the same call the save path
+    // makes about the same row. See the header for what a second definition would cost.
+    for (auto step = 0; step < Layout::numSteps; ++step)
+        if (Layout::cellSaysAnything (pattern[(size_t) step].load(),
+                                      velocity[(size_t) step].load(),
+                                      chance[(size_t) step].load()))
+            return true;
+
+    return false;
+}
+
+int SequencerEngine::slotPlaying (juce::int64 bar, int channel) const noexcept
+{
+    if (! juce::isPositiveAndBelow (channel, Layout::numChannels))
+        return 0;
+
+    const auto selected = juce::jlimit (0, Layout::numPatternSlots - 1,
+                                        state.selectedSlot[(size_t) channel].load());
+
+    // Off is the resting state of every lane in every session written before the bank
+    // existed, and the answer it gives is the one that machine has always given.
+    const auto period = state.evolveBars[(size_t) channel].load();
+
+    if (period <= 0)
+        return selected;
+
+    // The rotation walks over the filled slots only. Both halves of that list are
+    // derived here rather than kept beside the periods, because a cached "is filled"
+    // mask is a second answer to the question `isSlotFilled` asks, and the panel and
+    // the engine would drift the first time a step was drawn from the keyboard.
+    int filled[Layout::numPatternSlots];
+    int count = 0;
+    int offset = 0;
+
+    for (auto slot = 0; slot < Layout::numPatternSlots; ++slot)
+    {
+        if (! isSlotFilled (channel, slot))
+            continue;
+
+        // The cycle starts where the panel is pointing, so turning the control on
+        // plays the pattern that is already audible before it plays anything else. A
+        // selected slot that has nothing in it leaves the start at the first filled
+        // one: a lane should not go quiet for a bar because of an empty cell of four.
+        if (slot == selected)
+            offset = count;
+
+        filled[count++] = slot;
+    }
+
+    if (count == 0)
+        return selected;
+
+    // `bar / period` is how many times round this lane has come by now, and the only
+    // input to it is the bar the hit belongs to — see the header: a take that starts at
+    // bar 17 has to land on the slot a live pass would have reached, so there is nothing
+    // here to reset. The double modulo keeps the index inside the array for a host that
+    // reports a negative position, where C++ division rounds towards zero.
+    auto turn = bar / (juce::int64) period % (juce::int64) count;
+
+    turn = (turn + count) % count;
+
+    // `offset` and `turn` are each below `count`, so one modulo wraps the cycle.
+    return filled[(offset + (int) turn) % count];
+}
+
+bool SequencerEngine::anyChannelEvolves() const noexcept
+{
+    for (auto& period : state.evolveBars)
+        if (period.load() > 0)
+            return true;
+
+    return false;
 }
 
 //==============================================================================
@@ -578,7 +667,10 @@ void SequencerEngine::fireStep (int step)
     // Any of the three needs to know which bar it is, and none of them gets asked when
     // all are shut: the closed machine neither rolls nor draws a time nor a level,
     // which is the whole of the "bit-identical at zero" claim in one line of
-    // arithmetic.
+    // arithmetic. A rotating lane needs the bar for the same reason — it is the only
+    // thing that says which slot to read — so the bank is the fourth term, and with
+    // every period at zero the fourth term is false and the arithmetic below is the
+    // arithmetic that shipped before the bank existed.
 
     /**
         Which bar this onset belongs to.
@@ -586,22 +678,41 @@ void SequencerEngine::fireStep (int step)
         Read from the same arithmetic that decided to fire the step, rather than by
         dividing the head: a hit that arrives a sample late — which the scheduler
         deliberately allows after a host seek — is then still keyed to the bar it is
-        in, and the same place in the song keeps rolling the same way.
+        in, and the same place in the song keeps rolling the same way. The bank reads
+        the same answer, so a slot change and a roll cannot disagree about which bar
+        they are both in.
     */
-    const auto bar = mutate > 0.0f || humanize > 0.0f || touch > 0.0f
+    const auto evolves = anyChannelEvolves();
+
+    const auto bar = mutate > 0.0f || humanize > 0.0f || touch > 0.0f || evolves
                        ? (juce::int64) std::floor (onsetPositionInSteps (step)
                                                     / (double) Layout::numSteps)
                        : (juce::int64) 0;
 
+    // The panel's dot follows the bar the machine actually fired in, so the audio path
+    // publishes it here rather than the GUI thread reading `position` — an unguarded read
+    // of a double this thread writes every block is a race the display does not earn. Only
+    // published when somebody is rotating: with every period shut the answer cannot change
+    // what `slotPlaying` says, and a stale number is not worth a store per onset.
+    if (evolves)
+        currentBar.store (bar);
+
     for (int channel = 0; channel < Layout::numChannels; ++channel)
     {
-        if (! state.pattern[(size_t) channel][(size_t) step].load())
+        // One slot per lane per onset, resolved before anything reads the grid. The
+        // panel can move a lane's selection while this block is being built, and the
+        // pattern, the chance and the level of one hit have to come from the slot that
+        // the hit was drawn in — see `wouldThisHitFire` for the same argument about the
+        // written velocity.
+        const auto slot = slotPlaying (bar, channel);
+
+        if (! state.slots[(size_t) slot].pattern[(size_t) channel][(size_t) step].load())
             continue;
 
-        // One question, asked of one function, which is also the function the tests ask.
-        // A seam that reimplemented this decision would let a green determinism check
-        // sit next to an engine that rolls differently.
-        if (! wouldThisHitFire (bar, step, channel))
+        // The same body the public seam runs; the seam only supplies the slot, and
+        // supplies it the way this does. A check that the take is deterministic is
+        // therefore a check about this engine's roll and not about a copy of it.
+        if (! wouldHitInSlotFire (bar, step, channel, slot))
             continue;
 
         // A grid hit carries the velocity stored against its step, so the grid has
@@ -635,7 +746,7 @@ void SequencerEngine::fireStep (int step)
         // The written velocity is passed in rather than read again inside, because this
         // is the one place that has already loaded it: a second read would be a second
         // answer if the grid moved between the two.
-        const auto written = state.velocity[(size_t) channel][(size_t) step].load();
+        const auto written = state.slots[(size_t) slot].velocity[(size_t) channel][(size_t) step].load();
 
         trigger (channel, touch > 0.0f ? struckVelocityFor (bar, step, channel, written) : written,
                  false, (int) std::lround (late * samplesPerStep));
@@ -644,8 +755,17 @@ void SequencerEngine::fireStep (int step)
 
 bool SequencerEngine::wouldThisHitFire (juce::int64 bar, int step, int channel) const
 {
+    return wouldHitInSlotFire (bar, step, channel, slotPlaying (bar, channel));
+}
+
+bool SequencerEngine::wouldHitInSlotFire (juce::int64 bar, int step, int channel, int slot) const
+{
+    // `slot` comes from `slotPlaying` and is only ever indexed by `fireStep`, which
+    // resolved it the same way: the two callers cannot hand in an out-of-range slot, and
+    // the clamp is here so a third one cannot crash rather than to redefine the answer.
     const auto mutate = state.mutate.load();
-    const auto chance = state.chance[(size_t) channel][(size_t) step].load();
+    const auto chance = state.slots[(size_t) juce::jlimit (0, Layout::numPatternSlots - 1, slot)]
+                                  .chance[(size_t) channel][(size_t) step].load();
 
     // Two gates, and neither of them reaches for a generator: variation closed, or a
     // cell that fires every time, and this is the branch that ran before the feature

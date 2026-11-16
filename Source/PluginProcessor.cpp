@@ -349,13 +349,26 @@ bool GrooveboxProcessor::isPlaying() const noexcept
 //==============================================================================
 // Pattern
 
+int GrooveboxProcessor::selectedSlotOf (int channel) const
+{
+    if (! juce::isPositiveAndBelow (channel, Layout::numChannels))
+        return 0;
+
+    // Clamped on the way out rather than trusted on the way in: the value arrives from
+    // a string in a session file, and a lane that claims to point at slot nine should
+    // play one of the four the machine has rather than read past the end of them.
+    return juce::jlimit (0, Layout::numPatternSlots - 1,
+                         sequencerState.selectedSlot[(size_t) channel].load());
+}
+
 bool GrooveboxProcessor::isStepOn (int channel, int step) const
 {
     if (! juce::isPositiveAndBelow (channel, Layout::numChannels)
         || ! juce::isPositiveAndBelow (step, Layout::numSteps))
         return false;
 
-    return sequencerState.pattern[(size_t) channel][(size_t) step].load();
+    return sequencerState.slots[(size_t) selectedSlotOf (channel)]
+                             .pattern[(size_t) channel][(size_t) step].load();
 }
 
 void GrooveboxProcessor::setStep (int channel, int step, bool shouldBeOn)
@@ -366,8 +379,10 @@ void GrooveboxProcessor::setStep (int channel, int step, bool shouldBeOn)
 
     // One undo entry per gesture, not per cell: the grid begins a transaction when
     // the pointer goes down, so everything a single drag paints undoes together.
-    sequencerState.pattern[(size_t) channel][(size_t) step].store (shouldBeOn);
-    pushPatternToState();
+    sequencerState.slots[(size_t) selectedSlotOf (channel)]
+                     .pattern[(size_t) channel][(size_t) step].store (shouldBeOn);
+
+    pushPatternToState (selectedSlotOf (channel));
 }
 
 void GrooveboxProcessor::toggleStep (int channel, int step)
@@ -377,9 +392,13 @@ void GrooveboxProcessor::toggleStep (int channel, int step)
 
 void GrooveboxProcessor::clearPattern()
 {
-    for (int channel = 0; channel < Layout::numChannels; ++channel)
-        for (int step = 0; step < Layout::numSteps; ++step)
-            sequencerState.pattern[(size_t) channel][(size_t) step].store (false);
+    // The whole bank, not the rows on screen: this is the button that says the machine
+    // has nothing in it, and a slot that survived it would come back on the next bar of
+    // a rotating lane as a pattern the user just cleared.
+    for (auto& cells : sequencerState.slots)
+        for (auto& row : cells.pattern)
+            for (auto& cell : row)
+                cell.store (false);
 
     pushPatternToState();
 
@@ -392,10 +411,12 @@ void GrooveboxProcessor::clearChannelRow (int channel)
     if (! juce::isPositiveAndBelow (channel, Layout::numChannels))
         return;
 
-    for (int step = 0; step < Layout::numSteps; ++step)
-        sequencerState.pattern[(size_t) channel][(size_t) step].store (false);
+    const auto slot = selectedSlotOf (channel);
 
-    pushPatternToState();
+    for (int step = 0; step < Layout::numSteps; ++step)
+        sequencerState.slots[(size_t) slot].pattern[(size_t) channel][(size_t) step].store (false);
+
+    pushPatternToState (slot);
 
     if (onStateChanged != nullptr)
         onStateChanged();
@@ -404,13 +425,19 @@ void GrooveboxProcessor::clearChannelRow (int channel)
 //==============================================================================
 // Velocity
 
-float GrooveboxProcessor::getStepVelocity (int channel, int step) const
+float GrooveboxProcessor::getStepVelocityInSlot (int channel, int step, int slot) const
 {
     if (! juce::isPositiveAndBelow (channel, Layout::numChannels)
         || ! juce::isPositiveAndBelow (step, Layout::numSteps))
         return 1.0f;
 
-    return sequencerState.velocity[(size_t) channel][(size_t) step].load();
+    return sequencerState.slots[(size_t) juce::jlimit (0, Layout::numPatternSlots - 1, slot)]
+                             .velocity[(size_t) channel][(size_t) step].load();
+}
+
+float GrooveboxProcessor::getStepVelocity (int channel, int step) const
+{
+    return getStepVelocityInSlot (channel, step, selectedSlotOf (channel));
 }
 
 void GrooveboxProcessor::setStepVelocity (int channel, int step, float velocity)
@@ -421,15 +448,20 @@ void GrooveboxProcessor::setStepVelocity (int channel, int step, float velocity)
 
     // Velocity shares the pattern property, so it shares the grid's gesture
     // transaction: a drag that reshapes a row undoes as one step.
-    sequencerState.velocity[(size_t) channel][(size_t) step].store (juce::jlimit (0.0f, 1.0f, velocity));
-    pushPatternToState();
+    const auto slot = selectedSlotOf (channel);
+
+    sequencerState.slots[(size_t) slot].velocity[(size_t) channel][(size_t) step]
+        .store (juce::jlimit (0.0f, 1.0f, velocity));
+
+    pushPatternToState (slot);
 }
 
 void GrooveboxProcessor::resetVelocities()
 {
     for (int channel = 0; channel < Layout::numChannels; ++channel)
         for (int step = 0; step < Layout::numSteps; ++step)
-            sequencerState.velocity[(size_t) channel][(size_t) step].store (1.0f);
+            sequencerState.slots[(size_t) selectedSlotOf (channel)]
+                .velocity[(size_t) channel][(size_t) step].store (1.0f);
 
     pushPatternToState();
 }
@@ -443,7 +475,8 @@ float GrooveboxProcessor::getStepChance (int channel, int step) const
         || ! juce::isPositiveAndBelow (step, Layout::numSteps))
         return 1.0f;
 
-    return sequencerState.chance[(size_t) channel][(size_t) step].load();
+    return sequencerState.slots[(size_t) selectedSlotOf (channel)]
+                             .chance[(size_t) channel][(size_t) step].load();
 }
 
 void GrooveboxProcessor::setStepChance (int channel, int step, float chance)
@@ -466,15 +499,19 @@ void GrooveboxProcessor::setStepChance (int channel, int step, float chance)
                                                               * (float) Layout::chanceLevels))
                       / (float) Layout::chanceLevels;
 
-    sequencerState.chance[(size_t) channel][(size_t) step].store (rung);
-    pushPatternToState();
+    const auto slot = selectedSlotOf (channel);
+
+    sequencerState.slots[(size_t) slot].chance[(size_t) channel][(size_t) step].store (rung);
+
+    pushPatternToState (slot);
 }
 
 void GrooveboxProcessor::resetChances()
 {
     for (int channel = 0; channel < Layout::numChannels; ++channel)
         for (int step = 0; step < Layout::numSteps; ++step)
-            sequencerState.chance[(size_t) channel][(size_t) step].store (1.0f);
+            sequencerState.slots[(size_t) selectedSlotOf (channel)]
+                .chance[(size_t) channel][(size_t) step].store (1.0f);
 
     pushPatternToState();
 }
@@ -491,11 +528,15 @@ void GrooveboxProcessor::shiftChannelRow (int channel, int steps)
     std::array<float, (size_t) Layout::numSteps> velocity {};
     std::array<float, (size_t) Layout::numSteps> chance {};
 
+    // One slot, read and written under the same reference: the row that turns is the one
+    // the lane points at, and the other three are other takes on the same drum.
+    auto& cells = sequencerState.slots[(size_t) selectedSlotOf (channel)];
+
     for (int step = 0; step < Layout::numSteps; ++step)
     {
-        on[(size_t) step] = sequencerState.pattern[(size_t) channel][(size_t) step].load();
-        velocity[(size_t) step] = sequencerState.velocity[(size_t) channel][(size_t) step].load();
-        chance[(size_t) step] = sequencerState.chance[(size_t) channel][(size_t) step].load();
+        on[(size_t) step] = cells.pattern[(size_t) channel][(size_t) step].load();
+        velocity[(size_t) step] = cells.velocity[(size_t) channel][(size_t) step].load();
+        chance[(size_t) step] = cells.chance[(size_t) channel][(size_t) step].load();
     }
 
     // Positive shifts move later; the modulo keeps it inside the bar both ways.
@@ -506,15 +547,145 @@ void GrooveboxProcessor::shiftChannelRow (int channel, int steps)
         // Every field the cell has, not the two this function knew about when the
         // grid had two. A step that moves to a new place and loses its probability
         // arrives somewhere else than where it was written.
-        sequencerState.pattern[(size_t) channel][(size_t) step].store (on[(size_t) from]);
-        sequencerState.velocity[(size_t) channel][(size_t) step].store (velocity[(size_t) from]);
-        sequencerState.chance[(size_t) channel][(size_t) step].store (chance[(size_t) from]);
+        cells.pattern[(size_t) channel][(size_t) step].store (on[(size_t) from]);
+        cells.velocity[(size_t) channel][(size_t) step].store (velocity[(size_t) from]);
+        cells.chance[(size_t) channel][(size_t) step].store (chance[(size_t) from]);
     }
 
-    pushPatternToState();
+    pushPatternToState (selectedSlotOf (channel));
 
     if (onStateChanged != nullptr)
         onStateChanged();
+}
+
+//==============================================================================
+// Pattern bank
+
+int GrooveboxProcessor::getChannelSlot (int channel) const
+{
+    return selectedSlotOf (channel);
+}
+
+void GrooveboxProcessor::setChannelSlot (int channel, int slot)
+{
+    if (! juce::isPositiveAndBelow (channel, Layout::numChannels))
+        return;
+
+    const auto next = juce::jlimit (0, Layout::numPatternSlots - 1, slot);
+
+    if (selectedSlotOf (channel) == next)
+        return;
+
+    sequencerState.selectedSlot[(size_t) channel].store (next);
+
+    // The selection is a fact about the session, so it goes on the tree the same way
+    // the cells do — and through the same guard, because the door back from the tree is
+    // `applyPatternFromState`, which would otherwise read this write straight back in.
+    pushBankToState();
+
+    if (onStateChanged != nullptr)
+        onStateChanged();
+}
+
+int GrooveboxProcessor::getChannelEvolveBars (int channel) const
+{
+    if (! juce::isPositiveAndBelow (channel, Layout::numChannels))
+        return 0;
+
+    return sequencerState.evolveBars[(size_t) channel].load();
+}
+
+void GrooveboxProcessor::setChannelEvolveBars (int channel, int bars)
+{
+    if (! juce::isPositiveAndBelow (channel, Layout::numChannels))
+        return;
+
+    const auto next = juce::jmax (0, bars);
+
+    if (getChannelEvolveBars (channel) == next)
+        return;
+
+    sequencerState.evolveBars[(size_t) channel].store (next);
+    pushBankToState();
+
+    if (onStateChanged != nullptr)
+        onStateChanged();
+}
+
+void GrooveboxProcessor::cycleChannelEvolve (int channel)
+{
+    if (! juce::isPositiveAndBelow (channel, Layout::numChannels))
+        return;
+
+    const auto current = getChannelEvolveBars (channel);
+
+    // Walked over the rungs the panel offers, wrapping back to off. A period that is not
+    // on the ladder — one a newer session brought in — is not on the walk either, so the
+    // first click lands on the rung above wherever it started rather than on itself.
+    for (size_t i = 0; i < Layout::evolvePeriods.size(); ++i)
+        if (Layout::evolvePeriods[i] > current)
+            return setChannelEvolveBars (channel, Layout::evolvePeriods[i]);
+
+    setChannelEvolveBars (channel, Layout::evolvePeriods.front());
+}
+
+bool GrooveboxProcessor::isChannelSlotFilled (int channel, int slot) const
+{
+    return engine.isSlotFilled (channel, slot);
+}
+
+int GrooveboxProcessor::getChannelSlotPlaying (int channel) const
+{
+    return engine.slotPlaying (engine.getCurrentBar(), channel);
+}
+
+int GrooveboxProcessor::duplicateChannelRowToNextSlot (int channel)
+{
+    if (! juce::isPositiveAndBelow (channel, Layout::numChannels))
+        return -1;
+
+    const auto from = selectedSlotOf (channel);
+
+    for (int offset = 1; offset < Layout::numPatternSlots; ++offset)
+    {
+        const auto to = (from + offset) % Layout::numPatternSlots;
+
+        if (engine.isSlotFilled (channel, to))
+            continue;
+
+        auto& cells = sequencerState.slots[(size_t) to];
+        const auto& source = sequencerState.slots[(size_t) from];
+
+        auto& pattern = cells.pattern[(size_t) channel];
+        auto& velocity = cells.velocity[(size_t) channel];
+        auto& chance = cells.chance[(size_t) channel];
+
+        const auto& fromPattern = source.pattern[(size_t) channel];
+        const auto& fromVelocity = source.velocity[(size_t) channel];
+        const auto& fromChance = source.chance[(size_t) channel];
+
+        // All three fields, because a copy of a row is a copy of what that row sounds
+        // like: its steps, their levels and their probabilities. A duplicate that left
+        // the chance behind would arrive as a different pattern than the one on screen.
+        for (int step = 0; step < Layout::numSteps; ++step)
+        {
+            pattern[(size_t) step].store (fromPattern[(size_t) step].load());
+            velocity[(size_t) step].store (fromVelocity[(size_t) step].load());
+            chance[(size_t) step].store (fromChance[(size_t) step].load());
+        }
+
+        sequencerState.selectedSlot[(size_t) channel].store (to);
+
+        pushPatternToState (to);
+        pushBankToState();
+
+        if (onStateChanged != nullptr)
+            onStateChanged();
+
+        return to;
+    }
+
+    return -1;
 }
 
 //==============================================================================
@@ -962,13 +1133,65 @@ namespace
     }
 }
 
+juce::String GrooveboxProcessor::slotPropertyName (int slot)
+{
+    // Slot 0 keeps the name, and so keeps the bytes: see the header for what that buys.
+    return slot == 0 ? juce::String ("pattern")
+                     : juce::String ("pattern") + juce::String (slot);
+}
+
+bool GrooveboxProcessor::slotCarriesAnything (int slot) const
+{
+    const auto& cells = sequencerState.slots[(size_t) juce::jlimit (0, Layout::numPatternSlots - 1, slot)];
+
+    // The same per-cell question the engine asks a single lane's row before it paints a
+    // dot or walks a rotation, so "this slot has a record" and "this slot is not empty"
+    // cannot be two different answers — see `Layout::cellSaysAnything`.
+    for (int channel = 0; channel < Layout::numChannels; ++channel)
+        for (int step = 0; step < Layout::numSteps; ++step)
+            if (Layout::cellSaysAnything (cells.pattern[(size_t) channel][(size_t) step].load(),
+                                          cells.velocity[(size_t) channel][(size_t) step].load(),
+                                          cells.chance[(size_t) channel][(size_t) step].load()))
+                return true;
+
+    return false;
+}
+
 void GrooveboxProcessor::pushPatternToState()
 {
-    // A write is this build taking responsibility for the grid, so a payload it could
-    // not read stops being kept here. This is the only place that decides, and
-    // `getStateInformation` does not come through while holding one — which is what
+    // Every slot this build is responsible for. The ones it is holding are skipped, and
+    // skipped by name rather than by a flag on the whole machine: a session can carry one
+    // record from a build that knows more about a step than this one does while the user
+    // edits another slot that came from a build this one can talk to.
+    for (auto slot = 0; slot < Layout::numPatternSlots; ++slot)
+        if (! holdingUnreadableSlot[(size_t) slot])
+            pushPatternToState (slot);
+}
+
+void GrooveboxProcessor::pushPatternToState (int slot)
+{
+    slot = juce::jlimit (0, Layout::numPatternSlots - 1, slot);
+
+    // A write is this build taking responsibility for that grid, so a payload it could
+    // not read stops being kept here. This is the only place that decides, which is what
     // makes it an edit, and not a save, that takes a session over.
-    holdingUnreadablePattern = false;
+    holdingUnreadableSlot[(size_t) slot] = false;
+
+    const auto name = slotPropertyName (slot);
+
+    if (slot != 0 && ! slotCarriesAnything (slot))
+    {
+        // An empty bank slot has no record: a pattern that is all off at full level and
+        // every-time probability is exactly what a session without the property means, so
+        // writing it would cost 771 characters to say nothing and clearing a slot would
+        // leave its bytes in the file. Slot 0 is exempt because an empty machine has
+        // always been one all-zeros payload, and taking that away would change what every
+        // fresh session saves as to buy nothing.
+        pushingPatternToState = true;
+        apvts.state.removeProperty (juce::Identifier (name.toRawUTF8()), &undoManager);
+        pushingPatternToState = false;
+        return;
+    }
 
     /**
         Three bytes a step, base64'd behind the codec's own name.
@@ -984,10 +1207,16 @@ void GrooveboxProcessor::pushPatternToState()
         Base64 rather than digits or hex: 576 bytes is 768 characters against v1's 395,
         which is the price of the two extra fields, and every one of those characters is
         safe inside an XML attribute.
+
+        A bank slot is written with the same record and the same tag, because the bank is
+        a third dimension of the same grid and not a new format: a build that cannot see
+        slot two still reads slot one exactly as it always did.
     */
     constexpr auto stride = strideForCodec (Layout::stateVersion);
 
     std::array<juce::uint8, (size_t) Layout::numChannels * Layout::numSteps * stride> bytes {};
+
+    const auto& cells = sequencerState.slots[(size_t) slot];
 
     for (int channel = 0; channel < Layout::numChannels; ++channel)
     {
@@ -995,14 +1224,9 @@ void GrooveboxProcessor::pushPatternToState()
         {
             const auto at = (size_t) ((channel * Layout::numSteps) + step) * stride;
 
-            bytes[at] = (juce::uint8) (sequencerState.pattern[(size_t) channel][(size_t) step].load() ? 1 : 0);
-
-            bytes[at + 1] = (juce::uint8) juce::jlimit (0, 127,
-                juce::roundToInt (sequencerState.velocity[(size_t) channel][(size_t) step].load() * 127.0f));
-
-            bytes[at + 2] = (juce::uint8) juce::jlimit (0, Layout::chanceLevels,
-                juce::roundToInt (sequencerState.chance[(size_t) channel][(size_t) step].load()
-                                   * (float) Layout::chanceLevels));
+            bytes[at] = (juce::uint8) (cells.pattern[(size_t) channel][(size_t) step].load() ? 1 : 0);
+            bytes[at + 1] = Layout::levelByte (cells.velocity[(size_t) channel][(size_t) step].load());
+            bytes[at + 2] = Layout::chanceByte (cells.chance[(size_t) channel][(size_t) step].load());
         }
     }
 
@@ -1013,30 +1237,59 @@ void GrooveboxProcessor::pushPatternToState()
     // Without it the listener below would read it straight back in on every cell of
     // a drag, and the undo manager would see a change the grid had just made.
     pushingPatternToState = true;
-    apvts.state.setProperty ("stateVersion", Layout::stateVersion, &undoManager);
-    apvts.state.setProperty ("pattern", encoded, &undoManager);
+
+    // The root's version belongs with the record it was written for. It is a header on
+    // `pattern`, not on the bank: nothing reads it to decide how to decode anything —
+    // that is the tag inside each payload — so stamping it here would claim authorship of
+    // a v99 record still sitting unread in the same tree.
+    if (slot == 0)
+        apvts.state.setProperty ("stateVersion", Layout::stateVersion, &undoManager);
+
+    apvts.state.setProperty (juce::Identifier (name.toRawUTF8()), encoded, &undoManager);
+
     pushingPatternToState = false;
 }
 
 void GrooveboxProcessor::applyPatternFromState()
 {
-    // Start from nothing, then read whatever the pattern property holds: a payload
-    // shorter than the grid leaves the steps it does not reach off, and a session with
-    // no pattern at all is an empty machine rather than a stale one.
+    // Whole-grid, whichever property moved. One door for "the tree changed" is what keeps
+    // an undo of a slot selection from leaving behind the cells of the slot it selected,
+    // and the bank lists and the records are read by the same hand for the same reason.
+    for (auto slot = 0; slot < Layout::numPatternSlots; ++slot)
+        applySlotFromState (slot);
+
+    applyBankFromState();
+}
+
+void GrooveboxProcessor::applySlotFromState (int slot)
+{
+    // Start from nothing, then read whatever this slot's record holds: a payload shorter
+    // than the grid leaves the steps it does not reach off, and a slot with no record at
+    // all is an empty grid rather than a stale one.
+    auto& cells = sequencerState.slots[(size_t) slot];
+
     for (int channel = 0; channel < Layout::numChannels; ++channel)
     {
         for (int step = 0; step < Layout::numSteps; ++step)
         {
-            sequencerState.pattern[(size_t) channel][(size_t) step].store (false);
-            sequencerState.velocity[(size_t) channel][(size_t) step].store (1.0f);
+            cells.pattern[(size_t) channel][(size_t) step].store (false);
+            cells.velocity[(size_t) channel][(size_t) step].store (1.0f);
 
             // Off every time is not the neutral value for a probability — every time
             // is, and that is what a record that never mentions one means.
-            sequencerState.chance[(size_t) channel][(size_t) step].store (1.0f);
+            cells.chance[(size_t) channel][(size_t) step].store (1.0f);
         }
     }
 
-    const auto encoded = apvts.state.getProperty ("pattern").toString();
+    // Re-derived from the tree on every read rather than latched, because a flag that
+    // only ever goes true would still be saying "hold those bytes" about a slot whose
+    // bytes have since been replaced by something this build can read.
+    holdingUnreadableSlot[(size_t) slot] = false;
+
+    const auto encoded = apvts.state.getProperty (slotPropertyName (slot)).toString();
+
+    if (encoded.isEmpty())
+        return;
 
     if (const auto codec = stepPayloadCodecOf (encoded); codec != 0)
     {
@@ -1054,7 +1307,7 @@ void GrooveboxProcessor::applyPatternFromState()
             // Note that a v2 record is not in this branch. It is narrower, not
             // stranger: everything it does say is readable, and the one field it does
             // not have is the one whose absence means "always".
-            holdingUnreadablePattern = true;
+            holdingUnreadableSlot[(size_t) slot] = true;
             return;
         }
 
@@ -1065,7 +1318,7 @@ void GrooveboxProcessor::applyPatternFromState()
         {
             // Tagged as ours but not decodable, which is the same problem wearing a
             // different name: this code cannot read it, so it keeps it.
-            holdingUnreadablePattern = true;
+            holdingUnreadableSlot[(size_t) slot] = true;
             return;
         }
 
@@ -1085,19 +1338,30 @@ void GrooveboxProcessor::applyPatternFromState()
 
                 const auto atByte = (size_t) at * stride;
 
-                sequencerState.pattern[(size_t) channel][(size_t) step].store (raw[atByte] != 0);
-                sequencerState.velocity[(size_t) channel][(size_t) step].store ((float) raw[atByte + 1] / 127.0f);
+                cells.pattern[(size_t) channel][(size_t) step].store (raw[atByte] != 0);
+                cells.velocity[(size_t) channel][(size_t) step].store ((float) raw[atByte + 1] / 127.0f);
 
                 // A v2 record has no third byte, and what it says about probability is
                 // the value the loop above already stored. Reading past the stride of
                 // the codec in hand is how a narrower generation gets turned into a
                 // grid of nonsense.
                 if (stride > 2)
-                    sequencerState.chance[(size_t) channel][(size_t) step]
+                    cells.chance[(size_t) channel][(size_t) step]
                         .store ((float) raw[atByte + 2] / (float) Layout::chanceLevels);
             }
         }
 
+        return;
+    }
+
+    if (slot != 0)
+    {
+        // No tag, and not the property that carries one: only slot 0 has a shape from
+        // before the tag existed, so a `pattern2` that does not name its codec is a record
+        // this build cannot guess its way into. Holding it costs nothing — the slot is
+        // empty on screen, and an edit takes it over the same way an edit takes over an
+        // unreadable `pattern`.
+        holdingUnreadableSlot[(size_t) slot] = true;
         return;
     }
 
@@ -1116,8 +1380,8 @@ void GrooveboxProcessor::applyPatternFromState()
             if (legacy)
             {
                 const auto on = step < row.length() && row[step] == '1';
-                sequencerState.pattern[(size_t) channel][(size_t) step].store (on);
-                sequencerState.velocity[(size_t) channel][(size_t) step].store (1.0f);
+                cells.pattern[(size_t) channel][(size_t) step].store (on);
+                cells.velocity[(size_t) channel][(size_t) step].store (1.0f);
                 continue;
             }
 
@@ -1129,10 +1393,77 @@ void GrooveboxProcessor::applyPatternFromState()
             const auto level = row.substring (at, at + 2).getIntValue();
             const auto on = level > 0;
 
-            sequencerState.pattern[(size_t) channel][(size_t) step].store (on);
-            sequencerState.velocity[(size_t) channel][(size_t) step].store (on ? (float) level / 100.0f : 1.0f);
+            cells.pattern[(size_t) channel][(size_t) step].store (on);
+            cells.velocity[(size_t) channel][(size_t) step].store (on ? (float) level / 100.0f : 1.0f);
         }
     }
+}
+
+void GrooveboxProcessor::pushBankToState()
+{
+    auto writes = [this] (const juce::String& name, const std::atomic<int>* values, int defaultFor)
+    {
+        juce::StringArray list;
+        auto anyDifferent = false;
+
+        for (int channel = 0; channel < Layout::numChannels; ++channel)
+        {
+            const auto value = values[(size_t) channel].load();
+
+            anyDifferent = anyDifferent || value != defaultFor;
+            list.add (juce::String (value));
+        }
+
+        const auto id = juce::Identifier (name.toRawUTF8());
+
+        // Sparsely, for the same reason the bank records are: twelve zeroes that mean
+        // "every lane where it has always been" are not worth 23 characters of a session
+        // that has never heard of them, and an absent list reads back as all-defaults.
+        if (anyDifferent)
+            apvts.state.setProperty (id, list.joinIntoString (","), &undoManager);
+        else
+            apvts.state.removeProperty (id, &undoManager);
+    };
+
+    pushingPatternToState = true;
+    writes ("slots", sequencerState.selectedSlot.data(), 0);
+    writes ("evolve", sequencerState.evolveBars.data(), 0);
+    pushingPatternToState = false;
+}
+
+void GrooveboxProcessor::applyBankFromState()
+{
+    auto reads = [this] (const juce::String& name, std::atomic<int>* values)
+    {
+        const auto encoded = apvts.state.getProperty (juce::Identifier (name.toRawUTF8())).toString();
+        const auto list = juce::StringArray::fromTokens (encoded, ",", "");
+
+        for (int channel = 0; channel < Layout::numChannels; ++channel)
+        {
+            // Only the sign is repaired. A lane that points past slot three, or a period
+            // this build has never offered, stays as it came in: the readers clamp for
+            // themselves, and the number the next save writes back is the one a newer
+            // build wrote — which is the same bargain the records strike with a v99 tag.
+            const auto value = channel < list.size() ? list[channel].trim().getIntValue() : 0;
+
+            values[(size_t) channel].store (juce::jmax (0, value));
+        }
+    };
+
+    reads ("slots", sequencerState.selectedSlot.data());
+    reads ("evolve", sequencerState.evolveBars.data());
+}
+
+bool GrooveboxProcessor::isGridProperty (const juce::Identifier& property)
+{
+    // Built from `slotPropertyName` rather than written out beside it: the names the
+    // listener watches and the names the writer writes have to be the same list, and a
+    // second copy of it is where the fourth slot gets left off.
+    for (auto slot = 0; slot < Layout::numPatternSlots; ++slot)
+        if (property == juce::Identifier (slotPropertyName (slot).toRawUTF8()))
+            return true;
+
+    return property == juce::Identifier ("slots") || property == juce::Identifier ("evolve");
 }
 
 void GrooveboxProcessor::valueTreePropertyChanged (juce::ValueTree& tree, const juce::Identifier& property)
@@ -1145,6 +1476,10 @@ void GrooveboxProcessor::valueTreePropertyChanged (juce::ValueTree& tree, const 
         probability, ratchet, a payload wide enough to hold them — undoable through
         the same door, because none of them will be a parameter either.
 
+        The bank added five more of those strings — three slot records and the two lane
+        lists — and every one of them needs the same door, which is why the test is a
+        function of the names rather than a comparison against one of them.
+
         The parameters need no watching: moving one already calls
         `parameterChanged`, which is where the atomics for level, pitch and the
         envelope live.
@@ -1152,7 +1487,7 @@ void GrooveboxProcessor::valueTreePropertyChanged (juce::ValueTree& tree, const 
     // Spelled as an Identifier rather than a string literal: `Identifier` converts
     // to and from `const char*`, so a bare literal on the right of `!=` leaves MSVC
     // with two equally good ways to make the comparison.
-    if (! tree.hasType ("GROOVEBOX") || property != juce::Identifier ("pattern")
+    if (! tree.hasType ("GROOVEBOX") || ! isGridProperty (property)
          || pushingPatternToState)
         return;
 
@@ -1287,13 +1622,21 @@ void GrooveboxProcessor::applyMetadata (const juce::ValueTree& tree)
 void GrooveboxProcessor::getStateInformation (juce::MemoryBlock& destData)
 {
     // `copyState` flushes the parameters into the tree, so everything the host can
-    // automate is in there; the pattern is a plain property and has to be current.
+    // automate is in there; the grid is a plain property and has to be current — every
+    // slot of it, because a bank slot with no record is one the atomics agree is empty.
     //
-    // Except when it holds a record this build cannot read, where being current is the
-    // whole point: the property already contains exactly what came in, and flushing the
-    // grid over it would be the save destroying the session it was asked to preserve.
-    if (! holdingUnreadablePattern)
-        pushPatternToState();
+    // The records this build is *holding* are the exception, and `pushPatternToState`
+    // leaves them alone by name: the property already contains exactly what came in, and
+    // flushing the grid over it would be the save destroying the session it was asked to
+    // preserve. That has been a per-slot decision since the bank — a session can hold one
+    // record from a build that knows more about a step than this one does while the user
+    // edits another slot this build can talk to — and skipping the one is what keeps the
+    // other.
+    //
+    // The two bank lists need no flushing: only `setChannelSlot`,
+    // `setChannelEvolveBars` and `duplicateChannelRowToNextSlot` move them, and all three
+    // push as they go.
+    pushPatternToState();
 
     if (auto xml = apvts.copyState().createXml())
         copyXmlToBinary (*xml, destData);

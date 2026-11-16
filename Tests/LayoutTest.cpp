@@ -115,6 +115,202 @@ juce::MouseEvent makeEvent (juce::Component& target, juce::Point<float> position
                              position, juce::Time::getCurrentTime(), 1, false);
 }
 
+//==============================================================================
+// Pixel evidence.
+//
+// Two renders that differ in exactly one number, compared pixel by pixel, is the only
+// way to check a claim about what the grid *draws* rather than what it holds: a mark, a
+// ring, a word. Everything here is file-scope because there are now two sections that
+// need it and the comparison is the part that must not be written twice — the counting
+// of darker against brighter, and the window a difference is allowed to fall in, are
+// the whole content of the claim.
+
+struct Diff
+{
+    int pixels = 0;     // pixels that moved at all
+    int outside = 0;    // ... and moved outside the window they were allowed to
+    int darker = 0;     // moved down
+    int brighter = 0;   // moved up
+    long sumX = 0;
+    long sumY = 0;
+};
+
+Diff compareImages (const juce::Image& a, const juce::Image& b,
+                    const juce::Rectangle<int>& window)
+{
+    Diff d;
+    const int w = juce::jmin (a.getWidth(), b.getWidth());
+    const int h = juce::jmin (a.getHeight(), b.getHeight());
+
+    for (int y = 0; y < h; ++y)
+    {
+        for (int x = 0; x < w; ++x)
+        {
+            const auto before = a.getPixelAt (x, y);
+            const auto after = b.getPixelAt (x, y);
+
+            if (before == after)
+                continue;
+
+            ++d.pixels;
+
+            if (! window.contains (x, y))
+                ++d.outside;
+
+            const auto luma = before.getRed() + before.getGreen() + before.getBlue()
+                            - after.getRed() - after.getGreen() - after.getBlue();
+
+            if (luma > 0)      ++d.darker;
+            else if (luma < 0) ++d.brighter;
+
+            d.sumX += x;
+            d.sumY += y;
+        }
+    }
+
+    return d;
+}
+
+/** A pair of renders that must come back identical. */
+bool mustMatch (const juce::Image& a, const juce::Image& b)
+{
+    return compareImages (a, b, juce::Rectangle<int> {}).pixels == 0;
+}
+
+/**
+    How far two colours are, as the sum of their three channel gaps.
+    The one metric the two gates below and `nearestPixel` all read, so a limit stated in
+    it means the same thing in all three places.
+*/
+float colourDistance (const juce::Colour& a, const juce::Colour& b)
+{
+    auto gap = [] (float x, float y) { return x > y ? x - y : y - x; };
+
+    return gap (a.getFloatRed(),   b.getFloatRed())
+         + gap (a.getFloatGreen(), b.getFloatGreen())
+         + gap (a.getFloatBlue(),  b.getFloatBlue());
+}
+
+/**
+    How close the pixel in `area` that most resembles `wanted` actually gets to it.
+    An absolute read of one render, not a difference between two.
+
+    Needed because a difference can only ever say *these pictures are not the same*. It
+    cannot say which control made the difference when the state that flips that control's
+    answer flips something else with it — which is exactly the case for the copy glyph's
+    dimming (whether a copy is possible is a fact about the other slots' fullness, and the
+    marks report that same fullness) and for the rotate chip's light (`rotating` drives the
+    colour *and* the word, so the word alone satisfies any pair). Measured against those, a
+    mutation that leaves the word changing and kills the colour is invisible to a diff and
+    plain here: the glyph's rectangle keeps its distance from the bright colour whatever
+    the marks are doing, and so does the chip's from its lane's own colour.
+
+    The nearest-pixel form rather than a count is deliberate: a 1 px stroke drawn on a
+    rounded rectangle straddles pixel boundaries, so some of its pixels land on the colour
+    exactly and some are half-covered blends, and a count with a tight threshold would be a
+    statement about JUCE's antialiasing rather than about the plugin. Distance is the sum of
+    the three channel gaps — the palette's alternatives are a whole channel apart, and
+    `wanted` must be handed in already composited over the panel, because `Colour` keeps an
+    alpha'd colour's channels at full strength and the paint does not.
+
+    `getFloatRed` and not `getRed`: in this JUCE the plain one is a `uint8`, so a difference
+    of them is integer arithmetic on 0..255 and would silently compare a different quantity
+    from the one the 0.15 threshold is stated in.
+*/
+float nearestPixel (const juce::Image& image, const juce::Rectangle<int>& area,
+                    const juce::Colour& wanted)
+{
+    float best = 10.0f;
+
+    for (int y = juce::jmax (0, area.getY()); y < juce::jmin (image.getHeight(), area.getBottom()); ++y)
+        for (int x = juce::jmax (0, area.getX()); x < juce::jmin (image.getWidth(), area.getRight()); ++x)
+            best = juce::jmin (best, colourDistance (image.getPixelAt (x, y), wanted));
+
+    return best;
+}
+
+/** What a colour would look like once the painter's own alpha lands on the panel. */
+juce::Colour composited (const juce::Colour& over)
+{
+    const auto a = over.getFloatAlpha();
+
+    return juce::Colour::fromFloatRGBA (a * over.getFloatRed()   + (1 - a) * gb::Colours::background.getFloatRed(),
+                                        a * over.getFloatGreen() + (1 - a) * gb::Colours::background.getFloatGreen(),
+                                        a * over.getFloatBlue()  + (1 - a) * gb::Colours::background.getFloatBlue(),
+                                        1.0f);
+}
+
+juce::String asText (const juce::Rectangle<int>& r)
+{
+    return juce::String (r.getX()) + " " + juce::String (r.getY()) + " "
+         + juce::String (r.getWidth()) + "x" + juce::String (r.getHeight());
+}
+
+/**
+    Whether one rectangle is drawn in the lit colour in one render and in the shut colour
+    in the other.
+
+    Both colours are read, not just the lit one, because "the lit colour is missing from
+    the shut render" is only a statement about this control if the *shut* colour is there
+    instead — a rectangle that holds neither is a rectangle this gate has not looked at.
+    What is not asserted is the reverse, that the lit render holds no shut colour: the
+    antialiased edge of a word drawn in full-strength white passes through every grey on
+    its way to the panel, including the one the dim border is, so that condition would be
+    a claim about JUCE's text antialiasing rather than about the plugin.
+
+    The margin is half the palette's own distance between the two colours rather than a
+    typed number, which is how the gate fails safe: a theme in which lit and shut are
+    nearly the same colour asks for nearly nothing, and says so by going red on the
+    painting, instead of trusting a constant somebody had to believe.
+*/
+struct LitShut
+{
+    bool ok = false;
+    juce::String detail;
+};
+
+LitShut readsAs (const juce::Image& lit, const juce::Image& shut,
+                 const juce::Rectangle<int>& area,
+                 const juce::Colour& litColour, const juce::Colour& shutColour,
+                 juce::String what)
+{
+    const auto separation = colourDistance (litColour, shutColour);
+    const auto margin = 0.5f * separation;
+
+    const auto litHasLit   = nearestPixel (lit, area, litColour);
+    const auto shutHasLit  = nearestPixel (shut, area, litColour);
+    const auto shutHasShut = nearestPixel (shut, area, shutColour);
+
+    LitShut r;
+
+    r.ok = litHasLit < shutHasLit - margin && shutHasShut <= margin;
+
+    r.detail = what + ": nearest pixel to the lit colour is " + juce::String (litHasLit, 3)
+             + " away when lit and " + juce::String (shutHasLit, 3) + " when shut; the shut colour"
+             " itself sits " + juce::String (shutHasShut, 3) + " from the shut render. The palette"
+             " puts those two colours " + juce::String (separation, 3)
+             + " apart, so the gate asks for half of it [" + asText (area) + "]";
+
+    return r;
+}
+
+/**
+    The grid painted into an image of its own size.
+
+    `StepGridComponent::paint` is public, so this runs the painter headless — no window,
+    no screenshot, and nothing clipped away by what the desktop happens to be covering.
+*/
+juce::Image renderGrid (StepGridComponent& grid)
+{
+    juce::Image image (juce::Image::ARGB,
+                       juce::jmax (1, grid.getWidth()),
+                       juce::jmax (1, grid.getHeight()), true);
+
+    juce::Graphics g (image);
+    grid.paint (g);
+    return image;
+}
+
 /**
     Drives one horizontal fader and reports whether the parameter it is bound to
     actually moved.
@@ -1760,68 +1956,10 @@ int main()
 
         auto render = [stepGrid]
         {
-            juce::Image image (juce::Image::ARGB,
-                               juce::jmax (1, stepGrid->getWidth()),
-                               juce::jmax (1, stepGrid->getHeight()), true);
-
-            juce::Graphics g (image);
-            stepGrid->paint (g);
-            return image;
-        };
-
-        struct Diff
-        {
-            int pixels = 0;     // pixels that moved at all
-            int outside = 0;    // ... and moved outside the window they were allowed to
-            int darker = 0;     // moved down: the cut
-            int brighter = 0;   // moved up: the lit edge of it
-            long sumX = 0;
-            long sumY = 0;
-        };
-
-        auto compare = [] (const juce::Image& a, const juce::Image& b,
-                           const juce::Rectangle<int>& window)
-        {
-            Diff d;
-            const int w = juce::jmin (a.getWidth(), b.getWidth());
-            const int h = juce::jmin (a.getHeight(), b.getHeight());
-
-            for (int y = 0; y < h; ++y)
-            {
-                for (int x = 0; x < w; ++x)
-                {
-                    const auto before = a.getPixelAt (x, y);
-                    const auto after = b.getPixelAt (x, y);
-
-                    if (before == after)
-                        continue;
-
-                    ++d.pixels;
-
-                    if (! window.contains (x, y))
-                        ++d.outside;
-
-                    const auto luma = before.getRed() + before.getGreen() + before.getBlue()
-                                    - after.getRed() - after.getGreen() - after.getBlue();
-
-                    if (luma > 0)      ++d.darker;
-                    else if (luma < 0) ++d.brighter;
-
-                    d.sumX += x;
-                    d.sumY += y;
-                }
-            }
-
-            return d;
+            return renderGrid (*stepGrid);
         };
 
         const auto cell = stepGrid->getCellBounds (probeChannel, probeStep);
-
-        auto asText = [] (const juce::Rectangle<int>& r)
-        {
-            return juce::String (r.getX()) + " " + juce::String (r.getY()) + " "
-                 + juce::String (r.getWidth()) + "x" + juce::String (r.getHeight());
-        };
 
         // The cell, plus one pixel of slack: the mark's edge is drawn on the cell's own
         // boundary, and an antialiased line can bleed a pixel into the gap, which is
@@ -1840,7 +1978,7 @@ int main()
 
         ++checked;
         {
-            const auto d = compare (certain, mutableMarked, window);
+            const auto d = compareImages (certain, mutableMarked, window);
 
             if (d.pixels > 0)
                 pass ("a step that can be dropped is drawn differently from one that cannot");
@@ -1884,11 +2022,6 @@ int main()
         }
 
         // Three negative controls, each a pair of renders that must come back identical.
-        auto mustMatch = [&compare] (const juce::Image& a, const juce::Image& b,
-                                     const juce::Rectangle<int>& window)
-        {
-            return compare (a, b, window).pixels == 0;
-        };
 
         // The mark reports the take, not the wish. With the variation shut nothing can
         // be dropped, and a warning about a thing that cannot happen is a lie — the same
@@ -1904,7 +2037,7 @@ int main()
 
             processor.setMutate (1.0f);
 
-            if (mustMatch (shutCertain, shutMutable, window))
+            if (mustMatch (shutCertain, shutMutable))
                 pass ("with the variation shut it paints nothing: an uncertain step is law too");
             else
                 fail ("a step the machine is not allowed to drop was still marked");
@@ -1925,7 +2058,7 @@ int main()
             processor.setStep (probeChannel, probeStep, true);
             processor.setStepChance (probeChannel, probeStep, 1.0f);
 
-            if (mustMatch (offCertain, offMutable, window))
+            if (mustMatch (offCertain, offMutable))
                 pass ("and a step switched off is not marked, whatever it stores");
             else
                 fail ("an empty cell was marked as if it had a hit to lose");
@@ -1960,7 +2093,7 @@ int main()
 
             stepGrid->setVelocityMode (false);
 
-            if (mustMatch (overlayCertain, overlayMutable, window))
+            if (mustMatch (overlayCertain, overlayMutable))
                 pass ("inside an overlay the mark stands down and leaves the bar alone");
             else
                 fail ("the mark drew itself over the velocity bar");
@@ -2000,6 +2133,955 @@ int main()
 
         for (int s = 0; s < Layout::numSteps; ++s)
             processor.setStep (probeChannel, s, false);
+    }
+
+    //======================================================================
+    // The bank strip is the only place the pattern bank can be seen or reached: there is
+    // no file browser, no menu and no parameter for a slot. So five claims have to hold,
+    // and each needs its own kind of evidence:
+    //
+    //   the strip exists at every size the window can take, and nowhere it cannot;
+    //   its three controls have sizes that do not overlap, so they can be told apart;
+    //   a point on one of them is answered as that one, and a point on nothing is
+    //   answered as nothing;
+    //   a click moves the number the engine reads, and only for that lane;
+    //   and the marks report the numbers rather than the last one the user touched.
+    //
+    // The geometry names come out of the class's own table, restated nowhere in this
+    // file: a threshold typed here is a threshold that gets missed when the strip grows.
+    std::printf ("\n-- the bank strip in the label column --\n");
+    {
+        using Control = StepGridComponent::BankControl;
+
+        constexpr auto stripH   = StepGridComponent::bankStripHeight;
+        constexpr auto nameLine = StepGridComponent::bankNameLineHeight;
+        constexpr auto fitRow   = stripH + nameLine;
+        constexpr auto fitCol   = StepGridComponent::bankMinimumLabelWidth;
+        constexpr auto dotSize  = StepGridComponent::bankSlotDotSize;
+        constexpr auto dotGap   = StepGridComponent::bankSlotDotGap;
+        constexpr auto edgePad  = StepGridComponent::bankEdgePad;
+        constexpr auto groupGap = StepGridComponent::bankGroupGap;
+        constexpr auto copyW    = StepGridComponent::bankCopyWidth;
+        constexpr auto chipMinW = StepGridComponent::bankChipMinWidth;
+        constexpr auto dotsW    = StepGridComponent::bankDotsWidth;
+
+        const int numSlots = Layout::numPatternSlots;
+        const int gridW = stepGrid->getWidth();
+        const int gridH = stepGrid->getHeight();
+
+        auto stripAt = [stepGrid] (int channel)
+        {
+            return stepGrid->getBankStripBounds (channel);
+        };
+
+        // The two numbers the fit rule is about, read out of the geometry the painter
+        // uses: a row's height is any cell in it, and the label column's width is the
+        // name area's own width. Redoing `resized()`'s integer division here would be
+        // writing that maths twice, and the boundary this arm hunts is made of it.
+        auto rowHeight = [stepGrid] { return stepGrid->getCellBounds (0, 0).getHeight(); };
+        auto colWidth  = [stepGrid] { return stepGrid->getLabelBounds (0).getWidth(); };
+
+        auto fitNumbers = [&]
+        {
+            return "row " + juce::String (rowHeight()) + " px (needs " + juce::String (fitRow)
+                 + "), column " + juce::String (colWidth()) + " px (needs "
+                 + juce::String (fitCol) + ")";
+        };
+
+        //------------------------------------------------------------------
+        // 1. Where the strip is allowed to exist, found by scanning rather than by
+        // asking the predicate at one size.
+        struct Scan
+        {
+            int sizes = 0;
+            int withStrip = 0;
+            int disagreements = 0;
+            int reversals = 0;
+            int firstPresent = -1;
+            int lastMeasured = -1;
+        };
+
+        auto scan = [&] (bool varyWidth, int from, int to)
+        {
+            Scan s;
+
+            for (int v = from; v <= to; ++v)
+            {
+                stepGrid->setSize (varyWidth ? v : gridW,
+                                   varyWidth ? gridH : v);
+
+                ++s.sizes;
+
+                const auto row = rowHeight();
+                const auto col = colWidth();
+                const auto measured = varyWidth ? col : row;
+
+                if (measured < s.lastMeasured)
+                    ++s.reversals;
+
+                s.lastMeasured = measured;
+
+                const auto present = ! stripAt (0).isEmpty();
+
+                if (present != (row >= fitRow && col >= fitCol))
+                    ++s.disagreements;
+
+                if (present)
+                {
+                    ++s.withStrip;
+
+                    if (s.firstPresent < 0)
+                        s.firstPresent = v;
+                }
+            }
+
+            return s;
+        };
+
+        auto reportScan = [&] (const Scan& s, const juce::String& what,
+                               const juce::String& grows)
+        {
+            // The precondition goes first, because a scan in which the strip never
+            // appeared — or never failed to appear — satisfies "no disagreements" by
+            // testing one arm, exactly the way a matrix walk that runs zero times does.
+            expect (s.withStrip > 0 && s.withStrip < s.sizes,
+                    "both arms of the fit rule occur across the " + what + " scan",
+                    juce::String (s.withStrip) + " of " + juce::String (s.sizes)
+                        + " sizes have a strip, first at " + juce::String (s.firstPresent));
+
+            // Monotonic, so that checking the smallest permitted size is the same as
+            // checking all of them: if the row ever went back down as the window grew,
+            // the floor would stop carrying the claim.
+            expect (s.reversals == 0,
+                    "the " + grows + " never shrinks as the " + what + " grows",
+                    juce::String (s.sizes) + " sizes walked, " + juce::String (s.reversals)
+                        + " reversals");
+
+            expect (s.disagreements == 0,
+                    "the strip exists exactly where a name line and three controls fit",
+                    juce::String (s.disagreements) + " of " + juce::String (s.sizes)
+                        + " sizes disagree with " + juce::String (fitRow) + " px row and "
+                        + juce::String (fitCol) + " px column");
+        };
+
+        const auto heights = scan (false, 200, 500);
+        const auto widths  = scan (true,  200, 500);
+
+        reportScan (heights, "height", "row");
+        reportScan (widths, "width", "label column");
+
+        // The boundary itself, taken from each scan rather than typed, and gated on both
+        // sides of it. The height arm also asks the question the strip was given up for:
+        // whether the name still has the line the 14 px font needs.
+        stepGrid->setSize (gridW, heights.firstPresent);
+        {
+            const auto strip = stripAt (0);
+            const auto line = strip.getY() - stepGrid->getRowBounds (0).getY();
+
+            expect (rowHeight() >= fitRow && ! strip.isEmpty() && line >= nameLine,
+                    "at the first height that takes the strip the name still has its line",
+                    "grid " + juce::String (heights.firstPresent) + " px: " + fitNumbers()
+                        + ", name line " + juce::String (line) + ", strip " + asText (strip));
+
+            stepGrid->setSize (gridW, heights.firstPresent - 1);
+
+            expect (stripAt (0).isEmpty(),
+                    "one px of row shorter and there is no strip to click at all",
+                    "grid " + juce::String (heights.firstPresent - 1) + " px: " + fitNumbers());
+        }
+
+        stepGrid->setSize (widths.firstPresent, gridH);
+        {
+            const auto chip = stepGrid->getEvolveChipBounds (0);
+
+            expect (colWidth() >= fitCol && ! stripAt (0).isEmpty()
+                      && chip.getWidth() >= chipMinW,
+                    "at the first width that takes the strip every control fits",
+                    "grid " + juce::String (widths.firstPresent) + " px: " + fitNumbers()
+                        + ", chip " + asText (chip));
+
+            stepGrid->setSize (widths.firstPresent - 1, gridH);
+
+            expect (stripAt (0).isEmpty(),
+                    "one px of column narrower and the three controls are given up",
+                    "grid " + juce::String (widths.firstPresent - 1) + " px: " + fitNumbers());
+        }
+
+        //------------------------------------------------------------------
+        // 2. Every size the window is allowed to take. The extremes come out of the
+        // editor's own constrainer — the object `setResizeLimits` filled — because
+        // typing 1218 x 844 here would be a second copy of the floor, and the floor is
+        // what this arm is about: it is the one size at which the row is exactly
+        // strip + name line, with nothing to spare.
+        const auto* limits = editor->getConstrainer();
+
+        expect (limits != nullptr && limits->getMinimumWidth() > 0
+                  && limits->getMinimumHeight() > 0,
+                "the editor says its own limits, so the floor is not typed here",
+                limits == nullptr
+                    ? "no constrainer"
+                    : (juce::String (limits->getMinimumWidth()) + " x "
+                       + juce::String (limits->getMinimumHeight()) + " to "
+                       + juce::String (limits->getMaximumWidth()) + " x "
+                       + juce::String (limits->getMaximumHeight())));
+
+        struct Size { int width, height; juce::String what; };
+
+        const Size sizes[] = {
+            { limits != nullptr ? limits->getMinimumWidth() : preferredWidth,
+              limits != nullptr ? limits->getMinimumHeight() : preferredHeight,
+              "the smallest the window can go" },
+            { limits != nullptr ? limits->getMaximumWidth() : preferredWidth,
+              limits != nullptr ? limits->getMaximumHeight() : preferredHeight,
+              "the largest" },
+            { preferredWidth, juce::jmax (preferredHeight, 790), "the default" },
+        };
+
+        for (const auto& size : sizes)
+        {
+            editor->setSize (size.width, size.height);
+
+            int missing = 0, misshapen = 0, noRoom = 0, intoCells = 0;
+
+            for (int channel = 0; channel < Layout::numChannels; ++channel)
+            {
+                const auto strip = stripAt (channel);
+
+                if (strip.isEmpty())
+                {
+                    ++missing;
+                    continue;
+                }
+
+                const auto label = stepGrid->getLabelBounds (channel);
+                const auto row   = stepGrid->getRowBounds (channel);
+
+                noRoom    += strip.getY() - row.getY() < nameLine;
+                intoCells += strip.getRight() > row.getX();
+                misshapen += strip.getHeight() != stripH
+                          || strip.getX() != label.getX()
+                          || strip.getWidth() != label.getWidth()
+                          || strip.getBottom() != label.getBottom();
+            }
+
+            std::printf ("\n  %d x %d -- %s: %s\n", size.width, size.height,
+                         size.what.toRawUTF8(), fitNumbers().toRawUTF8());
+
+            expect (missing == 0, "twelve strips, one per lane",
+                    juce::String (missing) + " of " + juce::String (Layout::numChannels)
+                        + " lanes have none");
+
+            expect (misshapen == 0, "each is the bottom of its label column at the strip height",
+                    juce::String (misshapen) + " lanes disagree with "
+                        + juce::String (stripH) + " px, e.g. "
+                        + asText (stripAt (0)));
+
+            expect (noRoom == 0, "and none of them eats the name line it was cut from",
+                    juce::String (noRoom) + " lanes leave the name under "
+                        + juce::String (nameLine) + " px");
+
+            expect (intoCells == 0, "and none of them reaches into the cells",
+                    juce::String (intoCells) + " lanes overlap their own row's cells, strip right "
+                        + juce::String (stripAt (0).getRight()) + " vs cell left "
+                        + juce::String (stepGrid->getCellBounds (0, 0).getX()));
+        }
+
+        // Back to the size the rest of the file works at, and let the editor give the
+        // grid its own bounds again rather than restoring them by hand.
+        editor->setSize (preferredWidth, juce::jmax (preferredHeight, 790));
+        stepGrid->setSize (gridW, gridH);
+
+        //------------------------------------------------------------------
+        // 3. The shape of the three controls, in the table's own relations: the pad, the
+        // gaps between marks, the two group gaps, the centring, and the widths. Stated as
+        // relations rather than as one typed formula per control, so a change to the order
+        // of the row is caught as a broken relation and not as twelve wrong literals.
+        int wrongSize = 0, wrongPad = 0, wrongDotGap = 0, offCentre = 0, wrongGroup = 0;
+        int wrongCopy = 0, wrongChip = 0, overlapping = 0, leaked = 0;
+
+        for (int channel = 0; channel < Layout::numChannels; ++channel)
+        {
+            const auto strip = stripAt (channel);
+            const auto label = stepGrid->getLabelBounds (channel);
+
+            juce::Rectangle<int> dots [Layout::numPatternSlots];
+
+            for (int slot = 0; slot < numSlots; ++slot)
+                dots[slot] = stepGrid->getSlotDotBounds (channel, slot);
+
+            const auto copy = stepGrid->getSlotCopyBounds (channel);
+            const auto chip = stepGrid->getEvolveChipBounds (channel);
+
+            for (int slot = 0; slot < numSlots; ++slot)
+            {
+                wrongSize  += dots[slot].getWidth() != dotSize
+                           || dots[slot].getHeight() != dotSize;
+                offCentre  += dots[slot].getY() - strip.getY()
+                           != strip.getBottom() - dots[slot].getBottom();
+                leaked     += ! strip.contains (dots[slot]) || ! label.contains (dots[slot]);
+            }
+
+            wrongPad    += dots[0].getX() != strip.getX() + edgePad;
+
+            for (int slot = 1; slot < numSlots; ++slot)
+                wrongDotGap += dots[slot].getX() - dots[slot - 1].getRight() != dotGap;
+
+            wrongGroup += dots[numSlots - 1].getRight() - dots[0].getX() != dotsW
+                       || copy.getX() != dots[numSlots - 1].getRight() + groupGap
+                       || chip.getX() != copy.getRight() + groupGap;
+
+            wrongCopy  += copy.getWidth() != copyW || copy.getHeight() != stripH
+                       || copy.getY() != strip.getY();
+
+            wrongChip  += chip.getWidth() < chipMinW
+                       || chip.getRight() != strip.getRight() - edgePad
+                       || chip.getHeight() != stripH - 2;
+
+            leaked += ! strip.contains (copy) || ! strip.contains (chip)
+                   || ! label.contains (copy) || ! label.contains (chip)
+                   || ! stepGrid->getLocalBounds().contains (strip);
+
+            for (int a = 0; a < numSlots; ++a)
+            {
+                for (int b = a + 1; b < numSlots; ++b)
+                    overlapping += dots[a].intersects (dots[b]);
+
+                overlapping += dots[a].intersects (copy) || dots[a].intersects (chip);
+            }
+
+            overlapping += copy.intersects (chip);
+        }
+
+        expect (wrongSize == 0, "the four marks are all the same size the table gives them",
+                juce::String (wrongSize) + " marks are not " + juce::String (dotSize)
+                    + " px square");
+
+        expect (wrongPad == 0, "the group starts at the strip's own padding",
+                juce::String (wrongPad) + " rows start anywhere else");
+
+        expect (wrongDotGap == 0, "the marks are one gap apart, so each has its own target",
+                juce::String (wrongDotGap) + " gaps are not " + juce::String (dotGap) + " px");
+
+        expect (offCentre == 0, "and the marks sit centred in the strip, not on its floor",
+                juce::String (offCentre) + " marks are off-centre");
+
+        expect (wrongGroup == 0, "dots, copy and chip are the group widths the table says",
+                juce::String (wrongGroup) + " rows disagree with " + juce::String (dotsW)
+                    + " px of marks and " + juce::String (groupGap) + " px between groups");
+
+        expect (wrongCopy == 0, "the copy mark keeps its width and the strip's height",
+                juce::String (wrongCopy) + " rows wrong, e.g. "
+                    + asText (stepGrid->getSlotCopyBounds (0)));
+
+        expect (wrongChip == 0, "the chip takes the rest of the column and nothing more",
+                juce::String (wrongChip) + " rows wrong, e.g. "
+                    + asText (stepGrid->getEvolveChipBounds (0)));
+
+        expect (overlapping == 0, "no two controls of a lane overlap, so each is clickable alone",
+                juce::String (overlapping) + " pairs share pixels");
+
+        expect (leaked == 0, "and every control is inside its strip, its column and the panel",
+                juce::String (leaked) + " controls reach outside");
+
+        //------------------------------------------------------------------
+        // 4. The hit test: the centre of each control's rectangle is answered as that
+        // control, and the dead pixels the geometry leaves between them are answered as
+        // nothing. Not circular: the rectangles above were gated against the table, so
+        // this arm only decides which control owns the pixels it is given.
+        auto controlAt = [stepGrid] (juce::Point<int> p)
+        {
+            return stepGrid->bankTargetAt (p);
+        };
+
+        int wrongDotHit = 0, wrongCopyHit = 0, wrongChipHit = 0, wrongChannelHit = 0;
+        int deadPoints = 0, deadAnswered = 0;
+
+        for (int channel = 0; channel < Layout::numChannels; ++channel)
+        {
+            for (int slot = 0; slot < numSlots; ++slot)
+            {
+                const auto hit = controlAt (stepGrid->getSlotDotBounds (channel, slot).getCentre());
+
+                wrongDotHit += hit.control != Control::slot || hit.index != slot;
+                wrongChannelHit += hit.channel != channel;
+            }
+
+            // The `index` field is a readout for the tooltip rather than the click's
+            // argument, and this sweep runs before any lane has been pointed anywhere:
+            // every lane opens on slot 0 with a period of off, so that is what the two
+            // readouts have to say. Compared against the getter the hit test itself calls
+            // it would be a gate that asks the predicate what it expects.
+            const auto copyHit = controlAt (stepGrid->getSlotCopyBounds (channel).getCentre());
+
+            wrongCopyHit += copyHit.control != Control::copy || copyHit.index != 0;
+
+            const auto chipHit = controlAt (stepGrid->getEvolveChipBounds (channel).getCentre());
+
+            wrongChipHit += chipHit.control != Control::evolve || chipHit.index != 0;
+
+            wrongChannelHit += copyHit.channel != channel || chipHit.channel != channel;
+
+            // The dead pixels this row leaves: the pad before the marks, the gap inside
+            // the group, the gap between the groups, the far pad, the name line above,
+            // the gap between two rows, and the first cell of the row.
+            const auto strip = stripAt (channel);
+            const auto row   = stepGrid->getRowBounds (channel);
+            const auto dot0  = stepGrid->getSlotDotBounds (channel, 0);
+            const auto dot1  = stepGrid->getSlotDotBounds (channel, 1);
+            const auto copy  = stepGrid->getSlotCopyBounds (channel);
+            const auto last  = stepGrid->getSlotDotBounds (channel, numSlots - 1);
+
+            const juce::Point<int> dead[] = {
+                { strip.getX(), strip.getCentre().getY() },
+                { dot0.getRight() + dotGap / 2, dot0.getCentre().getY() },
+                { last.getRight() + groupGap / 2, last.getCentre().getY() },
+                { copy.getRight() + groupGap / 2, copy.getCentre().getY() },
+                { strip.getRight() - edgePad / 2, strip.getCentre().getY() },
+                { strip.getCentre().getX(), row.getY() + 1 },
+                { strip.getCentre().getX(), row.getBottom() + 1 },
+                { stepGrid->getCellBounds (channel, 0).getCentre() },
+            };
+
+            for (const auto& p : dead)
+            {
+                ++deadPoints;
+
+                if (controlAt (p).control != Control::none)
+                    ++deadAnswered;
+            }
+        }
+
+        expect (wrongDotHit == 0, "a mark's centre is answered as that mark's slot",
+                juce::String (wrongDotHit) + " of "
+                    + juce::String (Layout::numChannels * numSlots) + " wrong");
+
+        expect (wrongCopyHit == 0, "the copy centre is the copy, and reports the slot it would copy",
+                juce::String (wrongCopyHit) + " wrong");
+
+        expect (wrongChipHit == 0, "the chip centre is the rotate, and reports the period it would cycle",
+                juce::String (wrongChipHit) + " wrong");
+
+        expect (wrongChannelHit == 0, "and every answer names the lane the point is in",
+                juce::String (wrongChannelHit) + " wrong channels");
+
+        expect (deadAnswered == 0,
+                "the padding and gaps between the controls answer nothing",
+                juce::String (deadAnswered) + " of " + juce::String (deadPoints)
+                    + " dead points hit a control");
+
+        //------------------------------------------------------------------
+        // 5. A click moves the number the engine reads. This is the arm that decides
+        // whether the feature works at all: the geometry above could be painted on a
+        // control that does nothing.
+        const int probe = 5;
+        const int other = 6;
+
+        auto clearSlot = [&] (int channel, int slot)
+        {
+            processor.setChannelSlot (channel, slot);
+
+            for (int s = 0; s < Layout::numSteps; ++s)
+            {
+                processor.setStep (channel, s, false);
+                processor.setStepVelocity (channel, s, 1.0f);
+                processor.setStepChance (channel, s, 1.0f);
+            }
+        };
+
+        auto emptyBank = [&] (int channel)
+        {
+            for (int slot = 0; slot < numSlots; ++slot)
+                clearSlot (channel, slot);
+
+            processor.setChannelSlot (channel, 0);
+            processor.setChannelEvolveBars (channel, 0);
+        };
+
+        emptyBank (probe);
+        emptyBank (other);
+        processor.getUndoManager().clearUndoHistory();
+
+        auto clickAt = [stepGrid] (juce::Point<int> p)
+        {
+            const auto e = makeEvent (*stepGrid, p.toFloat());
+            stepGrid->mouseDown (e);
+            stepGrid->mouseUp (e);
+        };
+
+        /**
+            The two numbers the bank controls move, and what the lane holds.
+
+            A click that is supposed to belong to *nobody* has to be shown not to have
+            gone to somebody, and "the selection did not move" is not that proof: the
+            rotate chip and the dead pixels share a row, and a click handed to the chip
+            leaves the selection exactly where it was. So the arms below that expect
+            nothing to happen ask for both numbers, and for the copy's own signature —
+            which slots the lane holds — because a stray copy moves the pointer and the
+            mask together.
+        */
+        auto pointerState = [&] (int channel)
+        {
+            return juce::String (processor.getChannelSlot (channel)) + "/"
+                 + juce::String (processor.getChannelEvolveBars (channel));
+        };
+
+        auto filledMask = [&] (int channel)
+        {
+            juce::String mask;
+
+            for (int slot = 0; slot < numSlots; ++slot)
+                mask += processor.isChannelSlotFilled (channel, slot) ? "x" : "-";
+
+            return mask;
+        };
+
+        /**
+            Everything one click could have changed in one lane, as one string.
+
+            The dead-pixel arms write different things -- a stray pointer, a filled slot,
+            a counter that cycled, a step that toggled -- and a check that watches only the
+            one its own comment names is satisfied by an arm that wrote something else. This
+            is the whole lane, so any write at all is a difference.
+        */
+        auto bankSignature = [&] (int channel)
+        {
+            juce::String bits;
+
+            for (int s = 0; s < Layout::numSteps; ++s)
+                bits += processor.isStepOn (channel, s) ? "1" : "0";
+
+            return pointerState (channel) + " " + filledMask (channel) + " " + bits;
+        };
+
+        // In an order that is not the slots' order, so a handler that ignored the index
+        // it was given, or always used the next one, cannot pass by luck.
+        const int clicks[] = { 3, 1, 2, 0 };
+
+        for (const auto slot : clicks)
+        {
+            clickAt (stepGrid->getSlotDotBounds (probe, slot).getCentre());
+
+            expect (processor.getChannelSlot (probe) == slot,
+                    "clicking mark " + juce::String (slot) + " points the lane at slot "
+                        + juce::String (slot),
+                    "selection is " + juce::String (processor.getChannelSlot (probe))
+                        + ", lane " + juce::String (other) + " still "
+                        + juce::String (processor.getChannelSlot (other)));
+        }
+
+        // The cells follow the selection: pointing the lane at a slot is only worth
+        // clicking if what it shows is that slot's grid.
+        processor.setChannelSlot (probe, 0);
+        processor.setStep (probe, 4, true);
+        processor.setChannelSlot (probe, 1);
+        processor.setStep (probe, 9, true);
+
+        clickAt (stepGrid->getSlotDotBounds (probe, 0).getCentre());
+
+        expect (processor.isStepOn (probe, 4) && ! processor.isStepOn (probe, 9),
+                "and the grid that comes up is the one that slot holds",
+                "step 4 " + juce::String ((int) processor.isStepOn (probe, 4))
+                    + ", step 9 " + juce::String ((int) processor.isStepOn (probe, 9)));
+
+        clickAt (stepGrid->getSlotDotBounds (probe, 1).getCentre());
+
+        expect (! processor.isStepOn (probe, 4) && processor.isStepOn (probe, 9),
+                "and pointing it back shows the other pattern instead",
+                "step 4 " + juce::String ((int) processor.isStepOn (probe, 4))
+                    + ", step 9 " + juce::String ((int) processor.isStepOn (probe, 9)));
+
+        // The bank answers with an overlay open: choosing which pattern to edit is not an
+        // edit of the cell under the cursor, so the velocity bars are no reason to ignore
+        // the click — and the label column is where a cell drag already gives up.
+        stepGrid->setVelocityMode (true);
+        clickAt (stepGrid->getSlotDotBounds (probe, 2).getCentre());
+        stepGrid->setVelocityMode (false);
+
+        expect (processor.getChannelSlot (probe) == 2,
+                "a mark still answers with an overlay open",
+                "selection " + juce::String (processor.getChannelSlot (probe)));
+
+        // A click in a cell is a cell edit and nothing else: the step under the cursor has
+        // to move, and the bank's two numbers must not. The second half is the one that
+        // matters, and it needs both numbers: a chip handed the whole row band and the
+        // cells with it answers with the rotate, which moves the counter and leaves the
+        // selection exactly where it was. That is arm v of out/mutate-bank6.log, and a
+        // check that watched only the selection stayed green through it.
+        const auto beforeCell = pointerState (probe);
+        const auto stepWasOn = processor.isStepOn (probe, 0);
+
+        clickAt (stepGrid->getCellBounds (probe, 0).getCentre());
+
+        expect (processor.isStepOn (probe, 0) != stepWasOn && pointerState (probe) == beforeCell,
+                "and a click in the cells edits the cell, not the bank",
+                "step 0 was " + juce::String ((int) stepWasOn) + ", now "
+                    + juce::String ((int) processor.isStepOn (probe, 0)) + "; bank "
+                    + beforeCell + " then " + pointerState (probe));
+
+        // The row gap is not a row: a click there belongs to neither lane, so nothing in
+        // that lane changes. A stray copy would move the pointer and fill a slot, a stray
+        // rotate would move the counter and a stray cell edit would toggle a step, so the
+        // check asks for the lane's whole signature rather than any one of the three -- all
+        // of which the old selection-only assertion could miss.
+        const auto beforeGap = pointerState (probe);
+        const auto maskBeforeGap = filledMask (probe);
+
+        // A gap point is refused in three places, in series: channelAtY says the bottom
+        // sliver of a row span is not a row at all, the strip guard in bankTargetAt says the
+        // point is not in the strip, and each control's own rectangle says it is not in the
+        // control. Rounds four to eight each took one or two of the three out and came back
+        // green (arm o, arm s, arm s2, arm s3, arm z1), which is what says a refusal
+        // defended by another refusal is not a control. Taking the click at four x
+        // positions -- over a mark, over the copy, over the chip and over the first cell --
+        // and asking the whole signature is what gave each of the three an arm that reaches
+        // it: the cell shot is answered by channelAtY's sliver rule on its own (arm x), the
+        // chip shot needs that rule and the strip guard both gone (arm z), and the mark and
+        // copy shots say that no arm can satisfy this check by answering for a control it
+        // was not pointed at.
+        const int gapY = stepGrid->getRowBounds (probe).getBottom() + 1;
+
+        const int gapX[] = { stepGrid->getSlotDotBounds (probe, 0).getCentre().getX(),
+                             stepGrid->getSlotCopyBounds (probe).getCentre().getX(),
+                             stepGrid->getEvolveChipBounds (probe).getCentre().getX(),
+                             stepGrid->getCellBounds (probe, 0).getCentre().getX() };
+
+        int gapMoved = 0, gapFirst = -1;
+        juce::String gapWas, gapNow;
+
+        for (int shot = 0; shot < 4; ++shot)
+        {
+            const auto stateWas = bankSignature (probe);
+
+            clickAt (juce::Point<int> { gapX[shot], gapY });
+
+            if (bankSignature (probe) != stateWas)
+            {
+                ++gapMoved;
+
+                if (gapFirst < 0)
+                {
+                    gapFirst = shot;
+                    gapWas = stateWas;
+                    gapNow = bankSignature (probe);
+                }
+            }
+        }
+
+        expect (gapMoved == 0, "a click in the gap between two rows belongs to neither lane",
+                juce::String (gapMoved) + " of 4 gap clicks wrote something"
+                    + (gapFirst < 0 ? juce::String()
+                                    : ", first over x " + juce::String (gapX[gapFirst])
+                                          + ": " + gapWas + " became " + gapNow)
+                    + ", bank " + beforeGap + " and " + maskBeforeGap + ", then "
+                    + pointerState (probe) + " and " + filledMask (probe));
+
+        // Duplicate: the copy goes to the next empty slot and the lane moves onto it.
+        processor.setChannelSlot (probe, 3);
+        emptyBank (probe);
+        processor.setChannelSlot (probe, 0);
+        processor.setStep (probe, 3, true);
+        processor.setStepVelocity (probe, 3, 0.5f);
+
+        clickAt (stepGrid->getSlotCopyBounds (probe).getCentre());
+
+        expect (processor.getChannelSlot (probe) == 1,
+                "the copy mark duplicates into the next empty slot and lands there",
+                "selection " + juce::String (processor.getChannelSlot (probe))
+                    + ", slot 1 filled " + juce::String ((int) processor.isChannelSlotFilled (probe, 1)));
+
+        expect (processor.isStepOn (probe, 3) && processor.getStepVelocity (probe, 3) == 0.5f,
+                "with the level the original row carried, not the default",
+                "step 3 on " + juce::String ((int) processor.isStepOn (probe, 3))
+                    + ", velocity " + juce::String (processor.getStepVelocity (probe, 3), 3));
+
+        // One undo step for what is two writes. Left ungrouped, undo takes the copy back
+        // and leaves the lane pointing at a slot the user never selected.
+        const auto undone = processor.getUndoManager().undo();
+        const auto afterUndo = processor.getChannelSlot (probe);
+
+        expect (undone && afterUndo == 0 && ! processor.isChannelSlotFilled (probe, 1),
+                "and one undo takes the copy and the selection together",
+                "undo " + juce::String ((int) undone) + ", selection "
+                    + juce::String (afterUndo) + ", slot 1 filled "
+                    + juce::String ((int) processor.isChannelSlotFilled (probe, 1)));
+
+        processor.getUndoManager().clearUndoHistory();
+
+        // Nowhere to go: a mark that duplicates over a pattern would destroy one.
+        for (int slot = 0; slot < numSlots; ++slot)
+        {
+            processor.setChannelSlot (probe, slot);
+            processor.setStep (probe, 6, true);
+        }
+
+        processor.setChannelSlot (probe, 2);
+        const auto fullSelection = processor.getChannelSlot (probe);
+
+        clickAt (stepGrid->getSlotCopyBounds (probe).getCentre());
+
+        expect (processor.getChannelSlot (probe) == fullSelection,
+                "with all four slots full the copy mark finds nowhere to go and changes nothing",
+                "selection " + juce::String (processor.getChannelSlot (probe))
+                    + ", filled " + juce::String ((int) processor.isChannelSlotFilled (probe, 0))
+                    + juce::String ((int) processor.isChannelSlotFilled (probe, 1))
+                    + juce::String ((int) processor.isChannelSlotFilled (probe, 2))
+                    + juce::String ((int) processor.isChannelSlotFilled (probe, 3)));
+
+        // The rotate chip walks its ladder and wraps.
+        emptyBank (probe);
+
+        const int ladder[] = { 1, 2, 4, 8, 0 };
+
+        for (const auto want : ladder)
+        {
+            clickAt (stepGrid->getEvolveChipBounds (probe).getCentre());
+
+            expect (processor.getChannelEvolveBars (probe) == want,
+                    "the chip cycles the period to " + juce::String (want),
+                    "period " + juce::String (processor.getChannelEvolveBars (probe))
+                        + ", lane " + juce::String (other) + " still "
+                        + juce::String (processor.getChannelEvolveBars (other)));
+        }
+
+        // A period that is not on this build's ladder — one a newer session brought in —
+        // must still answer, and must land above where it started rather than on itself.
+        processor.setChannelEvolveBars (probe, 3);
+        clickAt (stepGrid->getEvolveChipBounds (probe).getCentre());
+
+        expect (processor.getChannelEvolveBars (probe) == 4,
+                "an off-ladder period walks to the next rung rather than staying put",
+                "3 bars became " + juce::String (processor.getChannelEvolveBars (probe)));
+
+        expect (processor.getChannelEvolveBars (other) == 0,
+                "and a lane's period is its own",
+                "lane " + juce::String (other) + " is "
+                    + juce::String (processor.getChannelEvolveBars (other)));
+
+        //------------------------------------------------------------------
+        // 6. Pixels: the marks have to report the numbers, not the last thing clicked.
+        //
+        // Two windows per pair, because pointing a lane at a slot legitimately moves two
+        // things — the ring in the strip, and the pattern the cells show. "Only the strip
+        // moved" is not the claim: it is false, and the first version of this arm came
+        // back with 6100 of 6196 pixels outside the strip on a build that was correct.
+        // What is true, and what is gated, is that something moved *inside the strip* —
+        // which no amount of cell repainting can substitute for — and that nothing moved
+        // outside this lane's own row, which is what a painter that rings all twelve rows
+        // or repaints the whole grid would fail. Both halves are needed: the first stops
+        // the locality claim passing vacuously, the second stops a repaint-everything.
+        auto rowBand = [stepGrid] (int channel)
+        {
+            const auto row = stepGrid->getRowBounds (channel);
+            const auto lastCell = stepGrid->getCellBounds (channel, Layout::numSteps - 1);
+            const auto strip = stepGrid->getBankStripBounds (channel);
+
+            return juce::Rectangle<int> (strip.getX(), row.getY(),
+                                         lastCell.getRight() - strip.getX(),
+                                         row.getHeight()).expanded (1);
+        };
+
+        struct Moved
+        {
+            bool ok = false;
+            juce::String detail;
+        };
+
+        auto movedBetween = [&stripAt, &rowBand] (const juce::Image& a, const juce::Image& b,
+                                                  int channel)
+        {
+            const auto inStrip = compareImages (a, b, stripAt (channel).expanded (1));
+            const auto inRow   = compareImages (a, b, rowBand (channel));
+
+            Moved m;
+
+            m.ok = inStrip.pixels - inStrip.outside > 0 && inRow.outside == 0;
+
+            m.detail = juce::String (inStrip.pixels - inStrip.outside)
+                     + " px of the strip moved, " + juce::String (inRow.pixels)
+                     + " px of the row, " + juce::String (inRow.outside) + " outside it";
+
+            return m;
+        };
+
+        emptyBank (probe);
+        emptyBank (other);
+
+        processor.setChannelSlot (probe, 0);
+        processor.setStep (probe, 6, true);
+        processor.setChannelSlot (probe, 1);
+        processor.setStep (probe, 7, true);
+        processor.setChannelSlot (probe, 0);
+
+        const auto selected0 = renderGrid (*stepGrid);
+        const auto selected0Again = renderGrid (*stepGrid);
+
+        processor.setChannelSlot (probe, 1);
+        const auto selected1 = renderGrid (*stepGrid);
+        processor.setChannelSlot (probe, 0);
+
+        {
+            const auto m = movedBetween (selected0, selected1, probe);
+
+            expect (m.ok, "pointing the lane at another slot is drawn in its strip",
+                    m.detail + ", selection now "
+                        + juce::String (processor.getChannelSlot (probe)));
+        }
+
+        expect (mustMatch (selected0, selected0Again),
+                "the same state painted twice is the same picture",
+                "two renders at selection " + juce::String (processor.getChannelSlot (probe)));
+
+        processor.setChannelEvolveBars (probe, 4);
+        const auto rotating = renderGrid (*stepGrid);
+        processor.setChannelEvolveBars (probe, 0);
+
+        const auto chipArea = stepGrid->getEvolveChipBounds (probe);
+
+        {
+            const auto m = movedBetween (selected0, rotating, probe);
+            const auto d = compareImages (selected0, rotating, stripAt (probe).expanded (1));
+
+            expect (m.ok, "a lane that is rotating looks different from one that is off",
+                    m.detail + ", " + juce::String (d.darker) + " px down and "
+                        + juce::String (d.brighter) + " px up");
+
+            // ... and that the *light* is part of it, not only the word. The pair above
+            // cannot tell: `rotating` drives the chip's colour and its text together, so a
+            // build whose light is dead still shows "4 bars" against "off" and the
+            // difference survives — measured, and arm p2 of out/mutate-bank2.log came back
+            // green on exactly that. This asks one rectangle for the lane's own colour and
+            // needs it present while rotating and absent while off, where "present" means
+            // the nearest pixel in the chip gets close rather than the whole picture
+            // changing.
+            const auto chip = readsAs (rotating, selected0, chipArea,
+                                       composited (processor.getChannelColour (probe)),
+                                       composited (gb::Colours::chipBorder),
+                                       "the lane's own colour in the chip");
+
+            expect (chip.ok, "and the chip is lit with the lane's own colour, not merely worded",
+                    chip.detail);
+        }
+
+        // The number itself, which is the only place the period is readable: the light says
+        // "rotating", the word says how long. Two periods the ladder offers both light the
+        // chip the same way, so the chip's own rectangle is the only thing that can differ
+        // between them — and arm p2b of out/mutate-bank3.log, a chip hard-worded "off",
+        // is what asked for this instead of leaving the wording to the pair above.
+        processor.setChannelEvolveBars (probe, 1);
+        const auto oneBar = renderGrid (*stepGrid);
+
+        processor.setChannelEvolveBars (probe, 2);
+        const auto twoBars = renderGrid (*stepGrid);
+
+        processor.setChannelEvolveBars (probe, 0);
+
+        {
+            const auto d = compareImages (oneBar, twoBars, chipArea.expanded (1));
+
+            expect (d.pixels - d.outside > 0 && d.outside == 0,
+                    "and the chip words the period, not merely that it is rotating",
+                    juce::String (d.pixels - d.outside) + " px moved inside the chip and "
+                        + juce::String (d.outside) + " outside it, " + asText (chipArea));
+        }
+
+        // A mark that holds a pattern and a mark that holds nothing are drawn as different
+        // shapes, which is the only way to see what a slot carries without pointing at it.
+        // This pair differs in exactly one filled slot, and the selection is already on it,
+        // so the ring cannot be what moved in the strip.
+        processor.setChannelSlot (probe, 2);
+        const auto emptyMark = renderGrid (*stepGrid);
+
+        processor.setStep (probe, 6, true);
+        const auto filledMark = renderGrid (*stepGrid);
+
+        {
+            const auto m = movedBetween (emptyMark, filledMark, probe);
+
+            expect (m.ok, "a slot with something in it is drawn differently from an empty one",
+                    m.detail + ", strip " + asText (stripAt (probe)));
+        }
+
+        // The copy mark dims when a click there would find nowhere to go. Whether a copy
+        // is possible is a fact about the *other* slots' fullness, and the marks report
+        // that same fullness, so this pair cannot be isolated to the copy glyph: the whole
+        // strip changes. Stated rather than hidden, because a green here does not mean the
+        // glyph alone was tested — the click arm above is what gates the behaviour the
+        // glyph claims.
+        const auto somewhereToGo = renderGrid (*stepGrid);
+
+        for (int slot = 3; slot < numSlots; ++slot)
+        {
+            processor.setChannelSlot (probe, slot);
+            processor.setStep (probe, 6, true);
+        }
+
+        // Back onto the slot the first render was taken with, so the two renders differ by
+        // one mark's fullness and the glyph's answer, and by nothing else.
+        processor.setChannelSlot (probe, 2);
+
+        const auto nowhereToGo = renderGrid (*stepGrid);
+
+        {
+            const auto m = movedBetween (somewhereToGo, nowhereToGo, probe);
+
+            expect (m.ok, "and a full bank reports that the copy mark has nowhere to go",
+                    m.detail + " - marks and glyph together, not the glyph alone");
+
+            // The glyph on its own, which the pair above cannot reach for the reason in
+            // its own comment: filling the last slot is the thing that takes the copy away,
+            // so it changes a mark at the same time. This asks the copy rectangle alone how
+            // near its brightest drawing gets to the panel's text colour, and needs the
+            // answer to be materially nearer while a click there would land. Arm p3 of
+            // out/mutate-bank2.log — a glyph that never dims — is what asked for it.
+            const auto copyArea = stepGrid->getSlotCopyBounds (probe);
+
+            const auto glyph = readsAs (somewhereToGo, nowhereToGo, copyArea,
+                                        composited (gb::Colours::text),
+                                        composited (gb::Colours::chipBorder),
+                                        "the panel's text colour in the copy glyph");
+
+            expect (glyph.ok, "and the copy glyph itself is the bright one when a click would land",
+                    glyph.detail);
+        }
+
+        // The other lane's number is the other lane's business. The two lanes have to be
+        // answering different numbers first: arm q1 of out/mutate-bank2.log, a
+        // setChannelSlot that writes every lane instead of the one it was named, survived
+        // the mirror check below for as long as both lanes sat on slot 2, because a second
+        // write to the number a lane already holds paints the same picture. Probe is moved
+        // off that slot so a write that leaks has somewhere visibly to leak to.
+        processor.setChannelSlot (probe, 1);
+
+        const auto beforeNeighbour = renderGrid (*stepGrid);
+
+        processor.setChannelSlot (other, 2);
+        const auto afterNeighbour = renderGrid (*stepGrid);
+
+        {
+            const auto m = movedBetween (beforeNeighbour, afterNeighbour, other);
+
+            expect (m.ok, "and a neighbour's selection moves only its own row",
+                    m.detail + ", lane " + juce::String (other) + " strip "
+                        + asText (stripAt (other)));
+
+            // The mirror of the same pair, which the row window alone cannot say: the
+            // strip of the lane that was not clicked keeps every pixel it had. What makes
+            // this able to bite is the two lanes holding different slot numbers across the
+            // pair -- see above -- so a selection write that leaks to every lane moves
+            // probe's ring from dot 1 to dot 2 and lands inside this window.
+            const auto untouched = compareImages (beforeNeighbour, afterNeighbour,
+                                                 stripAt (probe).expanded (1));
+
+            expect (untouched.pixels - untouched.outside == 0,
+                    "and the lane that was not clicked keeps its own marks",
+                    juce::String (untouched.pixels - untouched.outside)
+                        + " px moved inside the strip of the lane nobody touched, which now "
+                        + pointerState (probe) + " against " + pointerState (other));
+        }
+
+        // Back as found: two empty lanes at the bank's resting numbers.
+        emptyBank (probe);
+        emptyBank (other);
     }
 
     std::printf ("\n%s  %d checks, %d problems\n",

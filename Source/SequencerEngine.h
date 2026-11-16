@@ -186,12 +186,19 @@ private:
 };
 
 /**
-    Everything the audio thread reads while sequencing.
+    One pattern slot of the machine: the whole grid, as the audio thread reads it.
 
-    The editor and the processor's parameter layer write these atomics; the
-    engine only ever reads them, so there is no lock on the audio path.
+    A slot holds all three of the fields a cell carries — whether it fires, how hard and
+    how often — rather than just the on/off the word "pattern" suggests. That is
+    deliberate: the level and the chance are facts *about the step*, they are drawn on the
+    same grid, and a slot that switched the pattern but carried the level across from
+    another slot would play a hit that was never written anywhere. `shiftChannelRow` moves
+    all three for the same reason, and the saved record carries all three for the third.
+
+    The defaults are the ones a session from before each field existed means: off, full
+    level, fires every time.
 */
-struct SequencerState
+struct PatternCells
 {
     /** pattern[channel][step] — true when that drum fires on that step. */
     std::array<std::array<std::atomic<bool>, (size_t) Layout::numSteps>, (size_t) Layout::numChannels> pattern {};
@@ -216,6 +223,63 @@ struct SequencerState
         machine only consults a cell's chance while `mutate` is open — see that.
     */
     std::array<std::array<std::atomic<float>, (size_t) Layout::numSteps>, (size_t) Layout::numChannels> chance {};
+
+    PatternCells()
+    {
+        for (auto& row : velocity)
+            for (auto& cell : row)
+                cell.store (1.0f);
+
+        // And every step fires every time, which is what a machine that never had a
+        // probability meant, and what a session from before it still says.
+        for (auto& row : chance)
+            for (auto& cell : row)
+                cell.store (1.0f);
+    }
+
+    JUCE_DECLARE_NON_COPYABLE (PatternCells)
+};
+
+/**
+    Everything the audio thread reads while sequencing.
+
+    The editor and the processor's parameter layer write these atomics; the
+    engine only ever reads them, so there is no lock on the audio path.
+*/
+struct SequencerState
+{
+    /**
+        The banks: `Layout::numPatternSlots` whole grids per channel.
+
+        Indexed slot-first, because that is the axis the audio thread asks about — it
+        already knows the channel and the step, and `slotPlaying` hands it the slot. A
+        lane-by-lane array of slots would have made the read a double indirection to save
+        nothing.
+
+        Slot 0 is the one a session from before the bank existed holds, and the one every
+        lane points at when nothing has been changed, which is what keeps the default
+        machine one grid wide.
+    */
+    std::array<PatternCells, (size_t) Layout::numPatternSlots> slots {};
+
+    /**
+        Which slot each channel's controls are pointed at.
+
+        The panel's answer to "what am I editing", and — with `evolveBars` at zero — also
+        the machine's answer to what it plays. It is state and not a parameter for the same
+        reason the grid is: it is not a number anyone draws an automation ramp against, and
+        a parameter per lane would put twelve more rows in a table the host already shows.
+    */
+    std::array<std::atomic<int>, (size_t) Layout::numChannels> selectedSlot {};
+
+    /**
+        How often each channel moves on to its next filled slot, in bars; zero is off.
+
+        Off is the default and the honest resting state: a bank that rotated by itself the
+        moment it shipped would change what an old session sounds like on the first load
+        after the update.
+    */
+    std::array<std::atomic<int>, (size_t) Layout::numChannels> evolveBars {};
 
     /**
         How much of the grid's chances the machine is allowed to use, 0..1.
@@ -337,24 +401,14 @@ struct SequencerState
 
     SequencerState()
     {
-        for (auto& row : pattern)
-            for (auto& cell : row)
-                cell.store (false);
-
-        // Full velocity by default, so a new step behaves exactly as it did before
-        // velocities existed.
-        for (auto& row : velocity)
-            for (auto& cell : row)
-                cell.store (1.0f);
-
-        // And every step fires every time, which is what a machine that never had a
-        // probability meant, and what a session from before it still says.
-        for (auto& row : chance)
-            for (auto& cell : row)
-                cell.store (1.0f);
-
         for (int i = 0; i < Layout::numChannels; ++i)
         {
+            // Slot A, and no rotation: the machine a session describes is the one it
+            // drew, and a bank that moved on its own is a change to old sets that nobody
+            // asked for.
+            selectedSlot[(size_t) i].store (0);
+            evolveBars[(size_t) i].store (0);
+
             level[(size_t) i].store (1.0f);
             pitch[(size_t) i].store (0);
             pitchDrop[(size_t) i].store (0);
@@ -460,14 +514,78 @@ public:
     double getOnsetPositionInSteps (int step) const { return onsetPositionInSteps (step); }
 
     /**
+        The bar the machine last fired in, as the panel is allowed to know it.
+
+        Not `position / 16` read live: `position` belongs to the audio thread, and this is
+        the number it published when it derived one (`fireStep`), so the dot in the label
+        column and the slot that is actually sounding cannot be two different answers about
+        the same bar. With nothing rotating it is never consulted — `slotPlaying` returns
+        the lane's selected slot before it looks at the bar.
+    */
+    juce::int64 getCurrentBar() const noexcept { return currentBar.load(); }
+
+    /**
+        Does channel's slot `slot` hold anything at all?
+
+        Public because the answer belongs to the panel as much as to the law below: the
+        bank control has to mark the slots that hold something, and a second definition of
+        "filled" — one painted, one played — is how a dot says *empty* about a slot that
+        then turns up in the rotation.
+
+        It is one definition for a second reason as well. "Anything" is the same test the
+        save path uses, so a row whose steps are all switched off but whose levels or
+        probabilities differ from full counts as holding something: that row is written to
+        the session, and a copy that called it free would overwrite data the file keeps —
+        losing a level the user set on a step they had not yet switched on. The price is
+        the honest one: a rotation can visit such a slot and play nothing for a bar, and
+        the solid dot is then telling the truth about a record rather than about a sound.
+    */
+    bool isSlotFilled (int channel, int slot) const noexcept;
+
+    /**
+        Which of a channel's slots the machine plays at one bar.
+
+        The whole of the bank's audible half, and a function of (bar, channel) alone: no
+        counter, no memory of the previous bar, nothing that has to be reset on a seek. That
+        is the same rule the rolls are built on — see `wouldThisHitFire` — and for the same
+        reason, which is that a bounce and a live pass have to agree. Start a take at bar 17
+        in a host and the hats land on the slot they would have landed on, because the bar
+        number is the only input.
+
+        With the channel's period at zero the answer is the slot its controls point at, and
+        that is the default state of every lane in every session written before this existed.
+
+        When it does rotate it steps over the *filled* slots, not over all four, and starts
+        from the selected one. Filling two slots of four therefore alternates those two; it
+        does not go quiet for the two that hold no record at all, which would read as a bug
+        in the pattern rather than as the empty bank it is. What "holds a record" means —
+        and why it is the save path's answer rather than a listening one — is on
+        `isSlotFilled`.
+    */
+    int slotPlaying (juce::int64 bar, int channel) const noexcept;
+
+    /**
+        True when at least one channel rotates, which is what decides whether the audio
+        path has to know what bar it is in at all.
+
+        Asked rather than cached, because a flag kept beside the twelve periods is a second
+        answer to the same question — the failure this repo already documented for the
+        parameter id lists. Twelve atomic loads once per onset is nothing next to the
+        resampling it precedes.
+    */
+    bool anyChannelEvolves() const noexcept;
+
+    /**
         Does the hit painted at (bar, step, channel) survive the roll as things stand?
 
         Public for the same reason `StepGridComponent::getCellBounds` is: a test that
-        asks a question has to ask the machine that answers it. `fireStep` calls this
-        and nothing else decides, so a determinism check cannot pass next to an engine
-        that rolls another way. There is no clock in it and no counter — the answer is
-        a function of the seed, the grid and where in the bar the hit is, which is what
-        makes an offline bounce and a live pass the same take.
+        asks a question has to ask the machine that answers it. This is that question and
+        nothing else decides it: it resolves the slot with `slotPlaying` and hands the
+        roll to `wouldHitInSlotFire`, which is the function `fireStep` calls with the
+        slot it resolved for the hit itself — see that for why the two are not one call.
+        There is no clock in it and no counter — the answer is a function of the seed,
+        the grid and where in the bar the hit is, which is what makes an offline bounce
+        and a live pass the same take.
     */
     bool wouldThisHitFire (juce::int64 bar, int step, int channel) const;
 
@@ -780,6 +898,18 @@ private:
     void fireStep (int step);
 
     /**
+        The half of `wouldThisHitFire` that does not have to work out what is playing.
+
+        `fireStep` has already resolved the slot for this lane at this onset, and the
+        pattern, the chance and the level of one hit have to be read out of that one
+        slot: asking twice would let a panel change between the two reads roll a hit
+        against the probability of a pattern that is not the one it came from. The
+        public seam is this plus the resolution, so a test that asks the seam is asking
+        the body the engine runs.
+    */
+    bool wouldHitInSlotFire (juce::int64 bar, int step, int channel, int slot) const;
+
+    /**
         Whether one cell's roll lets the hit through.
 
         The answer comes out of a generator keyed on the seed, the bar and step the
@@ -933,6 +1063,15 @@ private:
     double stepsPerSecond = 120.0 / 60.0;
 
     std::atomic<int> currentStep { -1 };
+
+    /**
+        The bar of the last onset that fired, published for the panel.
+
+        A mirror of what `fireStep` derived rather than a second clock: the GUI has no
+        safe way to read `position`, and the one number it needs is the bar the machine was
+        in when it chose the slot it is showing. Only written while some lane is rotating.
+    */
+    std::atomic<juce::int64> currentBar { 0 };
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (SequencerEngine)
 };

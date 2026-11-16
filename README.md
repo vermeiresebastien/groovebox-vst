@@ -24,9 +24,10 @@ sample you drag onto its row, and which also plays from MIDI notes.
 | Mix | Per-channel level and mute, plus a "clear row" button |
 | **Master trim & meter** | **A −24 to +6 dB master trim you can see and reach, a bar for the sample peak with a tick for the true peak hiding between the samples, and a clip latch on the output** |
 | **Automation** | **Levels, pitches, pitch drops, envelopes, mutes, choke groups, swing, swing grid, tempo, the master trim, Mutate, Humanize, Touch and Seed are host parameters — automate them, and the panel follows what the host drew** |
+| **Pattern bank** | **Four patterns per channel. The row of marks in a channel's label column points the lane at one of them, the copy mark duplicates the row into the next empty slot, and the chip on the right lets the lane rotate through what it holds every 1, 2, 4 or 8 bars** |
 | Row editing | Click a cell to toggle it; drag across cells to paint a run |
 | **Shift a row** | **The ← and → buttons in a channel strip turn that whole row one step earlier or later, and every step's velocity goes with it** |
-| Persistence | Pattern, per-step velocity and probability, pitch, levels, mutes, names, colours, seed and sample paths are saved in the session; a session saved before the parameter migration is read in and its values carried over |
+| Persistence | Every slot's steps, velocities and probabilities, which slot each lane points at, each lane's rotate period, pitch, levels, mutes, names, colours, seed and sample paths are saved in the session; a session saved before the parameter migration is read in and its values carried over |
 
 ## Step velocity
 
@@ -251,6 +252,64 @@ at the level the draw said, at 64, 256 and 1024 sample blocks alike.
 **A session that predates the parameter opens shut.** A missing entry takes its default, here
 0 %, and the grid, the seed and the neighbouring globals come through anyway.
 
+## Four patterns per channel
+
+Every channel holds four patterns of its own 16 steps, and each of those carries that
+step's velocity and probability with it. There is no file browser and nothing to import:
+the four slots live on the session, and a slot that holds nothing costs a session nothing
+on disk.
+
+What the lane's sound is set to — its sample, pitch, pitch drop, envelope, level, mute and
+choke group — is **one setting for the lane, not one per slot**. The bank holds the row and
+its per-step numbers, which is what a pattern actually is.
+
+The marks are in the channel's label column, left to right: four slot marks, a copy mark,
+and the rotate chip.
+
+- A **solid box** is a slot that holds something; an **outline** is one that does not. The
+  **white ring** around a mark is the slot you are editing, and a small **dot inside** a
+  mark is the slot that is actually sounding when the ring is not on it.
+- **Pointing.** Click a mark and the lane edits that slot: the grid shows what it holds, and
+  every click, drag, row shift and clear writes there. An empty slot takes on whatever you
+  draw in it — that is the only way it stops being empty.
+- **Copying.** The two-square mark duplicates the row you are on into the next slot that is
+  not full, going round from the one you are pointing at, and leaves the lane pointing at
+  the copy. One undo takes both the copy and the pointer back. When all four slots hold a
+  pattern the mark dims, because a click there would find nowhere to go, and nothing happens.
+- **Rotating.** The chip cycles how long the lane holds a slot: off, 1 bar, 2, 4, 8, off.
+  Lit and worded, because a lane that is rotating is a lane whose grid on screen is not the
+  grid you are hearing.
+
+A lane that rotates walks over the slots that *hold* something, starting from the one the
+ring is on. Two filled slots of four therefore alternate those two rather than going quiet
+for the other two, and an empty slot the ring happens to point at costs no silent bar. Like
+the probability rolls, the answer is a function of the bar number alone — there is no
+counter to lose — so a bounced take lands on the same slot a live pass would have, a take
+started at bar 17 behaves as if it had been running since bar 1, and a host parked at bar
+zero or earlier stays inside the cycle.
+
+**What "holds something" means** is the save path's own rule, not a listening one: a slot
+counts if any step of it is on, **or** any step's level is off full, **or** any step's
+probability is off 100 %. A row of unstruck steps whose levels were dragged down therefore
+reads as a pattern, and the copy mark walks past it rather than over it. The mark, the
+rotation and the copy all read that one answer, which is why they cannot disagree.
+
+Two things are worth knowing before you reach for the rotate chip. The grid always shows the
+slot the ring is on, never the one that is sounding: with a period above 1 bar those are
+different patterns, and an edit changes the one under the ring. And the bank is **state, not
+parameters** — like the pattern itself it is saved with the project, so there is nothing for
+the host to automate and no way to draw a slot change into Live's arrangement.
+
+A session written before the bank existed opens with its one pattern in slot 0, every lane
+pointed at slot 0 and every counter shut, which is the same machine as before: the default
+state of the bank is one grid wide.
+
+The marks need room. They appear when a row is at least 27 px tall **and** the label column
+at least 89 px wide, and every size this editor allows satisfies both — at the 1218 × 844
+floor the row comes out at exactly 27 px, with nothing to spare. Narrower or shorter than
+the editor permits, the strip is not drawn, is not clickable and there is nothing to explain
+the difference: the rule is one answer behind the painting, the hit test and the test suite.
+
 ## The envelope
 
 Every channel has its own ADSR, shown as four rows (**A D S R**) under the level
@@ -382,7 +441,10 @@ and leaves it alone.
   px laptop has. The height is not solved by the wrap: the editor cannot be made shorter
   than 844 px, so a 768 px screen still cannot show all of it, and the grid pays 36 px.
 - **Middle** — the 16 × 12 step grid. Channel 11 is the top row and channel 0 the
-  bottom, matching the web app, which reverses its lane list.
+  bottom, matching the web app, which reverses its lane list. The left-hand label column
+  of each row carries that lane's pattern bank: four slot marks, the copy mark and the
+  rotate chip (see [Four patterns per channel](#four-patterns-per-channel)); the marks
+  are drawn, clickable and tested together, or not at all.
 - **Bottom** — one strip per channel: name (double-click to rename), colour
   swatch (click to cycle), sound, pitch, pitch drop, level, mute and choke group.
 
@@ -670,6 +732,13 @@ It asserts, among other things, that:
   step never comes back as on;
 - shifting a row carries each step's velocity with it, wraps the last step to the
   first, is a no-op over a whole bar, and leaves every other row alone;
+- a lane has **four patterns and a bar counter**: the selected slot and the period survive
+  a save/load round trip, every cell edit lands in the slot the lane points at and in no
+  other, the row of a slot nothing was ever written into stays off the session entirely, and
+  the rotation walks only the slots that hold something, starting from the selected one, so
+  an empty slot costs no silent bar and one filled slot never rotates. It is a function of
+  the bar number alone: the same bank at a 1024-sample block sounds the same one-bar-per-slot
+  take it does at 64, and the same take at bar 17 as at bar 1;
 - a value written into a **parameter** the way a host writes it — normalised,
   straight through `setValueNotifyingHost`, without touching any of the
   processor's own setters — reaches the engine and changes the audio, so all 116
@@ -707,6 +776,54 @@ variation band is placed by which line it overlaps, all twelve channel strips ar
 walked for clipped children, and all 192 hover readouts are asked for their size as
 well as their position, since a label whose bottom edge got pulled up to the top of
 the grid stayed inside it and read as a pass at 1 px tall.
+
+The pattern bank is inspected as geometry, as a click and as pixels. The rule that decides
+whether a lane's strip exists at all is walked over 301 window sizes and asked as two
+numbers — a row at least 27 px tall **and** a label column at least 89 px wide — and every
+size this editor allows satisfies both, the floor of them coming out at exactly 27 px. Each
+control's rectangle is then asked for its size, that it stays inside the strip, its own
+column and the panel, and that none of it reaches into the cells. The clicks go through the
+real `mouseDown` and the answer is read back from the processor rather than the component:
+pointing, duplicating and rotating all move the number the engine reads, a click in a cell
+still edits the cell, and a click in the gap between two rows belongs to neither lane.
+Painting is checked by rendering the grid twice with one bank number changed between the
+renders — where the pixels moved, that they moved only inside that lane's strip, and that
+the lane nobody touched kept every pixel it had. Three of those claims had to be asked a
+second way, as an absolute read of one control's own rectangle, because a *diff* cannot say
+which control moved: the chip is lit with the lane's colour when the lane is rotating, the
+copy glyph is the bright one when a click there would land, and the chip's word changes with
+the period it names. The margin in the first two is not typed — it is half the palette's own
+distance between the bright and the dim colour, so a theme that draws them nearly equal asks
+for nearly nothing and says so by going red.
+
+Ten rounds of negative controls over the bank's own code — 47 arm runs, each one starting
+from the separately recorded good file so no arm measures the last arm's damage — are what
+turned those claims into gates, and every one of the 49 checks the section prints was seen
+to go red. Four findings are worth keeping:
+
+- the pixel check that the lane nobody touched keeps its own marks survived an arm that
+  writes *every* lane's selection, because both lanes already held the same slot number and
+  a second write to the number a lane holds paints the same picture. The check now starts
+  the two lanes on different numbers;
+- three checks were being carried by a *word* instead of the thing the word describes: the
+  chip's lit colour and the copy glyph's dim colour were both satisfied by the text drawn
+  beside them, so arms that never touched a colour came back green. That is what the
+  absolute reads above are for, and a diff between two renders cannot make the point — the
+  two states that differ in the control's own answer differ in something else as well;
+- a click on a dead pixel is refused **three times over**, in series: `channelAtY` says the
+  bottom sliver of a row span is not a row, the strip guard says the point is not in the
+  strip, and each control's rectangle says the point is not in the control. Any one of the
+  three, left in place, answers nothing, so an arm that removes one or two of them is
+  invisible — five arms across four rounds came back green on exactly that. The row-gap
+  click is now taken at four x positions, over a mark, over the copy, over the chip and over
+  the first cell, and asked of the lane's whole signature (slot and period, which slots hold
+  something, and the sixteen step bits), because the four shots reach the three refusals
+  between them and no single arm reaches all four;
+- and the determinism precondition needed its own arm. Two renders of one state agreeing is
+  worth nothing until something has made them disagree, so the arm is the defect class the
+  claim guards: a mark whose x grows one pixel per call, which is what an accumulating paint
+  or a pulse animation does to a panel. It moves 23 checks — 18 of them the bank's, and
+  five in the probability corner-mark section whose cells it also paints over.
 
 `GrooveboxPatternPlanTest` checks the genre table and the placement rule as plain
 data, with no JUCE and no plugin sources in the link, which is what keeps it at about
@@ -854,7 +971,13 @@ Notes on the design:
   sample that has since been deleted or moved, will come back silent.
 - Audio dropped from outside the app is decoded into memory but has no path, so
   it is not restored with the session.
-- One 16-step bar; there is no pattern chaining or song mode yet.
+- Four patterns per lane and a per-lane bar counter, but **no song mode**: there is no
+  arrangement of bars into sections, no per-section lane settings, and nothing that carries
+  a pattern out of the plugin. What the bank gives you is a lane that walks its own four
+  grids on a fixed period; ordering the four grids differently over time is not it.
+- The genre presets and the pattern planner exist, are tested and are documented — and have
+  **no caller in the plugin yet**. Nothing in the editor asks them for a pattern; they are
+  wired for the step that decides how a host or a button should reach them.
 - *Humanize* is timing only, and late only: it cannot start a hit ahead of its step.
 - *Touch* is level only, and it is a deviation, not a redraw: it cannot turn a rest into
   a hit, cannot strike a step more than a quarter of its own level above or below what

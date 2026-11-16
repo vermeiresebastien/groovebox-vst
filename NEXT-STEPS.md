@@ -33,6 +33,20 @@ wasted a session, so they are closed here with evidence.
 | 7f. fresh `AudioFormatManager` per load | **PARTLY** | manager registered once (`SampleStore.cpp:23`), but `ChannelStrip.cpp:104,385` still builds one per strip ×12 for a wildcard string; whole-file decode still inline on the message thread (`SampleStore.cpp:70,113`) |
 | 8. APVTS migration | **DONE** | 88 params (4 global + 12×7), `Parameters.h:63-117`; `writeParameter` at `PluginProcessor.cpp:133` |
 
+Two things about this table, both learned while re-checking it for 4.4 (2026-11-16):
+
+- **Row 4 was discharged after this table was written**, by 3.1 and 3.2, and the row above is kept as the
+  `460b3bf` verdict it is. A stolen voice is now handed to a tail before being overwritten —
+  `SequencerEngine::handOffToTail` with `stealFadeSamples` — and a choke group exists as a concept
+  (`chokeGroup` in `SequencerEngine.h`), so the oldest voice is faded rather than cut and a lane in a group
+  shuts the others. What is *not* true: 4.4 did not re-gate this. Nothing in the bank section `[32]` renders
+  across a slot change with a long release, so a rotation that lands a new bar's hit on top of the previous
+  bar's tail is protected by the engine's general behaviour, not by a bank check of its own.
+- **Every line number in sections A, B and C is a `460b3bf` number** — the table says so in its own header, and
+  the sections below inherit it. They were right where they were written; the tree has moved under them. 6.6
+  lists the ones that need re-pointing, with the verified current location of each symbol, so the sweep is a
+  one-pass job instead of a re-audit.
+
 ### A3. Audit claims I checked and rejected — do not act on these
 
 - *"The host branch re-renders the block twice"* — **true** (see B1), keep.
@@ -57,26 +71,26 @@ a running sequencer.
 `processBlock` renders the whole block through the engine (`PluginProcessor.cpp:183`), then calls
 `engine.processMidi` (`:187`), which **re-renders `[0, numSamples)` again** so the new note lands in the
 right place (`SequencerEngine.cpp:296-320`). `renderVoices` accumulates (`outLeft[i] += …`, `:449-452`)
-and advances `voice.position` (`:462`). Net effect for every voice already sounding in that block: its
+and advances `voice.position` (`:551`). Net effect for every voice already sounding in that block: its
 samples are summed a **second time** (a level jump of up to +6 dB for one block) and its read position
 advances at **2× block length** (a skip/glitch in the middle of the hit). Note-off events trigger the same
-path. It is invisible to the tests because `processMidi` ignores non-note events (`:279`) and checks
+path. It is invisible to the tests because `processMidi` ignores non-note events (`:368`) and checks
 `[8]`/`[9]` render with the transport stopped and the grid cleared.
 *Audible as: a kick that jumps in level and stutters the moment you play a pad note over the pattern.*
 
 **B2 — A mid-bar stop/resume or a punch-in puts the groove permanently out of phase with the bar.**
 When the host is stopped, the engine sets `position` from PPQ and disarms (`SequencerEngine.cpp:525-532`),
 but on resume `onsetStep` is never re-derived from the position. `distanceToNextOnsetInSteps` then returns
-`barStart + onset(0) − head` **clamped at zero** (`:85-95`), so step 0 fires instantly wherever the playhead
+`barStart + onset(0) − head` **clamped at zero** (`:86-96`), so step 0 fires instantly wherever the playhead
 sits — mid-bar — and the whole pattern runs permanently `head % 16` steps early relative to the grid. A
-seek while playing hits the `candidate < position → +16` branch (`:97-106`) and can drop up to a bar of
-onsets. The comment at `:527-530` promises "pick the position back up when it resumes"; the code does not.
+seek while playing hits the `candidate < position → +16` branch (`:98-107`) and can drop up to a bar of
+onsets. The comment at `:616-619` promises "pick the position back up when it resumes"; the code does not.
 *Audible as: after punching in or stopping/starting, the drums never line up with the rest of the set.*
 Zero coverage today: `setPlayHead` / `PositionInfo` / `AudioPlayHead` appear **nowhere** in `Tests/`.
 
 **B3 — The kit goes silent after enough recalls, and RAM creeps until it does.**
 `applyMetadata` calls `samples.addFile()` for all 12 lanes on **every** `setStateInformation`
-(`PluginProcessor.cpp:823-838`) with no path dedupe, and the registry is append-only — an id is
+(`PluginProcessor.cpp:994-1009`) with no path dedupe, and the registry is append-only — an id is
 "never removed, never moved, never reused" (`SampleStore.h:49`) up to `maxSamples = 512`
 (`SampleStore.h:62`), after which `addSample` returns 0 forever (`SampleStore.cpp:123-131`). Live calls
 state-set on set load, preset recall, track duplicate and its own device undo: ~12 ids a pop, so after
@@ -86,18 +100,18 @@ wasted each time. No test catches it — all four round-trip tests build a fresh
 
 **B4 — Undo is cosmetic and self-erasing.**
 Edits push the encoded 395-char pattern string into the tree with the undo manager
-(`PluginProcessor.cpp:693`), and transactions exist, so Ctrl+Z would restore the *string* — but
+(`PluginProcessor.cpp:864`), and transactions exist, so Ctrl+Z would restore the *string* — but
 `GrooveboxProcessor` is only an APVTS listener, never a `ValueTree::Listener` (no such listener exists
 anywhere in `Source/`), so the engine atomics are untouched; the next edit or save re-encodes the live
 atomics over the undone string. Also `getUndoManager()` (`PluginProcessor.h:244`) has **no callers**: there
 is no `KeyPressMapping` / `ApplicationCommandTarget` in the repo, so undo cannot be invoked at all. A
-mis-drag that paints a run across a row (`StepGridComponent.cpp:413-426`) is unrecoverable, and "Clear
+mis-drag that paints a run across a row (`StepGridComponent.cpp:507-520`) is unrecoverable, and "Clear
 pattern" (`TransportBar.cpp:345`) / "Clear row" (`ChannelStrip.cpp:424`) fire with no confirmation.
 
 **B5 — A host-automated parameter allocates on the audio thread, and the header says it cannot.**
 `parameterChanged` parses the id with two `juce::String::substring` calls (`PluginProcessor.cpp:92,97`).
 Its own doc comment states *"It can therefore arrive on the audio thread, so it only ever stores atomics"*
-(`PluginProcessor.h:256-261`) — JUCE notifies listeners synchronously from the parameter write, so a
+(`PluginProcessor.h:333-338`) — JUCE notifies listeners synchronously from the parameter write, so a
 Live automation ramp runs exactly that code inside `processBlock`, allocating twice per parameter per
 block across up to 88 lanes. Low severity, but it is a stated invariant that is false.
 
@@ -159,7 +173,7 @@ single sound. It is also the only tier where the current tests are *blind*, so i
 buys the most protection.
 
 **2. Make hits stop clicking and start choking (C1 + C2 + C5).**
-The oldest defect on the list (voice stealing with no fade, `SequencerEngine.cpp:151-159`) is still open,
+The oldest defect on the list (voice stealing with no fade, `SequencerEngine.cpp:152-160`) is still open,
 sample-end cuts click the same way, and choke groups are the one feature the paid competition assumes and
 you do not have. Redrum already solved all three shapes — `DrumEngine.cpp:304-339`, `DrumVoice.cpp:465-492`
 — so this is a port with a known answer, not an invention. Judge it with the level-matched protocol in E3.
@@ -237,7 +251,7 @@ own rule: a test that passes on old code proves nothing.
   existing test `[12]` afterwards. ~6-10 h.
 - **2.4** Make T-PHASE pass: on host takeover and whenever `position` jumps more than one onset, re-arm
   `onsetStep` by scanning the bar the head is in for the first onset ≥ head, instead of clamping a negative
-  distance to zero (`SequencerEngine.cpp:85-106`). ~4-6 h.
+  distance to zero (`SequencerEngine.cpp:86-107`). ~4-6 h.
 - **2.5** Make T-UNDO real: `GrooveboxProcessor` becomes a `ValueTree::Listener`, decodes `"pattern"` back
   into the atomics on change, with a re-entrancy flag so `pushPatternToState` cannot loop. This also makes
   every later pattern feature undoable for free. ~4-6 h.
@@ -246,7 +260,7 @@ own rule: a test that passes on old code proves nothing.
   (`TransportBar.cpp:345`) and "Clear row" (`ChannelStrip.cpp:424`). ~3-4 h.
 - **2.7** Fix B6: light the correct swing-grid button for grid 3, or make the UI write only 2/4 and stop the
   engine honouring 3 — pick one and make the comment and the code agree. ~1 h.
-- **2.8** Re-check the two claims we rejected (`SequencerEngine.h:309` atomic read; no `PresetManager`) —
+- **2.8** Re-check the two claims we rejected (`SequencerEngine.h:373` atomic read; no `PresetManager`) —
   nothing to do, but confirm in the commit message that they were examined. ~0.2 h.
 - **2.9** Green sweep: both test exes, `--parallel 2` build, `launch/` SHA-256 against the artefact tree.
 
@@ -273,11 +287,11 @@ touches the velocity law. No step here is allowed to be reported as better becau
   test. ~3-4 h. **Do not touch any gain constant to make this sound better — that is the silent-compensation
   line.**
 - **3.4** Kernel edge renormalisation: taps that fall off either end of the source are skipped, costing level
-  over the first/last ~12 samples of a hit — exactly where a transient lives (`SequencerEngine.cpp:425-445`,
+  over the first/last ~12 samples of a hit — exactly where a transient lives (`SequencerEngine.cpp:514-534`,
   the comment admits it). Renormalise by the weights actually used. Hoist `kernelTable.getWeights` out of the
-  per-sample loop where the increment is constant (`:422-423`). Gate: level of the first 12 samples of a
+  per-sample loop where the increment is constant (`:511-512`). Gate: level of the first 12 samples of a
   pitched-up kick, old vs new, level-matched overall. ~4-6 h.
-- **3.5** Per-hit pitch drop: multiply `increment` (set once at note-on, `:130-131`) by a ramp for the hit —
+- **3.5** Per-hit pitch drop: multiply `increment` (set once at note-on, `:131-132`) by a ramp for the hit —
   808-style kick bloom, not reachable from Live's sample page. Visible per-lane amount parameter only, never
   automatic. ~4 h.
 - **3.6** Optional, only if 3.1-3.5 land cleanly: true-peak metering on the master path
@@ -289,15 +303,20 @@ touches the velocity law. No step here is allowed to be reported as better becau
 ### E4 — Phase 4: variation (the first new features, on a payload that can hold them)
 
 - **4.1** Per-step payload **v2**: one byte per step (or a compact parallel property) instead of the 395-char
-  string that currently encodes on/off and 1/100-quantised velocity (`PluginProcessor.cpp:673-693`), with v1
+  string that currently encodes on/off and 1/100-quantised velocity (`PluginProcessor.cpp:844-864`), with v1
   still readable, **a `stateVersion` on the root tree** (there is no version today — compatibility rests on
-  `hasProperty("swing")` at `:869` and `row.length() == 16` at `:787`, and rows are silently truncated at
-  `:781`), and `shiftChannelRow` (`:334-361`) taught to carry every per-step field it now moves — today it
+  `hasProperty("swing")` at `:1040` and `row.length() == 16` at `:958`, and rows are silently truncated at
+  `:952`), and `shiftChannelRow` (`:334-374`) taught to carry every per-step field it now moves — today it
   copies only pattern + velocity and would silently drop the new ones. Gate: old-state → v2 migration
   round-trip, plus a round-trip test that asserts each field survives a shift. ~6-8 h.
+  **Done 2026-11-15, in `4628335`** (its payload half; the probability byte rode in the same commit). See the
+  4.1 record in section G. The line citations in this entry are `460b3bf` numbers and are now stale — see 6.6.
 - **4.2** Seeded per-step probability + a single "mutate" amount. RNG keyed on (bar, step) so offline render
   equals live playback and A/B stays reproducible. Gate: at probability 1.0 the output is bit-identical to
   today's; at 0.5 across 64 bars it is deterministic. ~4 h.
+  **Done 2026-11-16, in two steps (`4628335` then `75fafb3`, which put it on the grid).** Both gate halves are
+  measured, not asserted: the bit-identity at probability 1.0 is `[28]`'s fingerprint of one fixed kit, and the
+  determinism at half the knob is `[29]`'s seed 7 / seed 8 fingerprints. See the 4.2 record in section G.
 - **4.3** Humanize: microtiming offsets applied inside `stepOnsetInSteps` (`:57-75`) so the ≤1-sample
   invariant is preserved, plus velocity jitter. Clamp offsets so no onset can land behind the head (that is
   the `:105` whole-bar skip path) and re-run T-PHASE. ~3-4 h after 4.1.
@@ -306,6 +325,9 @@ touches the velocity law. No step here is allowed to be reported as better becau
   one gate when it moves two things. See the 4.3b record at the end of section G.
 - **4.4** 4-slot pattern bank per channel (four pattern strings on the tree, no file browser), with a
   bar-counter evolve option. ~6 h.
+  **Done 2026-11-16.** Four slots per lane as `pattern` plus sparse `pattern1..pattern3`, one selected-slot
+  pointer and one rotate period per lane, both tree state and not parameters, and a mark row in each lane's
+  label column. See the 4.4 record in section G.
 - **4.5** Sub-step onset keystone → ratchet/rolls. This rewrites the three onset functions into
   (step, subslot) and is the highest-risk item in the plan because it touches the split loop repaired in 2.3
   — do it only after Phase 2 is a week old and stable. ~6-8 h. Alternative that avoids the keystone:
@@ -328,7 +350,7 @@ touches the velocity law. No step here is allowed to be reported as better becau
 - **5.3** Audition: wire `previewChannel` behind the audio-thread command queue introduced by 2.3, or delete
   it. Leaving a message-thread `triggerChannel` in the tree is a loaded gun. ~2-4 h.
 - **5.4** Live programs/kits: `getNumPrograms() > 1` with names, i.e. a preset browser in Live's own
-  browser. Partly blocked by path-only sample refs (`:824-837`). ~16-24 h.
+  browser. Partly blocked by path-only sample refs (`:995-1008`). ~16-24 h.
 - **5.5** Pattern → MIDI clip export by drag. `juce::MidiFile` is already linked; the drag idiom exists in
   `skulpt/Source/SequenceView.cpp:507` and `redrum/Source/PluginProcessor.cpp:3502-3545`. ~4-8 h.
 - **5.6** Fit a laptop. The floor moved under this step twice: `PluginEditor.cpp`'s `editorWidth`
@@ -380,7 +402,78 @@ touches the velocity law. No step here is allowed to be reported as better becau
   ~1-2 h of thinking, no build.
 - **6.5** Only if 5.x landed: the positioning sentence to put in the README — *"the free VST3 drum sequencer
   that stays out of your arrangement: drop your own sample on any of 12 rows, paint the pattern, export it as
-  MIDI, automate everything from the host."*
+  MIDI, automate everything from the host."* **Two of its four clauses are not true of this build, and the
+  sentence must not ship as written:** there is no MIDI export and no drag-out at all — `MidiFile`,
+  `startWholeFileDrag` and `DragAndDropContainer` return zero hits in `Source/`, which is what makes the
+  README's *"nothing that carries a pattern out of the plugin"* an accurate limitation rather than a hedge —
+  and *"automate everything"* overstates the 116 parameters by exactly the thing 4.4 added: the pattern grid
+  and the slot a lane plays are tree state, deliberately not parameters, so a host cannot draw a slot change
+  in. Either build the export, or drop both clauses; a positioning sentence is a spec like any other line in
+  the README.
+- **6.6** Re-point the `460b3bf`-era citations in this file, from the table below. The 4.4 docs sweep
+  renumbered every citation its mechanical map could resolve — 43 of them, checked idempotent — and refused
+  these, because the map had no equal block to anchor them on. Measured against the tree each entry names,
+  **13 were right where they were written and only went stale later**; **5 were wrong the day they were
+  typed**, and a sixth was half right (of `:290,138` one number landed on the gain line and the other landed
+  on a MIDI argument) — and one of the five points past the end of a file that did not reach that far, which
+  says it was written from a dirty working copy rather than from any commit. Shifting a number that was never
+  right is arithmetic on a mistake, so they stay at HEAD's text, listed in `out/cite-pin.txt` with the reason,
+  and the finding lives here — `out/` is gitignored and a tool's opinion is not a record. Re-check the
+  sentence beside every one of them, not just the number: a faithful new figure buys confidence in prose that
+  may itself have moved (row B5 — the *symbol* shifted, and the *"has no callers"* claim moved the other way
+  and is now simply false; row 3.x — the pointer moved *and* 4.3b made "gain only" wrong).
+
+  | where | sentence cites | right at `460b3bf` | in the tree today |
+  |---|---|---|---|
+  | B1 | `PluginProcessor.cpp:183` (engine renders the block) | yes | `processBlock` at `PluginProcessor.cpp:272`, the call at `:289` |
+  | B1 | `SequencerEngine.cpp:296-320` (the host branch) | yes | `renderVoices` at `:938`, the boundary walk at `:1325-1375` |
+  | B1 | `SequencerEngine.cpp:449-452` (`outLeft[i] += …`) | **no — the accumulate was at 445, four lines above** | `SequencerEngine.cpp:1250` |
+  | B2 | `SequencerEngine.cpp:525-532` (position from PPQ, disarm) | yes | `:1425-1445`, with `position = hostHead` at `:1472` |
+  | B4 | `SampleStore.h:62` (the 512 ceiling) | yes | unchanged, `SampleStore.h:62` |
+  | B4 | `SampleStore.cpp:123-131` (`addSample` returns 0) | yes | `SampleStore.cpp:151` |
+  | B5 | `PluginProcessor.h:244` (`getUndoManager`, "no callers") | yes | `PluginProcessor.h:460`; **it has a caller now** — `PluginEditor.cpp:166` |
+  | B6 | `PluginProcessor.cpp:92,97` (two `substring` parses) | yes | `parameterChanged` at `:113`, and the parse is **gone** — ids are looked up in `Params::laneTargets()` |
+  | B7 | `TransportBar.cpp:235-237` (audition) | **no — that is the swing grid** | no audition call exists in `TransportBar.cpp` at all |
+  | B7 | `PluginProcessor.cpp:884` (`previewChannel`) | yes | `PluginProcessor.cpp:1682` — still no UI caller |
+  | B7 | `SampleStore.h:88` (`getSampleIds`) | yes | `SampleStore.h:108`, `SampleStore.cpp:225` |
+  | F1 | `PluginProcessor.cpp:673-693` (1/100-quantised velocity) | yes, and discharged by 4.1/4.2 | the codec is `slotPropertyName`/`pushPatternToState`/`applySlotFromState` at `:1136-1300` |
+  | F1 | `:334-361` (`shiftChannelRow`) | yes | `PluginProcessor.cpp:522` |
+  | U5 | `ChannelStrip.cpp:197-209` (the `tight` branch) | yes | `ChannelStrip.cpp:252-265` — still unreachable, which is 5.6 |
+  | E2 | `SequencerEngine.cpp:368,457` (`free()` via a refcount) | **no — no refcount, no `free` in that file, at any baseline** | the registry is append-only with dedupe-not-free; the sentence is describing a design that was rejected |
+  | 3.x | `SequencerEngine.cpp:290,138` (velocity is gain only) | **half — 138 was the gain line, 290 a MIDI argument** | the gain is `SequencerEngine.cpp:337`, inside `trigger` at `:296` — and the sentence is out of date too, since 4.3b velocity is gain *and* tone |
+  | 2.8 | `SequencerEngine.h:317` (the only read of `soundingChannels`) | **no — 317 was `double position = 0.0;`, the read was 309** | `SequencerEngine.h:642` |
+  | P2 | `PluginProcessor.cpp:10` (the hand-written id list) | yes | `:24`, derived from `Params::globalIds()` since 4.2 |
+  | 4.x | `SequencerEngine.cpp:858` (`dropRemaining` per sample) | **no — the file was 618 lines then, so it was written from a dirty copy** | `SequencerEngine.cpp:1257-1264`, inside `renderVoice` at `:981` |
+
+  ~1-2 h, no build. Two things this list does *not* cover, and the re-pointing has to:
+
+  - The table is the subset a script can judge. The audit names a symbol in 5 of these citations and
+    cannot tell whether the rest point anywhere useful, because the sentence describes an effect
+    ("renders the whole block twice", "silently truncated") rather than an identifier — and that blind
+    spot is a number the run itself prints, `no symbol named, so a human must judge` (49 across the four
+    docs today, every one listed), not one this entry has to keep re-typing. So sections B, C and
+    the E-plan carry the same `460b3bf` numbers as these 19 rows whether or not they appear here.
+  - A sweep shift preserves what HEAD's number pointed at — it does not repair a pointer that was already
+    wrong at HEAD. That is why section A's baseline sentence now covers A3 as well: the 4.4 sweep had moved
+    `SequencerEngine.h:309` — right at `460b3bf`, the read of `soundingChannels` — to line 373 of that file,
+    which is right at neither baseline, and the pin put it back. The rule for a doc section that names its
+    tree is that its numbers belong to that tree, and a drift sweep has no business touching them. A number
+    quoted as a mistake is written as "line 373", never in the `file:373` form: the colon form is the grammar
+    both scripts read as a pointer, so a wrong figure narrated in prose would be judged, shifted and — worst
+    — re-verified as if it were one.
+
+  Afterwards the pair of scripts is the check, in this order: `python out/cite-sweep.py . -apply`, then re-run
+  it and require `to correct: 0, unresolvable: 0` on the second pass; then `python out/cite-audit.py .` and
+  require `UNPINNED miss ... : 0`, which says every citation the audit can judge either points at its symbol
+  or is excepted with a reason it prints — one of three: a range in `out/cite-pin.txt`, an indented table row
+  that lists citations rather than pointing, or a sentence that names the commit its own number belongs to.
+  The last one exists because pins are HEAD coordinates and prose written this phase has no HEAD line to pin;
+  it is checked *after* the symbol test so it cannot cost a passing citation, it prints every exemption, and
+  both sides were measured — the sentence above about `SequencerEngine.h:309` reports `BASE`, and a copy of
+  that file with the commit id struck out of the same sentence reports it as `MISS`. Both gates were proven
+  able to go red on this lane's own work: a hand-broken `Source/MasterBus.h:150` came back as
+  `AGENTS.md:95 ... -> :150`, and the 15 lines the audit reported as MISS before the pin list existed are
+  what the pin list is for.
 
 ---
 
@@ -673,7 +766,7 @@ nobody listening for it.
 
 Shape: an exponential over a fixed 30 ms reaching five time constants, so the last sweep sample is snapped to the
 nominal rate exactly (`Layout::pitchDropSweepSeconds`, `pitchDropTimeConstants`, `maxPitchDropSemitones`,
-`Common.h:193-195`; `coefficient = exp(-5/1323) = 0.996228` at 44.1 kHz). `voice.increment` keeps its old
+`Common.h:223-225`; `coefficient = exp(-5/1323) = 0.996228` at 44.1 kHz). `voice.increment` keeps its old
 meaning — the settled rate, the note — and the fall lives in two new mutable voice fields, `dropExcess` and
 `dropRemaining`, recursed once per output sample at `SequencerEngine.cpp:858`. The window cost is one more row
 per lane: `ChannelStrip.cpp:249` 205 to 219 px and the editor 830 to **844 px** at 1240 wide (the width is
@@ -857,7 +950,7 @@ it, so it waits for the apps to be closed rather than fighting them.
 **4.1 — the step payload says what a step is (done 2026-11-15).** The grid now travels as `v2:` + base64 of two
 bytes a step — the switched-on flag, then the level as a 7-bit MIDI number — with `stateVersion: 2` on the root
 of the tree beside it. `[27]` is the new section, `[19]`'s record probe was rewritten to read the bytes, and
-`Source/PluginProcessor.cpp:772-961` is the codec.
+`Source/PluginProcessor.cpp:943-1132` is the codec.
 
 | | v1 rows, on this build | v2 |
 |---|---|---|
@@ -1376,3 +1469,99 @@ already running the `b603107` payload, which `4724922` documents. Two consequenc
 `launch/` are byte-for-byte what a build of `71c04fd` produces. The rule that was missing from
 AGENTS.md and is now in it: `tasklist` says which process *might* hold the bundle, module enumeration
 says whether it does.
+
+### 4.4 — four patterns per lane and a bar counter (done 2026-11-16)
+
+The plan asked for *"4-slot pattern bank per channel (four pattern strings on the tree, no file browser),
+with a bar-counter evolve option. ~6 h."*, and that is what shipped: no browser, no song mode, no slot
+change the host can automate. The genre presets that 4.3b left undocumented in the shipped README were folded
+in here, since the bank is what they finally have somewhere to go.
+
+**The law, in one place.** `Layout::numPatternSlots` is 4 (`Source/Common.h:34`) and slot 0 is the grid that
+already existed: the property is still `pattern`, with the same bytes, so a session written before the bank
+opens as one lane, one pattern, pointed at slot 0, counter shut. The other three are **sparse** —
+`slotPropertyName` (`Source/PluginProcessor.cpp:1136`) names them and `slotCarriesAnything` (the next function,
+at `:1143`) decides whether they are on the tree at all, so an empty slot costs a session nothing and the
+census a test can read is *which names are present*, not a count. Which slot a bar sounds is
+`SequencerEngine::slotPlaying` (`Source/SequencerEngine.cpp:230`): it starts at the lane's selected slot and
+walks **forward over the filled ones only**, so two filled slots of four alternate those two rather than going
+quiet for the other two, and one filled slot never rotates at all. `isSlotFilled` (`:208`) is the one answer
+to "does this slot hold something" and is shared by the dot, the rotation and the copy rule — the engine's own
+fill test used to be a width mask over the first cell, and the comment at `:247` records why that is a second
+answer to the same question rather than a faster one. The rotate ladder lives in `Layout::evolvePeriods`
+(`Source/Common.h:48`, `{ 0, 1, 2, 4, 8 }`) and **belongs to the control, not the law**: `slotPlaying` divides
+by whatever the state holds, so a period the panel never offers still rotates evenly — which is a check, not a
+hope (`[32]`).
+
+Three helpers went into `Source/Common.h` for the same reason: `levelByte` (`:340`), `chanceByte` (`:345`) and
+`cellSaysAnything` (`:359`). The velocity mark, the probability copy and the save path all need "what does
+this cell store, and is it worth storing"; that sentence written three times is how a corner value quietly
+retunes a kit, and it already bit once this year with `allParameterIds`.
+
+**The panel.** Each lane's label column carries a strip of marks (`getSlotDotBounds` at
+`Source/StepGridComponent.cpp:223`, hit-tested by `bankTargetAt` at `:262`, dispatched at `:745`): four slot
+marks — solid when filled, outline when not, a white ring on the selected one and a dot inside a mark when the
+sounding slot is not the selected one — then a copy mark, then the rotate chip. Copy duplicates the row into
+the next *unfilled* slot starting after the selected one and moves the pointer there
+(`GrooveboxProcessor::duplicateChannelRowToNextSlot`, `Source/PluginProcessor.cpp:642`, which ends by storing
+the new pointer at `:676`); it is wrapped in `beginTransaction ("Duplicate row")` at
+`Source/StepGridComponent.cpp:756` so one undo takes the copy and the pointer back together, and a half-copied
+bank cannot be a thing. `cycleChannelEvolve` (`:615`) walks the ladder and wraps back to off,
+because off has to be reachable by the same gesture that turns it on.
+
+**An edit writes the ring, never the sounding slot** — with a period above one bar those are different
+patterns, and a lane the user is editing must not change under them because a bar boundary arrived.
+
+**It is state, not a parameter.** `slots` and `evolve` are tree properties on the atomics (`pushBankToState`
+at `Source/PluginProcessor.cpp:1402`, `applyBankFromState` at `:1434`, gated by `isGridProperty` at `:1457`)
+and they are deliberately **not** in the 116-parameter table, so the host cannot ramp a slot change and Live's
+arrangement cannot draw one. The README says so next to the limitation about no song mode, and the reason it
+stays that way is that a slot is a *pattern*, and the other patterns — the grid itself — are not automatable
+either. Automating one and not the other is the inconsistency someone finds mid-take.
+
+**Run.** **422 smoke checks / 0 failures** (`out/smoke-44-final.txt`), **441 layout checks / 0 problems**
+(`out/layout-44k.txt`), **85 planner checks / 0 problems** (`out/plan-44-final.txt`). The bank's own half is
+57 checks inside `[32]` and 67 inside the layout suite's *bank strip in the label column* block.
+`[28]`'s fixed-kit fingerprint is `4BC3AA231178C071`, unchanged: **the bank costs nothing in level**, which is
+the only audio claim this step makes and is a machine answer, not a listening one. Rotation is asked as a
+function of the bar number alone, and the same bank prepared at a 1024-sample block and at a 256-sample block
+sounds the same slot on the same bar — block-size dependence is the class of defect this suite was blind to
+for four phases, so it is gated here rather than assumed.
+
+**Negative controls.** Ten rounds, 47 arm runs, **49 of the bank's 49 checks killed, 0 survived every arm**
+(`out/killed.txt`: *49 checks in the bank section, 61 distinct BAD lines across 47 arm logs*). Four findings
+decided how the arms had to be built, and they are in `AGENTS.md`:
+
+- a dead pixel in that strip is refused **three times in series** — `channelAtY`'s sliver rule,
+  `bankTargetAt`'s strip guard, then each control's own rectangle — so any one guard hides an arm, and the
+  panel has to be broken at each layer to show that layer bites;
+- a colour claim is read as **absolute colour**, not as a render diff, because an arm that moves the palette
+  moves both sides of the comparison;
+- a rotation mirror means nothing until **both lanes hold different slot numbers**; with two lanes on the same
+  slot, every wrong answer is correct;
+- a parity arm (`% 2` instead of the ladder) is **invisible to a determinism check**, because one render calls
+  `getSlotDotBounds` 48 times and the averages hide it — the gate has to name the period.
+
+**Docs.** README gained the feature row, the persistence row, the *Four patterns per lane* section and the
+plain *How the pattern bank works*; `installer/README.txt` the plain-text mirror; and the limitation that read
+*"One 16-step bar; there is no pattern chaining or song mode yet."* is replaced by the honest one — four grids
+and a fixed period, still no arrangement, and nothing that carries a pattern out of the plugin. Both were
+re-read against the code, not against each other.
+
+**The citation sweep, and what it could not do.** `out/cite-sweep.py` renumbered 43 doc citations from
+`bcd6188` onto this tree, and a second pass finds nothing — `to correct: 0`, `unresolvable: 0`.
+`out/cite-audit.py` then asked the stronger question, does the cited line sit in the symbol the sentence
+names, and returned 15 MISSes, every one of them a citation that was **already wrong at HEAD**, in the
+sections written from the `460b3bf` audit. Shifting those would have made a bad pointer look renumbered, so
+they are pinned — restored to HEAD's text, with the reason in the pin list — and their verified current
+locations are recorded as **6.6**. The audit's gate is now `UNPINNED miss: 0`. One case is the argument for
+running both: section A3's `.load()` pointer had drifted from `SequencerEngine.h:309` — right at the baseline
+its own section names — to line 373 of that file, through this very sweep, which is correct arithmetic on a
+number that was stale where it started. It is back at 309, and 6.6 says where the read actually is.
+
+**Not done here, on purpose.** `launch/`, the installer and post-install verification stay with the shipping
+lane, and the export hashes `AGENTS.md` quotes belong to that lane's build rather than to a feature commit.
+Item #14's three planner/panel contracts are the owner's to decide and were not invented here. And the bank
+has no check that renders *across* a slot change with a long release: what protects a rotation that lands a
+new bar's hit on the previous bar's tail is 3.1's steal hand-off, which is general and was not written for
+this — the gap is stated under section A's table instead of being glossed over.

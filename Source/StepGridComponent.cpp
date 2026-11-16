@@ -198,6 +198,89 @@ StepGridComponent::Cell StepGridComponent::cellAt (juce::Point<int> position) co
     return { channel, step };
 }
 
+//==============================================================================
+// Pattern bank: geometry and hit testing
+
+bool StepGridComponent::hasBankStrip (int channel) const noexcept
+{
+    // Row and column, both, because a control that is drawn but not clickable and one
+    // that is clickable but never drawn are the same bug seen from either end.
+    return rowHeight >= bankStripHeight + bankNameLineHeight
+        && labelWidth >= bankMinimumLabelWidth
+        && juce::isPositiveAndBelow (channel, Layout::numChannels);
+}
+
+juce::Rectangle<int> StepGridComponent::getBankStripBounds (int channel) const
+{
+    const auto label = getLabelBounds (channel);
+
+    if (label.isEmpty() || ! hasBankStrip (channel))
+        return {};
+
+    return { label.getX(), label.getBottom() - bankStripHeight, label.getWidth(), bankStripHeight };
+}
+
+juce::Rectangle<int> StepGridComponent::getSlotDotBounds (int channel, int slot) const
+{
+    const auto strip = getBankStripBounds (channel);
+
+    if (strip.isEmpty() || ! juce::isPositiveAndBelow (slot, Layout::numPatternSlots))
+        return {};
+
+    return { strip.getX() + bankEdgePad + slot * (bankSlotDotSize + bankSlotDotGap),
+             strip.getY() + (strip.getHeight() - bankSlotDotSize) / 2,
+             bankSlotDotSize, bankSlotDotSize };
+}
+
+juce::Rectangle<int> StepGridComponent::getSlotCopyBounds (int channel) const
+{
+    const auto strip = getBankStripBounds (channel);
+
+    if (strip.isEmpty())
+        return {};
+
+    return { strip.getX() + bankEdgePad + bankDotsWidth + bankGroupGap,
+             strip.getY(), bankCopyWidth, strip.getHeight() };
+}
+
+juce::Rectangle<int> StepGridComponent::getEvolveChipBounds (int channel) const
+{
+    const auto strip = getBankStripBounds (channel);
+
+    if (strip.isEmpty())
+        return {};
+
+    // The chip takes whatever the label column has left, down to the width that made
+    // the strip worth drawing at all -- so widening the window widens the word, not the
+    // gap before it.
+    return { strip.getX() + bankContentLeftPad,
+             strip.getY() + 1,
+             strip.getWidth() - bankContentLeftPad - bankEdgePad,
+             strip.getHeight() - 2 };
+}
+
+StepGridComponent::BankTarget StepGridComponent::bankTargetAt (juce::Point<int> position) const
+{
+    // The row comes from the grid's own row maths, so a click in the gap between two
+    // rows belongs to neither lane's strip.
+    const auto channel = channelAtY (position.y);
+
+    if (channel < 0 || ! getBankStripBounds (channel).contains (position))
+        return {};
+
+    for (int slot = 0; slot < Layout::numPatternSlots; ++slot)
+        if (getSlotDotBounds (channel, slot).contains (position))
+            return { BankControl::slot, channel, slot };
+
+    if (getSlotCopyBounds (channel).contains (position))
+        return { BankControl::copy, channel, processor.getChannelSlot (channel) };
+
+    if (getEvolveChipBounds (channel).contains (position))
+        return { BankControl::evolve, channel, processor.getChannelEvolveBars (channel) };
+
+    return {};
+}
+
 void StepGridComponent::refresh()
 {
     repaint();
@@ -229,6 +312,15 @@ void StepGridComponent::paint (juce::Graphics& g)
         // --- Label column: name, plus a glow while the channel is firing. ---
         const auto label = getLabelBounds (channel);
 
+        // The bank strip is cut off the bottom of the column, so the name and the activity
+        // dot share what is left of it. With no strip — a row too short for a name line and
+        // a strip both — the name keeps the whole column exactly as it did before the bank
+        // existed, which is the case this layout has to stay correct for rather than
+        // exercise: nothing in the resize limits produces it, but a component this cheap to
+        // ask is not worth a hardcoded 108.
+        const auto strip = getBankStripBounds (channel);
+        const auto nameLine = strip.isEmpty() ? label : label.withTrimmedBottom (strip.getHeight());
+
         if (processor.isChannelSounding (channel))
         {
             g.setColour (channelColour.withAlpha (0.18f));
@@ -237,16 +329,18 @@ void StepGridComponent::paint (juce::Graphics& g)
             g.setColour (channelColour);
             const float dotSize = 7.0f;
             g.fillEllipse ((float) label.getRight() - 4.0f - dotSize,
-                           (float) label.getCentreY() - dotSize * 0.5f,
+                           (float) nameLine.getCentreY() - dotSize * 0.5f,
                            dotSize, dotSize);
         }
 
         g.setColour (Colours::text);
         g.setFont (nameFont);
         g.drawText (processor.getChannelName (channel),
-                    label.withTrimmedRight (16),      // leave room for the activity dot
+                    nameLine.withTrimmedRight (16),   // leave room for the activity dot
                     juce::Justification::centredLeft,
                     true);                            // ellipsise long names
+
+        paintBankStrip (g, channel);
 
         // --- Steps. ---
         for (int step = 0; step < Layout::numSteps; ++step)
@@ -513,10 +607,172 @@ void StepGridComponent::paintValueOverlay (juce::Graphics& g)
 }
 
 //==============================================================================
+// Pattern bank painting
+
+void StepGridComponent::paintBankStrip (juce::Graphics& g, int channel)
+{
+    const auto strip = getBankStripBounds (channel);
+
+    if (strip.isEmpty())
+        return;
+
+    const auto colour = processor.getChannelColour (channel);
+    const auto selected = processor.getChannelSlot (channel);
+    const auto playing = processor.getChannelSlotPlaying (channel);
+    const auto period = processor.getChannelEvolveBars (channel);
+
+    /**
+        The four marks, left to right.
+
+        Filled and empty are drawn as *different shapes* rather than two alphas of one,
+        because the distinction the user is being asked to make is "does this slot hold a
+        record" — a thing they cannot see any other way without pointing the lane at it —
+        and a dim version of a colour is the reading that survives least well against a
+        lane whose own colour is already pale. The mark's size is the same either way, so
+        the four of them stay one row of four boxes whatever they hold. It is the engine's
+        answer, so the mark, the rotation and the copy target cannot disagree; see
+        `SequencerEngine::isSlotFilled` for why a row of off steps with quiet levels counts.
+    */
+    for (int slot = 0; slot < Layout::numPatternSlots; ++slot)
+    {
+        const auto dot = getSlotDotBounds (channel, slot).toFloat().reduced (0.5f);
+
+        if (processor.isChannelSlotFilled (channel, slot))
+        {
+            g.setColour (colour.withMultipliedAlpha (0.75f));
+            g.fillRoundedRectangle (dot, 2.0f);
+        }
+        else
+        {
+            g.setColour (Colours::chipBorder);
+            g.drawRoundedRectangle (dot, 2.0f, 1.0f);
+        }
+
+        // The ring goes *outside* the mark it names, at one px into the two px gap, so a
+        // selected mark keeps all of its fill. Inside would have eaten the very thing the
+        // mark is reporting: whether the slot has anything in it.
+        if (slot == selected)
+        {
+            g.setColour (Colours::text);
+            g.drawRoundedRectangle (dot.expanded (1.0f), 3.0f, 1.0f);
+        }
+
+        // What is actually sounding, when that is not what the cells are editing. The
+        // outline stays on the selection — it is the editing pointer, and repainting it
+        // every four bars would read as an edit nobody made — so the rotation is a second,
+        // quieter mark inside.
+        if (slot == playing && playing != selected)
+        {
+            g.setColour (Colours::text);
+            g.fillEllipse (dot.getCentreX() - 1.5f, dot.getCentreY() - 1.5f, 3.0f, 3.0f);
+        }
+    }
+
+    /**
+        The duplicate mark, and whether it can do anything.
+
+        `canCopySomewhere` walks the slots exactly the way
+        `GrooveboxProcessor::duplicateChannelRowToNextSlot` does — cyclically, from the
+        selected one, skipping what is already filled — because that is the only way the
+        flat version of this glyph is a true statement: a click here would find nowhere to
+        go. A control painted identically whether or not it has an effect is a control that
+        lies, and "all four are full" is otherwise invisible from the row you are looking at.
+    */
+    auto canCopySomewhere = false;
+
+    for (int offset = 1; offset < Layout::numPatternSlots; ++offset)
+        if (! processor.isChannelSlotFilled (channel, (selected + offset) % Layout::numPatternSlots))
+        {
+            canCopySomewhere = true;
+            break;
+        }
+
+    const auto copy = getSlotCopyBounds (channel).toFloat();
+    const auto markColour = canCopySomewhere ? Colours::text : Colours::chipBorder;
+
+    const juce::Rectangle<float> behind (copy.getX() + 5.0f, copy.getY() + 1.5f, 6.0f, 6.0f);
+    const juce::Rectangle<float> before (copy.getX() + 1.5f, copy.getY() + 5.0f, 6.0f, 6.0f);
+
+    g.setColour (markColour.withAlpha (0.55f));
+    g.drawRoundedRectangle (behind, 1.0f, 1.0f);
+
+    // The front square occludes the back one, which is what makes two outlines read as
+    // "a copy" rather than "two slots".
+    g.setColour (Colours::background);
+    g.fillRoundedRectangle (before, 1.0f);
+
+    g.setColour (markColour);
+    g.drawRoundedRectangle (before, 1.0f, 1.0f);
+
+    /**
+        The rotate chip: how many bars this lane holds a slot for.
+
+        Lit and worded rather than only worded, because "off" and "1 bar" are the same
+        behaviour seen two ways and a lane that is rotating is a lane whose grid on screen
+        is not the grid you are hearing — a fact worth a colour, not just a number.
+    */
+    const auto chip = getEvolveChipBounds (channel).toFloat().reduced (0.5f);
+    const auto rotating = period > 0;
+
+    if (rotating)
+    {
+        g.setColour (colour.withMultipliedAlpha (0.28f));
+        g.fillRoundedRectangle (chip, 2.0f);
+    }
+
+    g.setColour (rotating ? colour : Colours::chipBorder);
+    g.drawRoundedRectangle (chip, 2.0f, 1.0f);
+
+    g.setColour (rotating ? Colours::text : Colours::text.withAlpha (0.5f));
+    g.setFont (juce::Font (juce::FontOptions().withHeight (9.0f)));
+
+    // Ellipsised, because a period a newer build put in the session is not on this
+    // build's ladder and may be any width of number: the chip clips itself rather than
+    // drawing over the row it belongs to.
+    g.drawText (period <= 0 ? "off" : (period == 1 ? "1 bar" : juce::String (period) + " bars"),
+                chip, juce::Justification::centred, true);
+}
+
+//==============================================================================
 // Mouse
 
 void StepGridComponent::mouseDown (const juce::MouseEvent& e)
 {
+    // The bank answers first, and answers in every mode: it points a lane at a different
+    // pattern or changes how often that pointer moves, and neither of those is an edit of
+    // the cell under the cursor — so an open velocity overlay is not a reason to ignore it,
+    // and the label column is where `cellAt` already gives up.
+    if (const auto bank = bankTargetAt (e.getPosition()); bank.control != BankControl::none)
+    {
+        switch (bank.control)
+        {
+            case BankControl::slot:
+                processor.setChannelSlot (bank.channel, bank.index);
+                break;
+
+            // One undo step for what is two writes: the copied slot's record and the
+            // selection that lands on it. Left ungrouped, undo would take the copy back
+            // and leave the lane pointing at a slot the user never selected.
+            case BankControl::copy:
+                processor.beginTransaction ("Duplicate row");
+                processor.duplicateChannelRowToNextSlot (bank.channel);
+                break;
+
+            case BankControl::evolve:
+                processor.cycleChannelEvolve (bank.channel);
+                break;
+
+            case BankControl::none:
+                break;
+        }
+
+        // The processor's own onStateChanged reaches refresh() through the editor, but
+        // that hook is optional and a headless caller has none — and a click that moves a
+        // mark is not finished until the mark has moved.
+        repaint();
+        return;
+    }
+
     const auto cell = cellAt (e.getPosition());
 
     if (cell.channel < 0)               // label column or outside the grid
@@ -715,6 +971,19 @@ void StepGridComponent::timerCallback()
         if (sounding != lastSounding[(size_t) channel])
         {
             lastSounding[(size_t) channel] = sounding;
+            needsRepaint = true;
+        }
+
+        // Which slot a lane is sounding is decided on the audio thread from the bar count,
+        // and it is not a parameter — so nothing notifies the panel that the lane's centre
+        // dot has moved to another mark. Same reason the playhead is watched rather than
+        // trusted. With every lane's chip shut the answer cannot change, and 12 atomic
+        // loads at 30 ms is nowhere near the cost of finding that out.
+        const auto playing = processor.getChannelSlotPlaying (channel);
+
+        if (playing != lastPlaying[(size_t) channel])
+        {
+            lastPlaying[(size_t) channel] = playing;
             needsRepaint = true;
         }
     }

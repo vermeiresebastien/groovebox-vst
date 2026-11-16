@@ -8161,6 +8161,807 @@ int main()
     }
 
     //======================================================================
+    /**
+        The bank: four pattern slots per lane, and a bar counter that walks a lane over
+        the filled ones.
+
+        The claims, each with the check that can go red on it:
+
+          * a session that has never heard of the bank loads, plays and saves exactly as
+            it did. The listening half of that is [28]'s fingerprint; this section holds
+            the storage half — one record, of the same width as before, no bank lists;
+          * every cell seam writes the lane's *selected* slot and no other slot;
+          * the selection and the period are session data, so both round-trip;
+          * the rotation is a pure function of the bar, walks only the slots that hold a
+            record, starts from the selected one, and does not care about the block size
+            or about the variation knobs;
+          * a slot this build cannot read is held rather than zeroed onto disk, and an
+            edit in it is what takes it over.
+    */
+    std::printf ("\n[32] a lane has four patterns and a bar counter\n");
+    {
+        /**
+            Every step record the tree holds, sorted by name.
+
+            Sorted, and then read positionally as slot order, because `ValueTree` makes no
+            promise about the order its properties come back in — and because a count of
+            them would be satisfied by any four names. The census checks below state the
+            names, which is what makes reading `names[2]` as slot 2 a claim rather than a
+            hope: this build's four names (`pattern`, `pattern1`, `pattern2`, `pattern3`)
+            sort into slot order, and the check that says so is the first one in part b.
+
+            The alternative — restating `slotPropertyName` here — is what makes an absence
+            check unfalsifiable: a wrong name makes "there is no pattern2" trivially true.
+        */
+        auto recordNames = [] (GrooveboxProcessor& p)
+        {
+            juce::StringArray names;
+            const auto& state = p.getValueTreeState().state;
+
+            for (auto i = 0; i < state.getNumProperties(); ++i)
+            {
+                const auto name = state.getPropertyName (i).toString();
+                if (name.startsWith ("pattern"))
+                    names.add (name);
+            }
+
+            names.sort (true);
+            return names;
+        };
+
+        auto recordOf = [] (GrooveboxProcessor& p, const juce::String& name)
+        {
+            return p.getValueTreeState().state.getProperty (juce::Identifier (name)).toString();
+        };
+
+        auto hasNamedProperty = [] (GrooveboxProcessor& p, const juce::String& name)
+        {
+            return p.getValueTreeState().state.hasProperty (juce::Identifier (name));
+        };
+
+        /** One cell as the *stored record* sees it, decoded with test-local arithmetic. */
+        struct StoredCell
+        {
+            bool on = false;
+            int level = -1;
+            int chance = -1;
+            int stride = 0;
+            int bytesWritten = 0;
+        };
+
+        auto storedCell = [] (const juce::String& record, int channel, int step) -> StoredCell
+        {
+            const auto stride = record.startsWith ("v3:") ? 3
+                              : record.startsWith ("v2:") ? 2 : 0;
+
+            if (stride == 0)
+                return {};
+
+            juce::MemoryBlock bytes;
+            juce::MemoryOutputStream sink (bytes, false);
+
+            if (! juce::Base64::convertFromBase64 (sink, record.fromFirstOccurrenceOf (":", false, false)))
+                return {};
+
+            /**
+                Flush before the size and the pointer, and take the pointer after it.
+
+                The stream rounds the block up as it grows and only shrinks it to what was
+                written in `flush`, which its destructor has not run yet — so a size read
+                before the flush is the allocator's, and a data pointer read before it can
+                point at memory the shrink has since moved. [19] got away with it for
+                months because it only ever asked for a lower bound; this asks for the
+                exact width, which is only a measurement after the flush.
+            */
+            sink.flush();
+
+            const auto at = (size_t) (channel * Layout::numSteps + step) * (size_t) stride;
+
+            if (bytes.getSize() < at + (size_t) stride)
+                return { false, -1, -1, stride, (int) bytes.getSize() };
+
+            const auto* raw = static_cast<const juce::uint8*> (bytes.getData());
+
+            return { raw[at] != 0, (int) raw[at + 1],
+                     stride > 2 ? (int) raw[at + 2] : 255, stride, (int) bytes.getSize() };
+        };
+
+        /** Feeds a hand-written session the way a host would, with these root properties. */
+        auto loadSession = [] (GrooveboxProcessor& p,
+                               const std::initializer_list<std::pair<const char*, juce::String>> properties)
+        {
+            juce::ValueTree tree ("GROOVEBOX");
+
+            for (const auto& [name, value] : properties)
+                tree.setProperty (juce::Identifier (name), value, nullptr);
+
+            if (auto xml = tree.createXml())
+            {
+                juce::MemoryBlock blob;
+                juce::AudioProcessor::copyXmlToBinary (*xml, blob);
+                p.setStateInformation (blob.getData(), (int) blob.getSize());
+            }
+        };
+
+        auto saveInto = [] (GrooveboxProcessor& from, GrooveboxProcessor& to)
+        {
+            juce::MemoryBlock blob;
+            from.getStateInformation (blob);
+            to.setStateInformation (blob.getData(), (int) blob.getSize());
+        };
+
+        /** A list of lane numbers, as the `slots` and `evolve` properties hold them. */
+        auto laneList = [] (std::initializer_list<int> values)
+        {
+            juce::StringArray list;
+
+            for (auto i = 0; i < Layout::numChannels; ++i)
+                list.add (juce::String (i < (int) values.size() ? *(values.begin() + i) : 0));
+
+            return list.joinIntoString (",");
+        };
+
+        //======================================================================
+        // a. the resting machine is one grid wide
+        {
+            GrooveboxProcessor machine;
+            machine.prepareToPlay (sampleRate, blockSize);
+            clearAllSteps (machine);
+
+            auto wrongSelection = 0, wrongPeriod = 0, wrongFilled = 0;
+
+            for (int channel = 0; channel < Layout::numChannels; ++channel)
+            {
+                wrongSelection += machine.getChannelSlot (channel) != 0;
+                wrongPeriod    += machine.getChannelEvolveBars (channel) != 0;
+
+                for (int slot = 1; slot < Layout::numPatternSlots; ++slot)
+                    wrongFilled += machine.isChannelSlotFilled (channel, slot);
+            }
+
+            check (wrongSelection == 0 && wrongPeriod == 0,
+                   "every lane starts pointed at slot 0 with its counter shut",
+                   juce::String (wrongSelection) + " selections and " + juce::String (wrongPeriod)
+                       + " periods off, of " + juce::String (Layout::numChannels * 2));
+
+            check (wrongFilled == 0,
+                   "and no other slot of any lane holds anything",
+                   juce::String (wrongFilled) + " of "
+                       + juce::String (Layout::numChannels * (Layout::numPatternSlots - 1)) + " slots filled");
+
+            check (recordNames (machine).joinIntoString (" ") == "pattern",
+                   "the tree carries one step record, under the name it carried before the bank",
+                   "the records are: " + recordNames (machine).joinIntoString (" "));
+
+            const auto hasSlots = hasNamedProperty (machine, "slots");
+            const auto hasEvolve = hasNamedProperty (machine, "evolve");
+
+            check (! hasSlots && ! hasEvolve,
+                   "and the two bank lists are absent while every lane is at their default",
+                   "a fresh session now carries a " + juce::String (hasSlots ? "slots" : "")
+                       + (hasSlots && hasEvolve ? " and an " : "")
+                       + juce::String (hasEvolve ? "evolve" : "") + " property");
+
+            const auto record = recordOf (machine, "pattern");
+            const auto cell = storedCell (record, 0, 0);
+
+            // The width is the claim that the bank did not widen slot 0's record: four
+            // slots of the same grid are four properties, not a longer property, so a
+            // build that cannot see the bank still reads this one byte for byte.
+            check (cell.bytesWritten == Layout::numChannels * Layout::numSteps * 3,
+                   "and it is the same record the previous build wrote, byte for byte wide",
+                   juce::String (cell.bytesWritten) + " decoded bytes against "
+                       + juce::String (Layout::numChannels * Layout::numSteps * 3)
+                       + " (" + juce::String ((int) record.length()) + " characters)");
+        }
+
+        //======================================================================
+        // b. an edit writes the slot the lane points at, and nothing else
+        {
+            GrooveboxProcessor machine;
+            machine.prepareToPlay (sampleRate, blockSize);
+            clearAllSteps (machine);
+
+            const float level = 48.0f / 127.0f;
+
+            machine.setChannelSlot (3, 2);
+            machine.setStep (3, 5, true);
+            machine.setStepVelocity (3, 6, level);
+            machine.setStepChance (3, 7, 96.0f / 255.0f);
+
+            /**
+                The three seams of one cell, read out of the records.
+
+                A slot is not a runtime handle here — it is a payload — so the honest
+                question "which slot did the write land in?" is asked of the session, not
+                of an atomics getter that could be pointed at the wrong row by the very
+                selection this check is about. Slot 0's record is the control: it was
+                already on the tree, and an edit in slot 2 has no business moving it.
+            */
+            const auto landed = storedCell (recordOf (machine, "pattern2"), 3, 6);
+            const auto control = storedCell (recordOf (machine, "pattern"), 3, 6);
+
+            check (landed.stride == 3 && landed.level == 48,
+                   "the level seam writes the slot the lane points at",
+                   "pattern2 says " + juce::String (landed.level) + " of 127 over a stride of "
+                       + juce::String (landed.stride));
+
+            check (control.level == 127,
+                   "and slot 0's untouched record is still the one that was there before",
+                   "pattern now says " + juce::String (control.level) + " of 127");
+
+            const auto on = storedCell (recordOf (machine, "pattern2"), 3, 5);
+            const auto off = storedCell (recordOf (machine, "pattern"), 3, 5);
+
+            check (on.on && ! off.on,
+                   "the step seam does the same",
+                   "pattern2 has it " + juce::String ((int) on.on) + ", pattern "
+                       + juce::String ((int) off.on));
+
+            const auto roll = storedCell (recordOf (machine, "pattern2"), 3, 7);
+            const auto plain = storedCell (recordOf (machine, "pattern"), 3, 7);
+
+            check (roll.chance == 96 && plain.chance == 255,
+                   "and so does the probability seam",
+                   juce::String (roll.chance) + " of 255 in slot 2, " + juce::String (plain.chance)
+                       + " in slot 0");
+
+            auto wrongFilled = 0;
+
+            for (auto slot = 0; slot < Layout::numPatternSlots; ++slot)
+                wrongFilled += slot == 2 ? ! machine.isChannelSlotFilled (3, slot)
+                                          : machine.isChannelSlotFilled (3, slot);
+
+            check (wrongFilled == 0,
+                   "and only that slot now counts as holding a record",
+                   juce::String (wrongFilled) + " of " + juce::String (Layout::numPatternSlots)
+                       + " slots disagree");
+
+            check (recordNames (machine).joinIntoString (" ") == "pattern pattern2",
+                   "the sparse rule writes the touched slot and leaves the two it did not touch off the tree",
+                   "the records are: " + recordNames (machine).joinIntoString (" "));
+
+            check (hasNamedProperty (machine, "slots"),
+                   "one lane off slot 0 is enough to put the selection list on the tree",
+                   "there is no slots property with lane 3 on slot 2");
+
+            machine.setStep (3, 5, false);
+            machine.setStepVelocity (3, 6, 1.0f);
+            machine.setStepChance (3, 7, 1.0f);
+
+            check (recordNames (machine).joinIntoString (" ") == "pattern",
+                   "clearing that slot takes its record back off, so an empty bank slot costs a session nothing",
+                   "the records are still: " + recordNames (machine).joinIntoString (" "));
+
+            machine.setChannelSlot (3, 0);
+
+            check (! hasNamedProperty (machine, "slots"),
+                   "and so does the list, once every lane is back on slot 0",
+                   "a slots property is still on the tree with every lane at its default");
+        }
+
+        //======================================================================
+        // b2. "somewhere empty" is the three-field answer, not the step-only one
+        {
+            GrooveboxProcessor copier;
+            copier.prepareToPlay (sampleRate, blockSize);
+            clearAllSteps (copier);
+
+            copier.setStep (0, 4, true);
+            copier.setStepChance (0, 4, 102.0f / 255.0f);      // slot 0: a real pattern
+
+            copier.setChannelSlot (0, 1);
+            copier.setStepVelocity (0, 9, 64.0f / 127.0f);     // slot 1: a level, no steps
+            copier.setChannelSlot (0, 0);
+
+            check (copier.isChannelSlotFilled (0, 1),
+                   "a row of off steps that are not at full level counts as held",
+                   "slot 1 has a number in it and says it is empty");
+
+            const auto landed = copier.duplicateChannelRowToNextSlot (0);
+
+            check (landed == 2,
+                   "so the copy walks past it rather than destroying it",
+                   "landed on slot " + juce::String (landed) + ", expected 2");
+
+            check (copier.getChannelSlot (0) == 2,
+                   "and the lane follows the copy to where it landed",
+                   "the selection is " + juce::String (copier.getChannelSlot (0)));
+
+            const auto survived = storedCell (recordOf (copier, "pattern1"), 0, 9);
+
+            check (survived.level == 64 && ! survived.on,
+                   "the level that made slot 1 occupied is still there",
+                   "pattern1 now says level " + juce::String (survived.level)
+                       + ", on " + juce::String ((int) survived.on));
+
+            // Read out of the record rather than off the atomics: a copy that reached the
+            // engine but not the session would play right and save wrong.
+            const auto copied = storedCell (recordOf (copier, "pattern2"), 0, 4);
+
+            check (copied.stride == 3 && copied.on && copied.level == 127 && copied.chance == 102,
+                   "and the copy carries all three fields into the new record",
+                   "on " + juce::String ((int) copied.on) + ", level " + juce::String (copied.level)
+                       + ", chance " + juce::String (copied.chance) + " over a "
+                       + juce::String (copied.stride) + "-byte stride");
+        }
+
+        //======================================================================
+        // c. four patterns, one selection and one period per lane survive a save
+        {
+            GrooveboxProcessor machine, restored;
+            machine.prepareToPlay (sampleRate, blockSize);
+            restored.prepareToPlay (sampleRate, blockSize);
+            clearAllSteps (machine);
+
+            const int steps[Layout::numPatternSlots]  = { 1, 5, 9, 13 };
+            const int levels[Layout::numPatternSlots] = { 111, 96, 64, 32 };
+
+            for (auto slot = 0; slot < Layout::numPatternSlots; ++slot)
+            {
+                machine.setChannelSlot (5, slot);
+                machine.setStep (5, steps[slot], true);
+                machine.setStepVelocity (5, steps[slot], (float) levels[slot] / 127.0f);
+            }
+
+            machine.setChannelSlot (2, 3);
+            machine.setChannelEvolveBars (2, 4);
+            machine.setChannelEvolveBars (7, 1);
+
+            const auto names = recordNames (machine);
+
+            // Positional reading of `names` as slot order is only safe because these four
+            // sort into it, and that is the first claim below rather than an assumption.
+            check (names.joinIntoString (" ") == "pattern pattern1 pattern2 pattern3",
+                   "a lane with all four slots filled puts all four records on the tree, in slot order",
+                   "the records are: " + names.joinIntoString (" "));
+
+            saveInto (machine, restored);
+
+            // Indexed off the restored tree's own census, so the decode cannot be steered
+            // by the name table the writer was built from; the equality check at the end
+            // of this part is what says those names are still the four slot records.
+            const auto restoredNames = recordNames (restored);
+            auto wrongCells = 0;
+
+            for (auto slot = 0; slot < Layout::numPatternSlots; ++slot)
+            {
+                // A tree that does not hold four records fails here rather than by
+                // indexing off the end of the census.
+                if (slot >= restoredNames.size())
+                {
+                    wrongCells += Layout::numSteps;
+                    continue;
+                }
+
+                const auto record = recordOf (restored, restoredNames[slot]);
+
+                for (auto step = 0; step < Layout::numSteps; ++step)
+                {
+                    const auto cell = storedCell (record, 5, step);
+                    const auto expectOn = step == steps[slot];
+
+                    wrongCells += cell.stride != 3
+                                    || cell.on != expectOn
+                                    || cell.level != (expectOn ? levels[slot] : 127)
+                                    || cell.chance != 255;
+                }
+            }
+
+            check (wrongCells == 0,
+                   "each of the four records comes back as the grid that was written into it",
+                   juce::String (wrongCells) + " of "
+                       + juce::String (Layout::numPatternSlots * Layout::numSteps) + " cells differ");
+
+            auto wrongBank = 0;
+
+            for (auto channel = 0; channel < Layout::numChannels; ++channel)
+            {
+                const auto wantSlot = (channel == 2 || channel == 5) ? 3 : 0;
+                const auto wantPeriod = channel == 2 ? 4 : channel == 7 ? 1 : 0;
+
+                wrongBank += restored.getChannelSlot (channel) != wantSlot
+                               || restored.getChannelEvolveBars (channel) != wantPeriod;
+            }
+
+            check (wrongBank == 0,
+                   "and the two bank lists are session data, not runtime scratch",
+                   juce::String (wrongBank) + " of " + juce::String (Layout::numChannels)
+                       + " lanes come back elsewhere");
+
+            check (hasNamedProperty (restored, "slots") && hasNamedProperty (restored, "evolve"),
+                   "both lists are on the tree while any lane is off their default",
+                   "restored carries slots=" + juce::String ((int) hasNamedProperty (restored, "slots"))
+                       + " evolve=" + juce::String ((int) hasNamedProperty (restored, "evolve")));
+
+            check (recordNames (restored).joinIntoString (" ") == names.joinIntoString (" "),
+                   "and a save/load changes nothing about which records exist",
+                   "restored has: " + recordNames (restored).joinIntoString (" "));
+        }
+
+        //======================================================================
+        // d. the rotation is a function of the bar, and of nothing else
+        {
+            GrooveboxProcessor machine;
+            machine.prepareToPlay (sampleRate, blockSize);
+            clearAllSteps (machine);
+
+            /**
+                One step, four levels: which slot is sounding reads off one number.
+
+                The rungs are 111, 96, 64 and 32 rather than 128ths so the comparison is
+                exact, and deliberately none of them is 127 — because 127 is what an
+                *empty* slot says, and a check that could not tell "visited the empty
+                slot" from "skipped it" would not be a check of the walk at all.
+            */
+            const int rungs[Layout::numPatternSlots] = { 111, 96, 64, 32 };
+
+            for (auto slot = 0; slot < Layout::numPatternSlots; ++slot)
+            {
+                machine.setChannelSlot (0, slot);
+                machine.setStep (0, 4, true);
+                machine.setStepVelocity (0, 4, (float) rungs[slot] / 127.0f);
+            }
+
+            machine.setChannelSlot (0, 0);
+
+            auto slotAt = [&] (juce::int64 bar)
+            {
+                const auto struck = machine.wouldThisStepBeStruckAt (bar, 4, 0);
+
+                for (auto slot = 0; slot < Layout::numPatternSlots; ++slot)
+                    if (std::abs (struck - (float) rungs[slot] / 127.0f) < 1.0e-6f)
+                        return slot;
+
+                return -1;   // 127ths is nothing on this ladder: an empty slot, or a rest
+            };
+
+            auto trace = [&] (int bars)
+            {
+                juce::String t;
+                for (juce::int64 bar = 0; bar < bars; ++bar)
+                    t << juce::String (slotAt (bar));
+                return t;
+            };
+
+            /** Compares 32 bars against a hand-written walk, and counts the misses. */
+            auto walk = [&] (const juce::String& expect)
+            {
+                auto wrong = 0;
+
+                for (juce::int64 bar = 0; bar < 32; ++bar)
+                    wrong += slotAt (bar) != expect.substring ((int) bar % expect.length(),
+                                                               ((int) bar % expect.length()) + 1).getIntValue();
+
+                return wrong;
+            };
+
+            auto emptied = [&] (int slot)
+            {
+                machine.setChannelSlot (0, slot);
+                machine.setStep (0, 4, false);
+                machine.setStepVelocity (0, 4, 1.0f);   // back to the default: the row says nothing
+            };
+
+            machine.setChannelEvolveBars (0, 0);
+
+            check (walk ("0") == 0,
+                   "with the counter shut the selected slot plays at every bar of thirty-two",
+                   "bars answered " + trace (12));
+
+            machine.setChannelEvolveBars (0, 1);
+            check (walk ("0123") == 0,
+                   "one bar a slot walks the bank in order",
+                   "bars answered " + trace (12));
+
+            machine.setChannelEvolveBars (0, 2);
+            check (walk ("00112233") == 0,
+                   "two bars a slot holds each one for exactly two",
+                   "bars answered " + trace (16));
+
+            machine.setChannelEvolveBars (0, 3);
+            check (walk ("000111222333") == 0,
+                   "a period the panel never offers still rotates, and rotates evenly",
+                   "bars answered " + trace (15));
+
+            machine.setChannelEvolveBars (0, 8);
+            check (walk ("00000000111111112222222233333333") == 0,
+                   "eight bars a slot covers a whole thirty-two-bar span in four turns",
+                   "bars answered " + trace (20));
+
+            machine.setChannelEvolveBars (0, 2);
+            machine.setChannelSlot (0, 2);
+            check (walk ("22330011") == 0,
+                   "the cycle starts where the panel points, not at slot 0",
+                   "from slot 2 the bars answered " + trace (10));
+
+            machine.setChannelSlot (0, 0);
+            machine.setChannelEvolveBars (0, 1);
+
+            check (slotAt (-1) == 3,
+                   "a host parked before bar zero lands inside the cycle rather than outside it",
+                   "bar -1 answered slot " + juce::String (slotAt (-1)));
+
+            emptied (1);
+
+            check (! machine.isChannelSlotFilled (0, 1),
+                   "a slot cleared back to its defaults says it holds nothing",
+                   "slot 1 still counts as filled after being emptied");
+
+            check (walk ("023") == 0,
+                   "and the walk visits only the slots that hold a record",
+                   "with slot 1 emptied the bars answered " + trace (12));
+
+            machine.setChannelSlot (0, 2);
+            check (walk ("230") == 0,
+                   "the shortened cycle still starts at the selected slot of the shortened list",
+                   "from slot 2 the bars answered " + trace (9));
+
+            machine.setChannelSlot (0, 1);           // the empty one
+            check (walk ("023") == 0,
+                   "pointing the cycle at an empty slot costs no silent bar",
+                   "from empty slot 1 the bars answered " + trace (12));
+
+            emptied (2);
+            emptied (3);
+
+            machine.setChannelSlot (0, 0);
+            machine.setChannelEvolveBars (0, 3);
+
+            check (walk ("0") == 0,
+                   "with one pattern left in the bank a lane never leaves it, at any period",
+                   "one filled slot, thirty-two bars, answered " + trace (12) + " and should be all zeros");
+
+            /**
+                The last case is deliberately not checked.
+
+                With every slot emptied the walk has nothing to choose from and answers
+                `selected`, and the cell it reads is then at 127/127 with its step off —
+                so the only observable is silence, which is also what every other answer
+                would produce. A gate there would be a tautology; what the `count == 0`
+                branch is really for is not indexing `filled[0]` of an empty list, which is
+                a memory claim rather than a musical one, and the walk above has already
+                exercised every index that list can hold.
+            */
+            emptied (0);
+            check (! machine.isChannelSlotFilled (0, 0) && slotAt (7) == -1,
+                   "an entirely empty bank is silent, which is the only honest answer",
+                   "slot 0 still claims to hold a record with nothing in it");
+        }
+
+        //======================================================================
+        // e. the machine that plays it agrees with the law above
+        {
+            auto click = makeClickWav ("bank", 200, sampleRate);
+            check (click.existsAsFile(), "test wav written for the bank render");
+
+            const int steps[Layout::numPatternSlots] = { 0, 8, 12, 14 };
+
+            /**
+                The absolute step index of every hit in four bars, at a given block size.
+
+                All three variation knobs stay at their defaults, so nothing about a take
+                can move an onset: where a hit lands is entirely which slot that bar
+                sounds. That is also what makes this the arm that sees a dropped `||
+                evolves` in `fireStep`'s fast path — with the knobs shut the bar would
+                come back 0 for every bar, and a rotating lane would render the same four
+                hits as a shut one. Which is why the shut arm below is rendered too, and
+                why the two expectations are different numbers.
+            */
+            auto stepsOf = [&] (int block, int period)
+            {
+                GrooveboxProcessor machine;
+                machine.prepareToPlay (sampleRate, block);
+
+                for (auto slot = 0; slot < Layout::numPatternSlots; ++slot)
+                {
+                    machine.setChannelSlot (0, slot);
+                    clearAllSteps (machine);
+                }
+
+                machine.setChannelSlot (0, 0);
+
+                juce::String error;
+                machine.loadSampleIntoChannel (0, click, error);
+
+                for (auto slot = 0; slot < Layout::numPatternSlots; ++slot)
+                {
+                    machine.setChannelSlot (0, slot);
+                    machine.setStep (0, steps[slot], true);
+                }
+
+                machine.setChannelSlot (0, 0);
+                machine.setChannelEvolveBars (0, period);
+
+                rearm (machine);
+                machine.setPlaying (true);
+
+                const auto result = render (machine, stepSamples * 64, block, sampleRate);
+
+                std::vector<int> hits;
+
+                for (auto at = 0; at >= 0 && at < (int) result.left.size(); )
+                {
+                    const auto onset = onsetAfter (result.left, at);
+
+                    if (onset < 0)
+                        break;
+
+                    hits.push_back ((int) std::lround ((double) onset / exactStepSamples));
+                    at = onset + 300;
+                }
+
+                return hits;
+            };
+
+            auto spelled = [] (const std::vector<int>& hits)
+            {
+                juce::StringArray list;
+                for (auto h : hits)
+                    list.add (juce::String (h));
+                return list.joinIntoString (" ");
+            };
+
+            const auto rotating = stepsOf (blockSize, 1);
+
+            check (rotating == std::vector<int> { 0, 24, 44, 62 },
+                   "one bar per slot renders the four slots' own steps, at four bars",
+                   "hits at steps " + spelled (rotating) + ", expected 0 24 44 62");
+
+            const auto coarsely = stepsOf (1024, 1);
+
+            check (coarsely == rotating,
+                   "and the take is identical at a 1024 block, so the bar is not read off the block count",
+                   "at 1024: " + spelled (coarsely));
+
+            const auto shut = stepsOf (blockSize, 0);
+
+            check (shut == std::vector<int> { 0, 16, 32, 48 },
+                   "with the counter shut the same bank plays slot 0's pattern all four bars",
+                   "hits at steps " + spelled (shut) + ", expected 0 16 32 48");
+
+            check (shut != rotating,
+                   "the two arms disagree, which is what says the render resolved a slot and not just a bar",
+                   "both came out " + spelled (shut));
+        }
+
+        //======================================================================
+        // f. the bank through the doors a host, an undo and a newer build use
+        {
+            GrooveboxProcessor machine;
+            machine.prepareToPlay (sampleRate, blockSize);
+            clearAllSteps (machine);
+
+            machine.setStep (4, 3, true);
+
+            check (machine.isStepOn (4, 3),
+                   "the step is on where the lane points",
+                   "lane 4 step 3 is off before anything moved it");
+
+            auto& undo = machine.getUndoManager();
+
+            undo.beginNewTransaction();
+            machine.setChannelSlot (4, 2);
+            undo.beginNewTransaction();
+
+            check (machine.getChannelSlot (4) == 2,
+                   "pointing the lane elsewhere moves the grid the panel sees",
+                   "the selection is " + juce::String (machine.getChannelSlot (4)));
+
+            check (! machine.isStepOn (4, 3),
+                   "and slot 2 really is a different grid, not another name for the same one",
+                   "the step followed the selection, which means the slots are not separate");
+
+            undo.undo();
+
+            // The tree is the record, so an undo that only moved the atomics would put the
+            // string back and leave the sound elsewhere. This is the door the pattern
+            // listener exists to close, and the bank lists have to go through it too.
+            check (machine.getChannelSlot (4) == 0 && machine.isStepOn (4, 3),
+                   "undoing the selection comes back through the tree, not just the atomics",
+                   "after undo: slot " + juce::String (machine.getChannelSlot (4))
+                       + ", step " + juce::String ((int) machine.isStepOn (4, 3)));
+        }
+
+        {
+            GrooveboxProcessor machine, restored;
+            machine.prepareToPlay (sampleRate, blockSize);
+            restored.prepareToPlay (sampleRate, blockSize);
+
+            // A period and a selection this build has never offered, and a slot number
+            // past the end of the bank: all three stay as they came in.
+            loadSession (machine,
+                         { { "slots",  laneList ({ 0, 0, 0, 0, 9 }) },
+                           { "evolve", laneList ({ 0, 0, 0, 0, 0, 0, 3 }) } });
+
+            check (machine.getChannelSlot (4) == Layout::numPatternSlots - 1,
+                   "a lane pointed past the end of the bank is clamped for reading",
+                   "lane 4 answers " + juce::String (machine.getChannelSlot (4)));
+
+            check (machine.getChannelEvolveBars (6) == 3,
+                   "a period off the ladder is kept as a number, not rounded onto a rung",
+                   "lane 6 answers " + juce::String (machine.getChannelEvolveBars (6)));
+
+            // Forcing a push is what makes this a claim rather than a restatement of the
+            // load: the property would still say 9 if nothing ever rewrote it.
+            machine.setChannelEvolveBars (5, 2);
+
+            const auto slots = juce::StringArray::fromTokens (recordOf (machine, "slots"), ",", "");
+
+            check (slots.size() == Layout::numChannels && slots[4].trim().getIntValue() == 9,
+                   "and the next save writes back the number that came in, not the clamped one",
+                   "slots now reads " + recordOf (machine, "slots"));
+
+            machine.cycleChannelEvolve (6);
+
+            check (machine.getChannelEvolveBars (6) == 4,
+                   "one click on an off-ladder period lands on the rung above where it started",
+                   "3 cycled to " + juce::String (machine.getChannelEvolveBars (6)));
+
+            saveInto (machine, restored);
+
+            check (restored.getChannelSlot (4) == Layout::numPatternSlots - 1
+                       && restored.getChannelEvolveBars (6) == 4
+                       && restored.getChannelEvolveBars (5) == 2,
+                   "and the round trip carries them all",
+                   "restored: slot " + juce::String (restored.getChannelSlot (4))
+                       + ", period " + juce::String (restored.getChannelEvolveBars (6))
+                       + "/" + juce::String (restored.getChannelEvolveBars (5)));
+
+            // A record this build cannot name is held, not repaired — for slot 1 of a tree
+            // whose slot 0 is perfectly readable. That pairing is the point: holding is a
+            // per-slot decision, and a build that skipped the flush by name would also be
+            // skipping the slot it can talk about.
+            GrooveboxProcessor author;
+            author.prepareToPlay (sampleRate, blockSize);
+            clearAllSteps (author);
+            author.setStep (1, 6, true);
+
+            const auto readable = recordOf (author, "pattern");
+            const juce::String held = "v99:" + readable.fromFirstOccurrenceOf (":", false, false);
+
+            GrooveboxProcessor newer;
+            newer.prepareToPlay (sampleRate, blockSize);
+
+            loadSession (newer, { { "stateVersion", "99" },
+                                  { "pattern",  readable },
+                                  { "pattern1", held } });
+
+            check (recordOf (newer, "pattern1") == held,
+                   "an unreadable slot passes straight back out",
+                   "came in as v99 and left as " + recordOf (newer, "pattern1").substring (0, 4));
+
+            check (! newer.isChannelSlotFilled (0, 1) && ! newer.isChannelSlotFilled (1, 1),
+                   "and the slot it describes reads as empty, which is the true picture of what this build can hear",
+                   "an unreadable slot claims to hold something");
+
+            check (newer.isStepOn (1, 6),
+                   "the readable slot came through untouched beside it",
+                   "lane 1 step 6 was lost while slot 1 was being held");
+
+            newer.setChannelSlot (1, 1);
+
+            check (! newer.isStepOn (1, 6) && std::abs (newer.getStepVelocity (1, 6) - 1.0f) < 1.0e-6f,
+                   "and the slot it cannot read really is an empty grid, not the one from before",
+                   "the held slot came back with a cell in it");
+
+            const auto beforeTakeover = recordOf (newer, "pattern");
+
+            // Lane 1 is the one still pointed at slot 1, and a record is a whole grid, so
+            // an edit in any lane of that slot is what takes the held payload over.
+            newer.setStep (1, 2, true);
+
+            check (recordOf (newer, "pattern1").startsWith ("v3:"),
+                   "an edit in that slot is what takes it over, in this build's own format",
+                   "after an edit slot 1 writes " + recordOf (newer, "pattern1").substring (0, 4));
+
+            check (recordOf (newer, "pattern") == beforeTakeover,
+                   "and taking one slot over leaves the other slot's bytes alone",
+                   "slot 0's record moved when only slot 1 was edited");
+        }
+    }
+
+    //======================================================================
     std::printf ("\n%s  %d checks, %d failures\n",
                  failures == 0 ? "PASSED" : "FAILED", checks, failures);
 

@@ -163,6 +163,49 @@ you can play the kit over a stopped pattern. Notes outside that range are
 ignored, and a muted channel ignores its note.
 
 
+Four patterns per channel
+-------------------------
+
+Every channel holds four patterns of its own 16 steps, and each of them carries that
+step's velocity and probability with it. There is no file browser and nothing to
+import: the four slots live in the session, and a slot that holds nothing costs the
+session nothing on disk.
+
+In each row's name column, left to right:
+
+  four slot marks -- a solid box is a slot that holds something, an outline is one
+  that does not. The white ring is the slot you are editing; a dot inside a mark is
+  the slot that is actually sounding when the ring is not on it.
+
+  the copy mark -- duplicates the row you are on into the next slot that is not
+  full, counting round from the one you are on, and leaves the lane pointing at the
+  copy. One undo takes both back. When all four slots hold a pattern the mark dims,
+  because a click there would find nowhere to go.
+
+  the rotate chip -- cycles how long the lane holds a slot: off, 1 bar, 2, 4, 8,
+  off. A lane that rotates walks over the slots that hold something, starting from
+  the one the ring is on, so two filled slots alternate those two instead of going
+  quiet for the other two, and an empty slot costs no silent bar.
+
+What a channel *sounds* like -- its sample, pitch, pitch drop, envelope, level, mute
+and choke group -- is one setting for the lane, not one per slot. The bank holds the
+row and its per-step numbers, which is what a pattern actually is.
+
+Two things are worth knowing before you reach for the chip. The grid always shows the
+slot the ring is on, never the one that is sounding: with a period above 1 bar those
+are different patterns, and an edit changes the one under the ring. And the bank is
+state, not parameters -- like the pattern itself it is saved with the project, so
+there is nothing for the host to automate and no way to draw a slot change into
+Live's arrangement.
+
+A session saved by an older build opens with its one pattern in slot 0, every lane
+pointed at slot 0 and every counter shut. The default state of the bank is one grid
+wide, so nothing about the old machine changes.
+
+The marks need room: they appear when a row is at least 27 px tall and its name
+column at least 89 px wide, and every window size this editor allows satisfies both.
+
+
 Levels
 ------
 
@@ -190,8 +233,10 @@ was live when you saved it.
 Size and limits
 ---------------
 
-One 16-step bar per channel. There is no song mode or pattern chaining yet, so a
-long arrangement is built in the host.
+Four patterns per channel, and a per-lane bar counter -- but no song mode. There is
+no arrangement of bars into sections and nothing that carries a pattern out of the
+plugin; what the bank gives you is a lane that walks its own four grids on a fixed
+period. A long arrangement is built in the host.
 
 Humanize is timing only, and late only: it does not start hits ahead of the grid.
 

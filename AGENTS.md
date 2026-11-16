@@ -101,16 +101,16 @@ It is fully gitignored and nothing in it is authored in place.
   Three false claims were caught this way: that the sound button's menu switches between
   loaded samples (it only opens a `FileChooser`; `SampleStore::getSampleIds()` has no UI
   caller), that there is no MIDI note input (there is, C1-B1 = notes 36-47,
-  `Layout::firstMidiNote` in [Source/Common.h:28](Source/Common.h)), and that Live scans
+  `Layout::firstMidiNote` in [Source/Common.h:58](Source/Common.h)), and that Live scans
   `Documents\VST3` (it does not -- see Host folders below).
 - **A fit claim states both axes and names the code that decides each.** 4.3b shipped that the
-  wrap "lets it go down to **1218 px** — a 1366 px laptop" (README.md:381) and that the
-  "editor floor **1218×844**, which does fit 1366×768" (NEXT-STEPS.md:348) -- in the same
+  wrap "lets it go down to **1218 px** — a 1366 px laptop" (README.md:440) and that the
+  "editor floor **1218×844**, which does fit 1366×768" (NEXT-STEPS.md:370) -- in the same
   paragraph that then admitted the height half was not paid for. The width is true (1218 <=
   1366); the height is not, because [Source/PluginEditor.cpp:101](Source/PluginEditor.cpp)
   passes 844 straight to `setResizeLimits` as the editor's *minimum* while a 768 px screen has
   roughly 730 px of it -- the bottom strip sits off-screen and no resize brings it back.
-  `Tests/LayoutTest.cpp:607` prints that floor already, so this was one subtraction away rather
+  `Tests/LayoutTest.cpp:803` prints that floor already, so this was one subtraction away rather
   than a measurement away: a claim that survives checking only one axis is the dangerous shape.
   Both sentences were corrected by the shipping lane in `71c04fd`.
 - **A verified number is not a verified claim.** The Touch A/B quoted `peak 1.438488 -> 1.485904`
@@ -140,7 +140,7 @@ no generated header ([CMakeLists.txt:232-335](CMakeLists.txt)), which is what ke
 second. All four entries are `add_test` cases carrying a `PASS_REGULAR_EXPRESSION` that requires a
 `, 0 ` problem count, so a run that prints nothing and a run that prints a problem both fail the
 tracked path even at process exit 0, and `-V` is the documented form because the quiet one prints no
-counts. Last green run: 365 smoke checks, 374 layout checks, 85 planner checks, 0 problems, guard OK.
+counts. Last green run: 422 smoke checks, 441 layout checks, 85 planner checks, 0 problems, guard OK.
 
 **CTest does not build.** Measured by the lane that wired it (`ecfe76c`): with `GenrePatterns.h:101`
 broken and no rebuild, `ctest` reported 4/4 passed while the sources no longer matched the binaries.
@@ -337,6 +337,65 @@ gate. The two are not interchangeable and neither alone is the whole check; run 
   The sizes are widths of the component, not of the window: the test measures the editor's inset
   off the running editor rather than typing the 18 px margin a second time, for the reason in
   the bullet above about a list written twice.
+- **A control's colour is not its word.** Two of the bank's pixel checks -- "a lane that is
+  rotating looks different" and "a full bank reports the copy mark has nowhere to go" -- were
+  carried end to end by the *text* drawn beside the controls: arm p2 (the chip's lit branch
+  deleted) and arm p3 (the copy glyph never dims) both came back green, and the chip's own
+  rectangle measured 0.000 from the lane colour in the lit render and 0.659 in the dim one all
+  the same. A diff between two renders cannot attribute anything when the state that flips the
+  control's answer flips something else in the same window -- the bank's slot marks move with
+  the fullness that takes the copy away. So the gate is an **absolute read of one control's own
+  rectangle**: how near its brightest pixel gets to the colour it claims, and how near the
+  other render's gets to the colour it claims to have dimmed to.
+- **A colour margin is derived from the palette, like a slew limit is derived from the
+  fixture.** The threshold is `0.5 x colourDistance (litColour, shutColour)` -- 0.396 for the
+  chip, 0.753 for the glyph -- not a typed `0.15`. It fails safe: a theme that draws lit and
+  shut nearly equal asks for nearly nothing, and the check that goes red on the next edit of
+  `Colours.h` is the one that says so. In JUCE 8.0.4 `Colour::getRed()` returns **uint8**; the
+  float accessors are `getFloatRed/Green/Blue` and the float factory is
+  `Colour::fromFloatRGBA` (there is no float RGBA constructor), so a distance built from the
+  integer accessors is a 0..255 quantity compared against a threshold stated in 0..1 units.
+- **Two lanes have to hold different numbers before a render pair can see a write that
+  leaks.** "The lane nobody touched keeps every pixel it had" passed arm q1 -- a
+  `setChannelSlot` that writes all twelve lanes -- because both lanes already sat on slot 2
+  and a second write to the number a lane holds paints the same picture. The check now puts
+  them on 1 and 2 first. Same shape as the parity trap below: a pair only discriminates
+  across the difference the arm can produce.
+- **A guard defended by another guard is not a control.** A dead pixel in the bank's row is
+  refused in **three** places, in series: `channelAtY` says the bottom sliver of a row span is
+  not a row, `bankTargetAt`'s strip guard says the point is not in the strip, and each
+  control's rectangle says the point is not in the control. Arm o (strip guard gone), arm s and
+  s3 (dots given the row band), arm s2 (both of those) and arm z1 (strip widened to the band)
+  each came back **green** on the gap check, and arm o is still green because the rectangles
+  refuse: the guard it deletes is genuinely discharged, and the docs say so rather than
+  counting it as a control. What gave each refusal an arm that reaches it was taking the
+  click at four x positions -- over a mark, over the copy, over the chip, over the first cell
+  -- because the cell column has no strip guard in front of it, only `channelAtY`. Rounds one
+  to ten, 47 arm runs, and all 49 checks in the section have been seen to go red.
+- **"Nothing changed" has to name everything that could have changed.** The gap and cells
+  checks used to assert that the *selection* held still, which a stray rotate satisfies
+  perfectly -- the counter moves and the selection does not. They now compare one signature
+  string for the lane: slot, period, which slots hold something, and the sixteen step bits.
+  The detail prints it, so a red run says which field moved rather than what did not.
+- **An alternating mutation is invisible to a per-render check.** The first arm for the
+  determinism precondition was `bankEdgePad + (++jitter % 2)` in `getSlotDotBounds` and it
+  killed three checks but **not** that one: a render calls the helper 48 times (12 lanes x 4
+  slots), so the parity at the start of every render is the same and two renders agree
+  exactly. `++jitter` with no modulus moved 23 checks and reddened the precondition. When the
+  falsifier is "this must differ between two calls", count the calls between them.
+- **`|` is not a safe sed delimiter in this codebase.** `s|...||...|` on a line containing
+  `||` ends the command early and the arm reports `SED FAILED` -- round two's arm o, silently
+  absent from the table until the log was read. Use `/`, or pick a delimiter the line cannot
+  contain, and have the script print `SED CHANGED NOTHING` when the mutation is a no-op so a
+  green arm is never an unapplied one.
+- **The fit rule is one predicate, not a width repeated.** `StepGridComponent::hasBankStrip`
+  answers "does this row have room for the strip" for the painter, the hit test and the layout
+  test alike; the test asks it as two numbers (`bankStripHeight + bankNameLineHeight` against
+  `rowHeight`, `bankMinimumLabelWidth` against `labelWidth`) rather than calling the predicate,
+  which is the rule in the bullet above about asking a predicate what it expects. The row
+  window and the column window are read separately -- `channelAtY` for the row,
+  `getSlotDotBounds (channel, slot)` for the mark -- because a point that is in the right
+  column and the wrong row belongs to nobody.
 - Automatability is testable single-threaded because
   `AudioProcessorParameter::setValueNotifyingHost` notifies listeners synchronously.
 - JUCE 8 removed `AudioProcessorValueTreeState::setParameterNotifyingHost`; the one
@@ -359,6 +418,72 @@ gate. The two are not interchangeable and neither alone is the whole check; run 
   the signal being measured, which is why a different test source cannot make the gate
   lenient by accident. A new discontinuity check multiplies `sourceSlew`, it does not
   copy a constant.
+
+## Doc citations: a line number is a claim about one tree
+
+`README.md`, `AGENTS.md`, `NEXT-STEPS.md` and `installer/README.txt` point at code as
+`SequencerEngine.cpp:151-159`, and every phase that adds lines moves those numbers. A doc whose
+pointers land in an unrelated comment is worse than one with no pointers, because it is trusted.
+Two scripts in `out/` keep them honest, and the rules below are what each one cost to learn.
+
+- **A sweep shift preserves what HEAD's number pointed at -- it cannot repair a pointer that was
+  already wrong at HEAD.** `out/cite-sweep.py` renumbered 43 citations from `bcd6188` onto the 4.4
+  tree and the second pass found nothing, which is arithmetic and therefore trustworthy; the same
+  pass moved a number that was stale where it was written into a number that is stale everywhere.
+  Section A3's read of `soundingChannels` sat at `SequencerEngine.h:309` in `460b3bf`, the tree its own
+  section names, and left the sweep at line 373 of that file -- correct at no baseline. So the pair is one
+  check in a fixed order: `cite-sweep.py -apply`, re-run and require `to correct: 0, unresolvable: 0`,
+  then `cite-audit.py` -- which asks whether the cited lines sit in the symbol the *sentence* names --
+  and require `UNPINNED miss ... : 0`. The `JUDGE` lines it prints alongside that -- citations whose
+  sentence describes an effect instead of naming an identifier -- are a stated limit, not a pass, and
+  the run counts them so this file does not have to retype a number that moves every time a paragraph
+  is written: a script that invented a match there would be exactly the unfalsifiable check this file
+  warns about.
+- **A rewrite has to be keyed, not incremental, or it shifts twice.** The target number is computed
+  from HEAD's own citation and applied to the line matched by its text with every digit masked out.
+  The first version added the delta it found instead, got run twice in one sitting, and moved 34
+  citations a whole phase too far; the only reason that showed up is that a second dry run still
+  wanted to change them. Idempotence is the evidence, so keep it as the gate, not the property.
+- **A doc section that names its own baseline keeps that baseline's numbers, and a pin must
+  *restore* HEAD's text rather than merely skip.** Skipping left A3 already-shifted: an exception
+  that only declines to act cannot undo the action it declines. `out/cite-pin.txt` carries the range
+  and the reason, and the two reasons are different claims -- `pinned` (the section declares its
+  tree, so moving the number falsifies the record) and `unverified` (the audit names a symbol and
+  cannot find it at those lines). 15 entries were the second kind; measured against `460b3bf`
+  afterwards, **13 of them were right where they were written** and only went stale, which is the
+  honest reason a map cannot fix them. The findings, not the tool's opinion, are tracked item 6.6.
+- **A pin cannot hold prose written this phase, so its sentence has to name its tree.** Pin ranges
+  are HEAD coordinates matched by masked text, and a line that does not exist at HEAD cannot be
+  masked into one -- so the audit takes a third kind of exception from the prose itself: a commit id
+  in backticks within 80 characters of the citation exempts it, as `baseline-qualified`. It is
+  checked *after* the symbol test, so it cannot cost the audit a citation that already passes, and
+  every exemption is printed with the number and the sentence's commit beside it -- the count of
+  them is one line, and the list is what a reader can actually police. Both sides were measured:
+  the A3 sentence at the head of this section reports `BASE`, and with the `` `460b3bf` `` taken out
+  of it the same citation comes back `MISS`.
+- **A pin is written in HEAD coordinates and matched on the working-copy side by masked text.**
+  The docs grow, so a range read as a working-copy index silently pins a different paragraph after
+  any edit above it -- silently, and plausibly, because documents of this shape repeat themselves.
+  One reader answers "is this line excepted" (`out/cite_pins.py`); two answers is how an exception
+  quietly becomes a shift, which is the same rule as any list written twice in this repo.
+- **A number quoted as a mistake loses the colon.** Write "line 373", never `` `:373` ``, when the
+  prose is narrating a wrong pointer. The colon form is the grammar both scripts read as a
+  citation, so a figure that exists only to be wrong gets judged, shifted and -- worst -- re-verified
+  as if it were a pointer. The same reasoning makes an indented table row a listing rather than a
+  claim, and the audit counts those separately instead of scoring them.
+- **New prose is hand-verified, because the sweep cannot see it.** It leaves every freshly written line
+  alone as *edited since HEAD* -- all of the 6.6 table and every bullet in this section -- since a line
+  with no HEAD context has no key to shift by, and the run prints how many it declined to touch.
+  Each current location in that table was therefore checked against the tree by hand,
+  and two of them changed the sentence beside them: `getUndoManager` has a caller now
+  (`PluginEditor.cpp:166`), so "has no callers" is false at any line number, and since 4.3b velocity
+  is gain *and* tone, so "gain only" is prose that needs rewriting rather than renumbering.
+- **These files are CRLF on disk, and `grep -c $'\r'` cannot tell you.** `git ls-files --eol` says
+  `i/lf w/crlf` for all four docs; the count returns 0 with exit 1 on a genuinely CRLF file, so it
+  is not a check of anything. Any script that rewrites them opens with `newline=""` on both sides --
+  a translated read-back rewrites every line of the file, not the lines it was asked to touch, and
+  the diff then says 1549/1549 instead of what moved. And since `out/` is gitignored, a finding that
+  lives only in a script's output does not exist: it goes into `NEXT-STEPS.md` as a numbered item.
 
 ## Installer conventions (Inno Setup 6 -- house template, with two deliberate divergences)
 

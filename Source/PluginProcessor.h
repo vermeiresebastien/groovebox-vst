@@ -91,6 +91,14 @@ public:
     // Pattern editing
     //==========================================================================
 
+    /**
+        Every channel-and-step seam in this section reads and writes one lane's
+        *selected* slot — see the bank below. Nothing here takes a slot, because the
+        thing the grid, the strips and the overlays are always editing is the row the
+        lane is pointing at, and a slot argument on eight functions would be a second
+        way to say what `getChannelSlot` already says.
+    */
+
     bool isStepOn (int channel, int step) const;
     void setStep (int channel, int step, bool shouldBeOn);
     void toggleStep (int channel, int step);
@@ -99,7 +107,7 @@ public:
     float getStepVelocity (int channel, int step) const;
     void setStepVelocity (int channel, int step, float velocity);
 
-    /** Puts every step's velocity back to full. */
+    /** Puts every step of the slot each lane points at back to full. */
     void resetVelocities();
 
     /**
@@ -112,7 +120,7 @@ public:
     float getStepChance (int channel, int step) const;
     void setStepChance (int channel, int step, float chance);
 
-    /** Puts every step's probability back to every time. */
+    /** Puts every step of the slot each lane points at back to every time. */
     void resetChances();
 
     /**
@@ -151,11 +159,16 @@ public:
         check asked through this therefore goes through `setStepVelocity`, which means it
         goes through the float the session holds and comes back off the lattice the
         session is written on — the two things the law is claimed not to depend on.
+
+        The cell it reads is the one the bar says is playing, not the one the lane is
+        pointed at: asked about bar 9 of a rotating lane, this has to answer for the slot
+        bar 9 sounds, which is the same `slotPlaying` call the audio thread makes.
     */
     float wouldThisStepBeStruckAt (juce::int64 bar, int step, int channel) const
     {
         return engine.struckVelocityFor (bar, step, channel,
-                                         sequencerState.velocity[(size_t) channel][(size_t) step].load());
+                                         getStepVelocityInSlot (channel, step,
+                                                                engine.slotPlaying (bar, channel)));
     }
 
     /**
@@ -175,11 +188,75 @@ public:
         to the first, so the pattern is turned rather than pushed off the end. The
         step and its velocity always travel together, which is the whole point of
         shifting the row rather than retyping it.
+
+        The row it turns is the lane's selected slot: the other slots are a different
+        take on the same lane, and turning one should not move another.
     */
     void shiftChannelRow (int channel, int steps);
 
+    /** Empties every slot of every lane. */
     void clearPattern();
+
+    /** Empties one lane's selected slot, leaving its other three alone. */
     void clearChannelRow (int channel);
+
+    //==========================================================================
+    // Pattern bank
+    //==========================================================================
+
+    /**
+        Which of a lane's `Layout::numPatternSlots` slots its controls point at.
+
+        The one number that says what the grid is editing — and, while the lane's
+        evolve period is shut, the slot the machine plays. Slot 0 is what every lane of
+        every session written before the bank existed comes back as, which is what keeps
+        an old file one grid wide.
+    */
+    int getChannelSlot (int channel) const;
+
+    /** Points one lane's controls at another slot. Nothing else about the lane moves. */
+    void setChannelSlot (int channel, int slot);
+
+    /** How many bars one lane holds a slot for before moving on; 0 is off. */
+    int getChannelEvolveBars (int channel) const;
+    void setChannelEvolveBars (int channel, int bars);
+
+    /**
+        Moves one lane to the next rung of `Layout::evolvePeriods`, wrapping past the
+        longest back to off.
+
+        A cycle rather than a set because the panel has one chip for it and five answers,
+        and off is one of the answers: the way back has to be the same gesture as the way
+        in. See `setChannelEvolveBars` for the value this writes.
+    */
+    void cycleChannelEvolve (int channel);
+
+    /**
+        Does one slot of one lane hold a record?
+
+        The engine's own `isSlotFilled`, passed through for the same reason the three
+        variation seams are: the dot that says a slot holds something, the rotation that
+        decides which slots to walk over, the copy that decides which one is free to land
+        in, and the save path that decides whether to write the property at all are four
+        claims about one row, and one of them being a second spelling is how a dot says
+        *empty* about bytes a session keeps.
+    */
+    bool isChannelSlotFilled (int channel, int slot) const;
+
+    /** Which slot one lane is sounding where the song is right now. */
+    int getChannelSlotPlaying (int channel) const;
+
+    /**
+        Copies a lane's selected slot into the next empty one and moves the lane there.
+
+        Empty, deliberately: a duplicate that went somewhere already occupied would
+        destroy a pattern the user cannot see from the row they are looking at. Occupied
+        is `isChannelSlotFilled`'s answer, which counts a row whose steps are all switched
+        off but whose levels are not — the grid lets a level be set before a step is turned
+        on, and that number is in the session. Returns the slot it landed on, or -1 when
+        all four hold something and there is nowhere to copy to.
+    */
+    int duplicateChannelRowToNextSlot (int channel);
 
     //==========================================================================
     // Channels
@@ -420,7 +497,49 @@ private:
         parameters, stored as children of the parameter state's tree. */
     void pushLaneToState (int channel);
 
+    /**
+        Writes one slot's cells into the state tree, and the build's own version with it.
+
+        Slot 0 always goes: it is the property every session shape since the beginning has
+        had, and an empty machine is a record of all-zeros rather than the absence of one.
+        The others are sparse — see `slotPropertyName` — so a bank nobody has filled costs
+        a session nothing, and clearing one takes its record with it.
+    */
+    void pushPatternToState (int slot);
+
+    /** Writes every slot this build is responsible for, and takes none it is not. */
     void pushPatternToState();
+
+    /**
+        The tree property one slot's cells live in: `pattern` for slot 0, `pattern1` to
+        `pattern3` for the rest.
+
+        Slot 0 keeps the name it has always had, and with it the bytes: a session written
+        before the bank is loaded by this build unchanged, and this build's file is still
+        readable by the build before it — which sees its own grid in `pattern` and ignores
+        three properties it has never heard of. Renaming the working slot to make the bank
+        symmetrical would have cost both of those.
+    */
+    static juce::String slotPropertyName (int slot);
+
+    /** Does any lane have anything at all in this slot — a step on, or a cell that is not
+        at full level and every-time probability? The test for whether a record is worth writing. */
+    bool slotCarriesAnything (int slot) const;
+
+    /** The lane's selected slot, clamped: what every channel-and-step seam above edits. */
+    int selectedSlotOf (int channel) const;
+
+    /** One cell's level out of a named slot, without going through the lane's selection. */
+    float getStepVelocityInSlot (int channel, int step, int slot) const;
+
+    /** Writes `slots` and `evolve`, or removes them when every lane is at its default. */
+    void pushBankToState();
+
+    /** Reads `slots` and `evolve` back into the atomics. */
+    void applyBankFromState();
+
+    /** Reads one slot's property back into that slot's atomics, defaults when it is absent. */
+    void applySlotFromState (int slot);
 
     /** Reads the pattern property back into the atomics the engine plays.
 
@@ -429,6 +548,10 @@ private:
         record; the audio thread never reads the string, so a restored string is
         only a picture of the pattern until something puts it back where the sound
         comes from.
+
+        Whole-grid, every slot and both bank lists, whatever property moved: one door for
+        "the tree changed" is what keeps an undo of a selection from leaving the cells of
+        the slot it selected behind.
     */
     void applyPatternFromState();
 
@@ -462,15 +585,35 @@ private:
     bool pushingPatternToState = false;
 
     /**
-        True while the pattern property holds a record this build cannot read.
+        True while one slot's property holds a record this build cannot read.
 
-        Set by `applyPatternFromState` when the payload's own codec tag names a
-        generation it does not know, and cleared by the next `pushPatternToState` —
-        which is the moment this build starts owning the grid. Between those two, the
-        property is passed back out untouched instead of being rewritten from a grid
-        that has no idea what the newer session meant.
+        Set by `applySlotFromState` when the payload's own codec tag names a generation it
+        does not know — or names none, for a slot other than the one that predates the tag
+        — and cleared for that slot by the next `pushPatternToState (slot)`, which is the
+        moment this build starts owning that grid. Between those two the property is passed
+        back out untouched instead of being rewritten from a slot that has no idea what the
+        newer session meant. `pushPatternToState()` consults it, and that is the only place
+        the answer is used.
+
+        One flag per slot rather than one for the machine, because the bank makes the two
+        halves of a session separable: a lane can be editing slot 0 while slot 2 carries
+        something from a build that knows more about a step than this one does. A single
+        flag there would either destroy the unreadable record on the next save or throw
+        away the edit that has nothing to do with it.
+
+        Re-derived from the tree on every read rather than latched, so it stays a report
+        about what the properties hold rather than a memory of the last one to fail.
     */
-    bool holdingUnreadablePattern = false;
+    std::array<bool, (size_t) Layout::numPatternSlots> holdingUnreadableSlot {};
+
+    /**
+        Is this one of the properties whose contents the atomics are derived from?
+
+        The whole of the undo door: the listener watches exactly these, and each is written
+        by a `push...ToState` on this side. Built from `slotPropertyName`, so a slot cannot
+        be stored under one list of names and restored under another.
+    */
+    static bool isGridProperty (const juce::Identifier& property);
 
     /** What the host last asked for, so a transport reset re-prepares the engine
         at the size it will actually be given. */
