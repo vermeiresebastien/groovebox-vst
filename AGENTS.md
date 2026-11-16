@@ -18,8 +18,12 @@ It is fully gitignored and nothing in it is authored in place.
 
 - Verify an export by **SHA-256 against the artefact tree**, never by timestamp or size:
   `copy_if_different` leaves an old mtime on a file that exported correctly, and rebuilds
-  often coincide on size. Export shipped 2026-11-16 from `b603107`: `Groovebox.exe
-  A3948E47...`, bundle binary `CF3F8318...` -- both equal in `launch/` and in Program Files.
+  often coincide on size. Export shipped 2026-11-16 from `3c3f059`: `Groovebox.exe
+  0309ABCD...`, bundle binary `98643A14...` -- equal in `launch/` and in Program Files, as are
+  `moduleinfo.json` and the payload `README.txt` (`C98EFC6C...`, hash-matched against
+  `installer/README.txt` rather than against a copy of itself). It replaces the `b603107` export
+  (`Groovebox.exe A3948E47...`, bundle `CF3F8318...`), which was the installed build until then
+  and stays true as a record of it.
 - **A rebuild is not the install, and the difference is four bytes on identical sources.** Measured
   at the cheapest target in the tree (the std-only planner suite, ~1 s): `touch` one test file --
   content unchanged -- relink, and the two exes differ in exactly 4 of 198,144 bytes, at `0x108`
@@ -530,6 +534,14 @@ gate. The two are not interchangeable and neither alone is the whole check; run 
   the signal being measured, which is why a different test source cannot make the gate
   lenient by accident. A new discontinuity check multiplies `sourceSlew`, it does not
   copy a constant.
+- **Verify a SHA another lane names in a detached worktree, and assert the ref, not just the SHA.**
+  `out/planbuild/verify-sha.ps1 -Sha <sha> -Tag <tag> -Since <prev>` checks the tree out detached,
+  builds each suite **per target**, refuses any exe older than its own inputs, runs the suites and
+  `ctest`, then re-hashes `launch/` against the artefact tree -- in that order, because CTest does not
+  build. It prints `NAMED BY:` deliberately: a worktree made with `--detach` leaves the commit named by
+  no branch, one `git worktree prune` from unverifiable, which is how a first commit landed on a
+  detached HEAD while the branch sat where it was. The script lives in gitignored `out/` -- item **6.7**
+  is the same hazard for the citation tooling -- so this describes a working tree, not a clone.
 
 ## Doc citations: a line number is a claim about one tree
 
@@ -742,6 +754,15 @@ on purpose: see the two bolded rules below.
   whose manifest's first word is "Outgoing", quoted later as a current census. Housekeeping already
   says to archive rather than delete; the other half is that a superseded number needs its
   supersession written where the next reader will find it, in the same sentence.
+- **A docs commit after a verified SHA is judged by what its diff can still invalidate.** Run
+  `git diff --name-only <verified-sha>..HEAD` and split the paths into **compiled inputs** (`Source/`,
+  `Tests/`, `CMakeLists.txt`, `external/`) and **payload inputs** (`installer/`). An empty compiled set
+  means the green run still stands and nothing is owed a rebuild; a non-empty payload set means the
+  setup and the installed tree are older than the copy they carry, which costs a repackage and one UAC
+  click -- not a recompile. Both halves were measured on the `3c3f059` ship: the pre-merge probe
+  `git diff --name-only master 3c3f059 -- CMakeLists.txt installer/Groovebox.iss` came back empty, which
+  is why that merge went straight to export, and the post-ship `AGENTS.md` commit is docs on both sides,
+  so the installed build stays the verified one.
 
 ## Housekeeping
 
