@@ -283,6 +283,28 @@ namespace Layout
     inline constexpr double maxTouchRatio = 0.25;
 
     /**
+        How many strikes one grid hit can be spread into.
+
+        A ratchet, and the count is the whole control: a cell at 1 is one hit on its own
+        onset, which is what every cell of every session drawn before this feature means,
+        and a cell at 8 is eight. The top is eight because that is where the spacing stops
+        being placeable by this machine rather than a taste. The strikes are spread over the
+        gap to the next onset, whose shortest form is half a step — the off-beat pair at
+        full shuffle, see `maxHumanizeLateSteps` — so eight of them are 0.0625 of a step
+        apart, which at the top of the tempo range is 103 samples. Past that a roll is not
+        eight hits but a buzz, and it is eating the voice pool to do it: twelve lanes at
+        eight are 96 strikes against `maxVoices` of 64.
+
+        What a roll is not allowed to do is overtake the next onset. The gap it spreads
+        across is the one the grid actually gave this step, so the last strike starts
+        (n-1)/n of the way along it and lands strictly inside the space the step was given.
+        A roll can fill a step and cannot reorder the pattern — the same guarantee
+        `maxHumanizeLateSteps` makes about the timing knob, for the same reason: what the
+        user drew stays the clock, and only the sound inside one slot of it moves.
+    */
+    inline constexpr int maxRatchetHits = 8;
+
+    /**
         Which generation of the saved record this build writes.
 
         The number goes on the root of the state as `stateVersion`, and the step
@@ -300,16 +322,20 @@ namespace Layout
         it is switched off and lets a level be a MIDI number rather than a hundredth.
         Version 3 is three: the third byte is how often the step is allowed to fire, as
         a number of 255ths, so 255 means every time and is what every cell written
-        before this feature came back from reads as. A v2 record therefore needs no
-        migration — the probability of a step it does not mention is one, which is
-        exactly what a v2 machine played — but it does come back short of the grid this
-        build writes, and the length of a payload is a fact the tests care about.
+        before this feature came back from reads as. Version 4 is four: the fourth byte is
+        how many strikes that cell asks for, held as the number itself and not as a rung of
+        anything, so 1 — one hit, on the onset, exactly as before — is what every cell
+        written before rolls existed comes back as. A v3 record therefore needs no
+        migration either, for the same reason a v2 one needed none: the roll count of a step
+        it does not mention is one, which is exactly what a v3 machine played. It does come
+        back short of the grid this build writes, and the length of a payload is a fact the
+        tests care about.
 
         A record whose tag this build cannot name is not decoded, not repaired and not
         re-encoded until something changes the grid, so opening a newer session in an
         older plugin costs the user the pattern rather than the file.
     */
-    inline constexpr int stateVersion = 3;
+    inline constexpr int stateVersion = 4;
 
     /**
         How many rungs a step's probability has, both in the saved record and on the
@@ -322,9 +348,9 @@ namespace Layout
     inline constexpr int chanceLevels = 255;
 
     /**
-        The two bytes a cell is written as, apart from its flag.
+        The three bytes a cell is written as, apart from its flag.
 
-        Named, and in the header rather than beside the writer, because the same two
+        Named, and in the header rather than beside the writer, because the same three
         roundings are needed by a second question: "is there anything in this slot worth
         writing down". A slot that carries a level of 0.999 would be written as 127, which
         is what full is, and a test that compared floats would spend a record on a
@@ -336,6 +362,11 @@ namespace Layout
         spellings of that question is how a duplicate starts overwriting a level the user
         set on a step that is switched off — data that no dot on screen would have
         admitted was there.
+
+        The count of strikes is a `int` and not a normalised float like the two above it,
+        because it is a number of things rather than an amount of something: there is no
+        roll of 3.4 hits, and a rounding law for a field the panel can only set to a whole
+        number is a second place for the lattice to be wrong.
     */
     inline juce::uint8 levelByte (float level) noexcept
     {
@@ -349,17 +380,30 @@ namespace Layout
     }
 
     /**
+        The fourth byte: the number of strikes, written as itself.
+
+        Clamped rather than validated, because the field it comes from is an atomic a host
+        or a half-read record can have left anywhere, and one byte that meant 60 has to
+        still cost one hit rather than sixty.
+    */
+    inline juce::uint8 ratchetByte (int hits) noexcept
+    {
+        return (juce::uint8) juce::jlimit (1, maxRatchetHits, hits);
+    }
+
+    /**
         Does one cell say anything a session without it does not already mean?
 
-        Off, full and every-time is the state a missing record means, so a cell counts as
-        carrying information when it disagrees with that in any of the three ways. The
-        comparison is on the bytes for the reason above: a level that rounds to 127 says
+        Off, full, every-time and one strike is the state a missing record means, so a cell
+        counts as carrying information when it disagrees with that in any of the four ways.
+        The comparison is on the bytes for the reason above: a level that rounds to 127 says
         nothing the defaults do not, however many digits the float has.
     */
-    inline bool cellSaysAnything (bool on, float velocity, float chance) noexcept
+    inline bool cellSaysAnything (bool on, float velocity, float chance, int roll) noexcept
     {
         return on || levelByte (velocity) != 127
-                   || chanceByte (chance) != (juce::uint8) chanceLevels;
+                   || chanceByte (chance) != (juce::uint8) chanceLevels
+                   || ratchetByte (roll) != 1;
     }
 
     //==========================================================================

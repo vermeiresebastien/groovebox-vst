@@ -517,6 +517,47 @@ void GrooveboxProcessor::resetChances()
 }
 
 //==============================================================================
+// Ratchet
+
+int GrooveboxProcessor::getStepRatchet (int channel, int step) const
+{
+    if (! juce::isPositiveAndBelow (channel, Layout::numChannels)
+        || ! juce::isPositiveAndBelow (step, Layout::numSteps))
+        return 1;
+
+    // Through the codec's clamp on the way out as well as on the way in, so the panel and
+    // the engine are reading the same range out of one atomic: `fireStep` clamps the same
+    // load, and a getter that reported 200 while the engine played eight would put a
+    // number on screen that nothing makes a sound.
+    return (int) Layout::ratchetByte (sequencerState.slots[(size_t) selectedSlotOf (channel)]
+                                      .ratchet[(size_t) channel][(size_t) step].load());
+}
+
+void GrooveboxProcessor::setStepRatchet (int channel, int step, int strikes)
+{
+    if (! juce::isPositiveAndBelow (channel, Layout::numChannels)
+        || ! juce::isPositiveAndBelow (step, Layout::numSteps))
+        return;
+
+    const auto slot = selectedSlotOf (channel);
+
+    sequencerState.slots[(size_t) slot].ratchet[(size_t) channel][(size_t) step]
+        .store ((int) Layout::ratchetByte (strikes));
+
+    pushPatternToState (slot);
+}
+
+void GrooveboxProcessor::resetRatchets()
+{
+    for (int channel = 0; channel < Layout::numChannels; ++channel)
+        for (int step = 0; step < Layout::numSteps; ++step)
+            sequencerState.slots[(size_t) selectedSlotOf (channel)]
+                .ratchet[(size_t) channel][(size_t) step].store (1);
+
+    pushPatternToState();
+}
+
+//==============================================================================
 // Row shifting
 
 void GrooveboxProcessor::shiftChannelRow (int channel, int steps)
@@ -527,6 +568,7 @@ void GrooveboxProcessor::shiftChannelRow (int channel, int steps)
     std::array<bool, (size_t) Layout::numSteps> on {};
     std::array<float, (size_t) Layout::numSteps> velocity {};
     std::array<float, (size_t) Layout::numSteps> chance {};
+    std::array<int, (size_t) Layout::numSteps> ratchet {};
 
     // One slot, read and written under the same reference: the row that turns is the one
     // the lane points at, and the other three are other takes on the same drum.
@@ -537,6 +579,7 @@ void GrooveboxProcessor::shiftChannelRow (int channel, int steps)
         on[(size_t) step] = cells.pattern[(size_t) channel][(size_t) step].load();
         velocity[(size_t) step] = cells.velocity[(size_t) channel][(size_t) step].load();
         chance[(size_t) step] = cells.chance[(size_t) channel][(size_t) step].load();
+        ratchet[(size_t) step] = cells.ratchet[(size_t) channel][(size_t) step].load();
     }
 
     // Positive shifts move later; the modulo keeps it inside the bar both ways.
@@ -545,11 +588,12 @@ void GrooveboxProcessor::shiftChannelRow (int channel, int steps)
         const auto from = ((step - steps) % Layout::numSteps + Layout::numSteps) % Layout::numSteps;
 
         // Every field the cell has, not the two this function knew about when the
-        // grid had two. A step that moves to a new place and loses its probability
-        // arrives somewhere else than where it was written.
+        // grid had two. A step that moves to a new place and loses its probability — or
+        // its roll — arrives somewhere else than where it was written.
         cells.pattern[(size_t) channel][(size_t) step].store (on[(size_t) from]);
         cells.velocity[(size_t) channel][(size_t) step].store (velocity[(size_t) from]);
         cells.chance[(size_t) channel][(size_t) step].store (chance[(size_t) from]);
+        cells.ratchet[(size_t) channel][(size_t) step].store (ratchet[(size_t) from]);
     }
 
     pushPatternToState (selectedSlotOf (channel));
@@ -659,19 +703,23 @@ int GrooveboxProcessor::duplicateChannelRowToNextSlot (int channel)
         auto& pattern = cells.pattern[(size_t) channel];
         auto& velocity = cells.velocity[(size_t) channel];
         auto& chance = cells.chance[(size_t) channel];
+        auto& ratchet = cells.ratchet[(size_t) channel];
 
         const auto& fromPattern = source.pattern[(size_t) channel];
         const auto& fromVelocity = source.velocity[(size_t) channel];
         const auto& fromChance = source.chance[(size_t) channel];
+        const auto& fromRatchet = source.ratchet[(size_t) channel];
 
-        // All three fields, because a copy of a row is a copy of what that row sounds
-        // like: its steps, their levels and their probabilities. A duplicate that left
-        // the chance behind would arrive as a different pattern than the one on screen.
+        // Every field, because a copy of a row is a copy of what that row sounds like:
+        // its steps, their levels, their probabilities and their strike counts. A duplicate
+        // that left the chance behind would arrive as a different pattern than the one on
+        // screen, and the same argument now covers a roll that copies as one hit.
         for (int step = 0; step < Layout::numSteps; ++step)
         {
             pattern[(size_t) step].store (fromPattern[(size_t) step].load());
             velocity[(size_t) step].store (fromVelocity[(size_t) step].load());
             chance[(size_t) step].store (fromChance[(size_t) step].load());
+            ratchet[(size_t) step].store (fromRatchet[(size_t) step].load());
         }
 
         sequencerState.selectedSlot[(size_t) channel].store (to);
@@ -1097,6 +1145,7 @@ namespace
     {
         switch (codec)
         {
+            case 4:  return 4;   // flag, level, probability, strikes
             case 3:  return 3;   // flag, level, probability
             case 2:  return 2;   // flag, level
             default: return 0;   // untagged rows, or a generation this build cannot name
@@ -1151,7 +1200,8 @@ bool GrooveboxProcessor::slotCarriesAnything (int slot) const
         for (int step = 0; step < Layout::numSteps; ++step)
             if (Layout::cellSaysAnything (cells.pattern[(size_t) channel][(size_t) step].load(),
                                           cells.velocity[(size_t) channel][(size_t) step].load(),
-                                          cells.chance[(size_t) channel][(size_t) step].load()))
+                                          cells.chance[(size_t) channel][(size_t) step].load(),
+                                          cells.ratchet[(size_t) channel][(size_t) step].load()))
                 return true;
 
     return false;
@@ -1183,7 +1233,7 @@ void GrooveboxProcessor::pushPatternToState (int slot)
     {
         // An empty bank slot has no record: a pattern that is all off at full level and
         // every-time probability is exactly what a session without the property means, so
-        // writing it would cost 771 characters to say nothing and clearing a slot would
+        // writing it would cost 1027 characters to say nothing and clearing a slot would
         // leave its bytes in the file. Slot 0 is exempt because an empty machine has
         // always been one all-zeros payload, and taking that away would change what every
         // fresh session saves as to buy nothing.
@@ -1194,7 +1244,7 @@ void GrooveboxProcessor::pushPatternToState (int slot)
     }
 
     /**
-        Three bytes a step, base64'd behind the codec's own name.
+        Four bytes a step, base64'd behind the codec's own name.
 
         The v1 rows this replaced spent two characters on a hundredth of a step, gave
         an off step no level at all, and left the format to be guessed from how long a
@@ -1202,10 +1252,15 @@ void GrooveboxProcessor::pushPatternToState (int slot)
         that is switched off keeps the level it will come back at and a level is a MIDI
         number. v3 adds the probability, as a number of 255ths so that the byte fills
         the field: 255 is a step that fires every time, which is also what a step from
-        a v2 record means and what every cell of a new session starts as.
+        a v2 record means and what every cell of a new session starts as. v4 adds the
+        number of strikes that hit is spread into, held as the count itself rather than as
+        a rung of anything: 1 is one hit on the onset, which is what a step from a v3 record
+        means and what every cell of a new session starts as — the same trick the previous
+        two generations used, and for the same reason, which is that a field whose absence
+        means the neutral value needs no migration.
 
-        Base64 rather than digits or hex: 576 bytes is 768 characters against v1's 395,
-        which is the price of the two extra fields, and every one of those characters is
+        Base64 rather than digits or hex: 768 bytes is 1024 characters against v1's 395,
+        which is the price of the three extra fields, and every one of those characters is
         safe inside an XML attribute.
 
         A bank slot is written with the same record and the same tag, because the bank is
@@ -1227,6 +1282,7 @@ void GrooveboxProcessor::pushPatternToState (int slot)
             bytes[at] = (juce::uint8) (cells.pattern[(size_t) channel][(size_t) step].load() ? 1 : 0);
             bytes[at + 1] = Layout::levelByte (cells.velocity[(size_t) channel][(size_t) step].load());
             bytes[at + 2] = Layout::chanceByte (cells.chance[(size_t) channel][(size_t) step].load());
+            bytes[at + 3] = Layout::ratchetByte (cells.ratchet[(size_t) channel][(size_t) step].load());
         }
     }
 
@@ -1276,8 +1332,10 @@ void GrooveboxProcessor::applySlotFromState (int slot)
             cells.velocity[(size_t) channel][(size_t) step].store (1.0f);
 
             // Off every time is not the neutral value for a probability — every time
-            // is, and that is what a record that never mentions one means.
+            // is, and that is what a record that never mentions one means. One strike is
+            // the same kind of answer for the same kind of question.
             cells.chance[(size_t) channel][(size_t) step].store (1.0f);
+            cells.ratchet[(size_t) channel][(size_t) step].store (1);
         }
     }
 
@@ -1304,9 +1362,9 @@ void GrooveboxProcessor::applySlotFromState (int slot)
             // as they came in until an edit makes this build responsible for the
             // pattern — at which point `pushPatternToState` takes the row over.
             //
-            // Note that a v2 record is not in this branch. It is narrower, not
-            // stranger: everything it does say is readable, and the one field it does
-            // not have is the one whose absence means "always".
+            // Note that a v2 or v3 record is not in this branch. It is narrower, not
+            // stranger: everything it does say is readable, and the fields it does
+            // not have are the ones whose absence means "always" and "once".
             holdingUnreadableSlot[(size_t) slot] = true;
             return;
         }
@@ -1348,6 +1406,14 @@ void GrooveboxProcessor::applySlotFromState (int slot)
                 if (stride > 2)
                     cells.chance[(size_t) channel][(size_t) step]
                         .store ((float) raw[atByte + 2] / (float) Layout::chanceLevels);
+
+                // And the same for a v3 record's fourth byte. Through `ratchetByte` rather
+                // than straight in, because this is the one path where a number arrives from
+                // outside the program: a record that says 200 has to load as eight strikes,
+                // not as an out-of-range count the engine would then be clamping per sample.
+                if (stride > 3)
+                    cells.ratchet[(size_t) channel][(size_t) step]
+                        .store ((int) Layout::ratchetByte (raw[atByte + 3]));
             }
         }
 

@@ -188,15 +188,16 @@ private:
 /**
     One pattern slot of the machine: the whole grid, as the audio thread reads it.
 
-    A slot holds all three of the fields a cell carries — whether it fires, how hard and
-    how often — rather than just the on/off the word "pattern" suggests. That is
-    deliberate: the level and the chance are facts *about the step*, they are drawn on the
-    same grid, and a slot that switched the pattern but carried the level across from
-    another slot would play a hit that was never written anywhere. `shiftChannelRow` moves
-    all three for the same reason, and the saved record carries all three for the third.
+    A slot holds all four of the fields a cell carries — whether it fires, how hard, how
+    often and how many times over — rather than just the on/off the word "pattern"
+    suggests. That is deliberate: the level, the chance and the strike count are facts
+    *about the step*, they are drawn on the same grid, and a slot that switched the pattern
+    but carried the level across from another slot would play a hit that was never written
+    anywhere. `shiftChannelRow` moves all four for the same reason, and the saved record
+    carries all four for the third.
 
     The defaults are the ones a session from before each field existed means: off, full
-    level, fires every time.
+    level, fires every time, once.
 */
 struct PatternCells
 {
@@ -224,6 +225,23 @@ struct PatternCells
     */
     std::array<std::array<std::atomic<float>, (size_t) Layout::numSteps>, (size_t) Layout::numChannels> chance {};
 
+    /**
+        ratchet[channel][step]: how many strikes one hit on that cell is spread into.
+
+        The fourth fact about a cell, kept beside the other three for the reasons they are:
+        it is drawn on the same grid, it is not a parameter, and a step that is switched off
+        still carries it. An `int` rather than a normalised float like its two neighbours,
+        because it counts things — there is no roll of 3.4 strikes — and the byte the record
+        holds is the number itself, not a rung of a lattice.
+
+        One is a hit on its onset, which is both the default and what every cell of every
+        session drawn before this field means, and is also the state in which the engine
+        makes one `trigger` call exactly where it used to make one. The top is
+        `Layout::maxRatchetHits`, and `Layout::ratchetByte` is the one clamp both the
+        writer and the reader go through.
+    */
+    std::array<std::array<std::atomic<int>, (size_t) Layout::numSteps>, (size_t) Layout::numChannels> ratchet {};
+
     PatternCells()
     {
         for (auto& row : velocity)
@@ -235,6 +253,12 @@ struct PatternCells
         for (auto& row : chance)
             for (auto& cell : row)
                 cell.store (1.0f);
+
+        // And one strike per hit, which is what a machine that never had a ratchet played
+        // and what a record without the fourth byte still says.
+        for (auto& row : ratchet)
+            for (auto& cell : row)
+                cell.store (1);
     }
 
     JUCE_DECLARE_NON_COPYABLE (PatternCells)
@@ -512,6 +536,22 @@ public:
 
     /** Absolute position in steps of one step, given the bar the head is in. */
     double getOnsetPositionInSteps (int step) const { return onsetPositionInSteps (step); }
+
+    /**
+        How much room one onset has before the next one, in steps.
+
+        Public for the same reason `getStepOnsetInSteps` is: the spacing of a ratchet is
+        derived from this, so a test that wants to know where strike four of a roll starts
+        asks the function the engine asked, rather than redoing the swing arithmetic in the
+        test file and calling an agreement between two spellings a check.
+    */
+    double getGapToNextOnsetInSteps (int step) const { return gapToNextOnsetInSteps (step); }
+
+    /** How far after its own onset strike `strike` of `strikes` starts, in steps. */
+    double getStrikeDelayInSteps (int step, int strike, int strikes) const
+    {
+        return strikeDelayInSteps (step, strike, strikes);
+    }
 
     /**
         The bar the machine last fired in, as the panel is allowed to know it.
@@ -844,6 +884,24 @@ private:
     /** Fires the armed step and arms the next one. */
     void fireNextOnset();
 
+    /**
+        Whether one strike is allowed to cut its lane's choke group.
+
+        A ratchet's strikes are one hit spread across the room of one step, and a choke
+        group is cut by a *hit* — so the first strike does the choking and the rest of them
+        do not. Left to the plain rule, a roll of eight in a choked lane would silence
+        itself on strike two and end as a click.
+
+        Everything that is not a second or later strike of one roll asks for `apply`, which
+        is the rule that shipped before this word existed: a note from a keyboard, a
+        preview, and every hit from a cell that says one.
+    */
+    enum class StrikeChoke
+    {
+        apply,  ///< cuts the group, as a hit has always done
+        skip    ///< a later strike of one ratchet, whose group the first strike already cut
+    };
+
     /** Starts one hit, working out its playback ratio from the channel's own
         sample rate and pitch. Muted, empty and silent channels simply do not start
         a voice, so callers do not have to check first.
@@ -852,8 +910,12 @@ private:
         alone: a note from a keyboard is already late or early by however the player
         struck it, and a preview is a diagnostic, so both ask for zero. The voice waits
         that many output samples before it reads anything, which is why a nonzero value
-        also leaves the channel unlit until the wait is over. */
-    void trigger (int channel, float velocity, bool fromMidi, int startDelaySamples = 0);
+        also leaves the channel unlit until the wait is over.
+
+        It is also how a ratchet's extra strikes arrive, which is what `choke` is for: see
+        `StrikeChoke`. */
+    void trigger (int channel, float velocity, bool fromMidi, int startDelaySamples = 0,
+                  StrikeChoke choke = StrikeChoke::apply);
     void stopAllVoices();
 
     /** True when a voice's channel currently has sustain, so it holds rather than
@@ -876,6 +938,12 @@ private:
 
     /** Absolute position, in steps from the start of the song, of one step. */
     double onsetPositionInSteps (int step) const;
+
+    /** Steps from the onset of `step` to the onset after it, on this bar's swing grid. */
+    double gapToNextOnsetInSteps (int step) const;
+
+    /** How far after its own onset one strike of a rolled cell starts, in steps. */
+    double strikeDelayInSteps (int step, int strike, int strikes) const;
 
     /**
         The first step whose swung onset falls at or after `head`.

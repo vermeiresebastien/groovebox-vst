@@ -34,8 +34,8 @@ ChannelStrip::ChannelStrip (GrooveboxProcessor& processorToUse, int channelIndex
     clearRowButton.setTooltip ("Remove every step on this channel");
     addAndMakeVisible (clearRowButton);
 
-    shiftLeftButton.setTooltip ("Move this whole row one step earlier, with its velocities");
-    shiftRightButton.setTooltip ("Move this whole row one step later, with its velocities");
+    shiftLeftButton.setTooltip ("Move this whole row one step earlier, with each step's level, chance and strike count");
+    shiftRightButton.setTooltip ("Move this whole row one step later, with each step's level, chance and strike count");
     addAndMakeVisible (shiftLeftButton);
     addAndMakeVisible (shiftRightButton);
 

@@ -120,8 +120,26 @@ public:
     float getStepChance (int channel, int step) const;
     void setStepChance (int channel, int step, float chance);
 
-    /** Puts every step of the slot each lane points at back to every time. */
+    /** Puts every step's chance back to firing every time, in the slot each lane points at. */
     void resetChances();
+
+    /**
+        How many strikes one hit on this cell is spread into, 1..`Layout::maxRatchetHits`.
+
+        The fourth field of a cell and the same rule as the other three: it is a fact about
+        one step of one lane of one slot, it is deliberately not a parameter, and the seam
+        is the *selected* slot because that is the row the overlay is editing. The engine
+        asks the playing slot for itself, in `fireStep`.
+
+        An `int` where `getStepChance` answers a float, because this one counts things: the
+        panel that draws eight positions and the record that stores one byte both want the
+        number, and a 0..1 amount here would be a third place for the lattice to live.
+    */
+    int getStepRatchet (int channel, int step) const;
+    void setStepRatchet (int channel, int step, int strikes);
+
+    /** Back to one strike everywhere — the neutral value of this field is not the top of it. */
+    void resetRatchets();
 
     /**
         Does the hit at (bar, step, channel) survive the roll as the grid, the knob
@@ -182,12 +200,31 @@ public:
     double getStepOnsetInSteps (int step) const { return engine.getStepOnsetInSteps (step); }
 
     /**
-        Rotates one channel's row, carrying each step's velocity with it.
+        How far the onset after this step sits, in steps: the span a roll is spread over.
+
+        The fourth pass-through of the same kind. It is not here to be tested against — a
+        spacing gate that took its expected pitch from this would be asking the predicate
+        what it expects, which is the mistake AGENTS.md records for the bar's wrap check. It
+        is here so a gate can state its expectation in *steps*, the unit the law is written
+        in, while getting the number itself from where the hits actually land in a render.
+        What these two answer is "how far apart are the onsets this build has", and swing
+        moves the answer, so only the engine that plays it can give it.
+    */
+    double getGapToNextOnsetInSteps (int step) const { return engine.getGapToNextOnsetInSteps (step); }
+
+    /** Where strike `strike` of `strikes` starts, in steps after the hit's own onset. */
+    double getStrikeDelayInSteps (int step, int strike, int strikes) const
+    {
+        return engine.getStrikeDelayInSteps (step, strike, strikes);
+    }
+
+    /**
+        Rotates one channel's row, carrying everything each step says with it.
 
         A shift of +1 moves every step one place later, wrapping the last step back
         to the first, so the pattern is turned rather than pushed off the end. The
-        step and its velocity always travel together, which is the whole point of
-        shifting the row rather than retyping it.
+        step and its level, chance and strike count always travel together, which is
+        the whole point of shifting the row rather than retyping it.
 
         The row it turns is the lane's selected slot: the other slots are a different
         take on the same lane, and turning one should not move another.

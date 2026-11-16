@@ -60,12 +60,22 @@ public:
     /**
         Called when the probability toggle changes, so the editor can tell the grid.
 
-        The two toggles are mutually exclusive *here*, in the bar that owns them: the
-        grid can only edit one number per cell at a time, so a bar that let both stay
+        The toggles are mutually exclusive *here*, in the bar that owns them: the
+        grid can only edit one number per cell at a time, so a bar that let two stay
         lit would be showing a mode it is not in, and the drag would write the field the
         dimmer button says is off.
     */
     std::function<void (bool)> onChanceModeChanged;
+
+    /**
+        Called when the ratchet toggle changes, so the editor can tell the grid.
+
+        The third of three, and the reason the exclusion below is written as a rule rather
+        than as one call per handler: the grid edits one number per cell at a time, so with
+        two of these lit the panel is showing a mode it is not in, and with three the same
+        lie is available in three directions.
+    */
+    std::function<void (bool)> onRatchetModeChanged;
 
     void paint (juce::Graphics& g) override;
     void resized() override;
@@ -94,7 +104,18 @@ public:
         floor.
     */
     static constexpr int variationBandWidth = 584 + 8;  // the group, plus the gap after it
-    static constexpr int oneRowWidth = 1774;            // every band, on one line
+    /**
+        Every band, on one line, measured as the sum of what `resized()` takes.
+
+        It moved from 1774 to 1854 when the ratchet button joined the two overlays, and
+        nothing else on the row gave way: the rule the comment above describes is that a
+        band that runs out of room goes to the second line rather than anything getting
+        narrower, and a fourth control in a row with no slack in it is exactly the case
+        that rule was written for. The wrapped first line therefore grew by the same 80 px
+        and took the editor's floor with it -- see `PluginEditor.cpp`, which derives both
+        numbers from these rather than remembering either.
+    */
+    static constexpr int oneRowWidth = 1854;
     static constexpr int wrappedRowWidth = oneRowWidth - variationBandWidth;
     static constexpr int oneRowHeight = 60;
     static constexpr int twoRowHeight = 96;             // two 38 px lines, their air and the rule
@@ -121,8 +142,9 @@ private:
     void handleClearPatternClicked();
     void handleVelocityClicked();
     void handleChanceClicked();
+    void handleRatchetClicked();
 
-    /** Puts every step's *current* overlay value back to full. */
+    /** Puts every step's *current* overlay value back to its neutral one. */
     void handleResetValuesClicked();
 
     void handleRerollClicked();
@@ -150,7 +172,18 @@ private:
     /** The same, for the probability. */
     juce::TextButton chanceButton { "Chance" };
 
-    /** Resets whichever of the two numbers above the grid is currently being edited. */
+    /**
+        The third number each step carries: how many strikes one hit is spread into.
+
+        "Ratchet" on the button rather than "Roll", which is the word the plan used: this
+        bar already carries a **Reroll** button that changes a seed, and the engine already
+        has a function that rolls the probability dice, so a third meaning for "roll" on
+        the same panel is a name two controls share -- the same trap the layout test fell
+        into when it told two faders apart by their range.
+    */
+    juce::TextButton ratchetButton { "Ratchet" };
+
+    /** Resets whichever of the three numbers above the grid is currently being edited. */
     juce::TextButton resetValuesButton { "100%" };
 
     /** How much of the variation the machine is allowed to use, and which take it is. */

@@ -137,6 +137,51 @@ double SequencerEngine::stepOnsetInSteps (int step) const
              + (positionInPair - gridLength * 0.5) * 2.0 * (1.0 - fraction);
 }
 
+double SequencerEngine::gapToNextOnsetInSteps (int step) const
+{
+    /**
+        How much room this onset has before the machine asks for the next one.
+
+        Inside a bar it is the difference between two neighbouring entries of
+        `stepOnsetInSteps`, so it is swing's own output and not a number beside it: at full
+        shuffle on the 1/8 grid an even step has 1.5 steps of room and the off-beat has
+        0.5, which means a roll written on the off-beat is compressed into half the space
+        without anyone telling it to be — it follows the grid the way the onsets do. Step
+        fifteen's room reaches round to the top of the next bar, where step nought always
+        sits at zero.
+
+        The onsets rise with the step number — see `firstStepAtOrAfter`, which is built on
+        that fact — so the difference cannot come out negative. The clamp is here because
+        zero room would make the division in `strikeDelayInSteps` mean nothing, not because
+        a negative is reachable.
+    */
+    const auto here = stepOnsetInSteps (step);
+    const auto next = step + 1 < Layout::numSteps
+                        ? stepOnsetInSteps (step + 1)
+                        : (double) Layout::numSteps + stepOnsetInSteps (0);
+
+    return juce::jmax (0.0, next - here);
+}
+
+double SequencerEngine::strikeDelayInSteps (int step, int strike, int strikes) const
+{
+    // Strike nought is the hit itself, on its own onset, whatever the cell asks for after
+    // it. That is the whole of the claim that a ratchet is additive: turn the count up and
+    // the first strike does not move, so the render of a cell at one strike is the render
+    // that shipped before the field existed, byte for byte.
+    //
+    // `strikes <= 1` is not redundant with `strike <= 0`: the engine asks this for strike
+    // nought too, and answering a division for a cell that has nothing to divide is a
+    // branch that can be deleted later without noticing.
+    if (strike <= 0 || strikes <= 1)
+        return 0.0;
+
+    // Spread across the room the step was given, so strike `strike` of `strikes` starts
+    // `strike/strikes` of the way along it and the last of them is always short of the next
+    // onset by the same fraction. A roll can fill a step; it cannot reach into the next one.
+    return gapToNextOnsetInSteps (step) * (double) strike / (double) strikes;
+}
+
 void SequencerEngine::beginBar (double tempo)
 {
     const auto bpm = juce::jlimit (20.0, 400.0, tempo);
@@ -215,13 +260,15 @@ bool SequencerEngine::isSlotFilled (int channel, int slot) const noexcept
     const auto& pattern  = cells.pattern[(size_t) channel];
     const auto& velocity = cells.velocity[(size_t) channel];
     const auto& chance   = cells.chance[(size_t) channel];
+    const auto& ratchet  = cells.ratchet[(size_t) channel];
 
-    // All three fields, through the codec's own rounding — the same call the save path
+    // All four fields, through the codec's own rounding — the same call the save path
     // makes about the same row. See the header for what a second definition would cost.
     for (auto step = 0; step < Layout::numSteps; ++step)
         if (Layout::cellSaysAnything (pattern[(size_t) step].load(),
                                       velocity[(size_t) step].load(),
-                                      chance[(size_t) step].load()))
+                                      chance[(size_t) step].load(),
+                                      ratchet[(size_t) step].load()))
             return true;
 
     return false;
@@ -293,7 +340,8 @@ bool SequencerEngine::anyChannelEvolves() const noexcept
 //==============================================================================
 // Voices
 
-void SequencerEngine::trigger (int channel, float velocity, bool fromMidi, int startDelaySamples)
+void SequencerEngine::trigger (int channel, float velocity, bool fromMidi, int startDelaySamples,
+                               StrikeChoke choke)
 {
     auto sample = samples.retainSampleForChannel (channel);
 
@@ -339,9 +387,14 @@ void SequencerEngine::trigger (int channel, float velocity, bool fromMidi, int s
     // A lane in a choke group cuts whatever is already sounding in it. Done before
     // the pool is searched, so the hits it releases are slots this hit can take:
     // that is the difference between a choke and running out of voices.
+    //
+    // The one place that asks not to is a ratchet's second and later strikes, which are
+    // the same hit as its first and would otherwise cut it — see `StrikeChoke`. The group
+    // is still recorded on the voice below, so a strike that declines to choke is still
+    // chokeable by the next hit that arrives.
     const auto group = state.chokeGroup[(size_t) channel].load();
 
-    if (group != 0)
+    if (group != 0 && choke == StrikeChoke::apply)
         chokeVoicesInGroup (group);
 
     Voice* target = nullptr;
@@ -748,8 +801,38 @@ void SequencerEngine::fireStep (int step)
         // answer if the grid moved between the two.
         const auto written = state.slots[(size_t) slot].velocity[(size_t) channel][(size_t) step].load();
 
-        trigger (channel, touch > 0.0f ? struckVelocityFor (bar, step, channel, written) : written,
-                 false, (int) std::lround (late * samplesPerStep));
+        // How hard, worked out once above the loop rather than per strike, for the same
+        // reason the draw is keyed once: a second call would be a second roll of the dice,
+        // and the eight strikes of a ratchet are one hit that happens eight times, not
+        // eight hits. The same argument settles the timing above — `late` is one draw and
+        // every strike carries it, so a rolled hit is late in exactly the way the single
+        // hit it replaces was late, and only the spacing between them is new.
+        const auto level = touch > 0.0f ? struckVelocityFor (bar, step, channel, written) : written;
+
+        // Through the codec's clamp, because this atomic is the one place a half-read
+        // record or a hand-edited preset can have left anything at all, and a cell that
+        // said 60 has to still cost eight strikes rather than sixty.
+        const auto strikes = (int) Layout::ratchetByte (state.slots[(size_t) slot]
+                                                       .ratchet[(size_t) channel][(size_t) step].load());
+
+        // One turn of this loop when the cell says one, which is every cell of every
+        // session written before the field existed — and on that turn `strikeDelayInSteps`
+        // answers zero, so the call below is the call that used to be here with the
+        // argument it used to have. That is what makes the section [28] fingerprint a gate
+        // on this change rather than a hope about it.
+        for (int strike = 0; strike < strikes; ++strike)
+        {
+            // Steps first and samples last, exactly as the humanize offset above does it, so
+            // the spacing follows the tempo without a number in milliseconds anywhere in the
+            // law. Both halves of the offset go into one rounding: a rule that rounded the
+            // wait and the lateness separately could put a strike on the sample either side
+            // of the one the grid means, and would not agree with the seam the tests ask.
+            const auto delay = (int) std::lround ((late + strikeDelayInSteps (step, strike, strikes))
+                                                  * samplesPerStep);
+
+            trigger (channel, level, false, delay,
+                     strike == 0 ? StrikeChoke::apply : StrikeChoke::skip);
+        }
     }
 }
 

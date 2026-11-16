@@ -14,10 +14,13 @@ namespace
         off the right edge — which the layout test reads as a zero-width child, i.e. a
         control that cannot be clicked. The grid takes the extra width as wider cells.
 
-        1832 is the row with three variation faders in it: the 1678 before this was the
-        same row with two, and the 154 that joined them is exactly the 96 px track, the
-        42 px readout and the gaps between, paid for in full rather than taken from the
-        swing or the trim.
+        1678 was the row with two variation faders in it; the 154 that made it 1832 is
+        exactly the 96 px track, the 42 px readout and the gaps between, paid for in full
+        rather than taken from the swing or the trim. 4.5's fourth bar button cost the row
+        another 80 and this came with it, so the default is now `TransportBar::oneRowWidth`
+        plus the editor's own margins with not a pixel to spare -- which is the point: a
+        narrower default would open a session already wrapped, and the wrap is the thing a
+        small window has to earn rather than the state it starts in.
 
         It is the *default*, not the floor. The floor is `TransportBar::wrappedRowWidth`,
         and below `TransportBar::oneRowWidth` the variation band moves to a second line
@@ -27,7 +30,7 @@ namespace
         5.6's height half the bar's second line is paid for by the height floor itself, which
         is priced under `TransportBar::twoRowHeight` rather than the one-line height.
     */
-    constexpr int editorWidth = 1832;
+    constexpr int editorWidth = 1890;
 
     /**
         The window a new session opens at. Unchanged by 5.6's height half, and no longer
@@ -69,11 +72,10 @@ GrooveboxEditor::GrooveboxEditor (GrooveboxProcessor& p)
         refreshAll();
     };
 
-    // The two editing toggles live in the transport bar but change how the grid
-    // behaves, so the editor joins them. Each one only ever opens its own overlay:
-    // the bar has already put the other away by the time these fire, and a grid that
-    // could be told to edit two numbers at once would need a third rule to say which
-    // one a drag writes.
+    // The editing toggles live in the transport bar but change how the grid behaves,
+    // so the editor joins them. Each one only ever opens its own overlay: the bar has
+    // already put the others away by the time these fire, and a grid that could be told
+    // to edit two numbers at once would need a rule to say which one a drag writes.
     transportBar.onVelocityModeChanged = [this] (bool editVelocity)
     {
         stepGrid.setVelocityMode (editVelocity);
@@ -84,14 +86,22 @@ GrooveboxEditor::GrooveboxEditor (GrooveboxProcessor& p)
         stepGrid.setChanceMode (editChance);
     };
 
+    transportBar.onRatchetModeChanged = [this] (bool editRatchet)
+    {
+        stepGrid.setRatchetMode (editRatchet);
+    };
+
     setSize (editorWidth, editorHeight);
     setResizable (true, true);
 
     // The width floor is the *wrapped* row, not the one-line row: below
     // `TransportBar::oneRowWidth` the variation band moves down a line rather than
     // anything on either line losing width, so the smallest window that can still show
-    // every control at its own size is the first line on its own -- 1182 px of bar plus
-    // this editor's margins, which is what a 1366 px laptop has to work with.
+    // every control at its own size is the first line on its own -- 1262 px of bar plus
+    // this editor's margins, which is what a 1366 px laptop has to work with. The 80 that
+    // joined them is 4.5's ratchet button, and it moves the floor because the wrap lifts a
+    // whole band off the *first* line: a control added to the row that stays is a control
+    // the minimum has to pay for, whatever the band that leaves is worth.
     //
     // The height floor is that same worst case priced one level up. A window at the width
     // floor has a two-line bar, so the minimum height has to be paid with 96 px of bar,
@@ -111,6 +121,7 @@ GrooveboxEditor::~GrooveboxEditor()
     processor.onStateChanged = nullptr;
     transportBar.onVelocityModeChanged = nullptr;
     transportBar.onChanceModeChanged = nullptr;
+    transportBar.onRatchetModeChanged = nullptr;
     setLookAndFeel (nullptr);
 }
 

@@ -48,6 +48,40 @@ namespace
         g.drawLine (cell.getRight() - leg, cell.getBottom(),
                     cell.getRight(),       cell.getBottom() - leg, 1.0f);
     }
+
+    /**
+        The strike ticks: one for every time this hit actually fires, spread across the
+        cell on the axis the grid already uses for time.
+
+        Centred as a group, so the neutral one strike is one tick in the middle rather than
+        a tick at one edge with the rest of the cell empty, and eight fill it. The pitch is
+        as wide as the cell allows up to the minimum, so the ticks read as a density that
+        grows with the count — which is the one thing a roll is.
+
+        Nothing is drawn when `strikePipsFit` says the count cannot be told apart: this is
+        called for both views, and a mark that shows four ticks for eight strikes is not a
+        shorter version of the truth. The caller decides *whether* to ask at all; this only
+        refuses a shape it cannot hold.
+    */
+    void paintStrikePips (juce::Graphics& g, juce::Rectangle<float> area, int strikes,
+                          juce::Colour colour, float height)
+    {
+        if (strikes <= 0 || height <= 0.0f || ! StepGridComponent::strikePipsFit ((int) area.getWidth(), strikes))
+            return;
+
+        const auto inset = (float) StepGridComponent::ratchetPipInset;
+        const auto usable = area.getWidth() - inset * 2.0f;
+        const auto pitch = usable / (float) strikes;
+        const auto halfTick = (float) StepGridComponent::ratchetPipWidth * 0.5f;
+
+        g.setColour (colour);
+
+        for (int strike = 0; strike < strikes; ++strike)
+            g.fillRect (juce::Rectangle<float> (area.getX() + inset + pitch * ((float) strike + 0.5f) - halfTick,
+                                                area.getY() + inset,
+                                                (float) StepGridComponent::ratchetPipWidth,
+                                                height));
+    }
 } // namespace
 
 //==============================================================================
@@ -360,6 +394,14 @@ void StepGridComponent::paint (juce::Graphics& g)
                 // overlay that edits it. See isStepMutable for what the mark claims.
                 if (isStepMutable (channel, step))
                     paintMutableMark (g, cell);
+
+                // And the fourth: how many times this one hit fires. Cut out of the cell in
+                // the panel's own background, the same trick the notch uses to read on a lane
+                // whose colour is not known here -- and along the top edge, because the
+                // bottom-right belongs to the notch and the time axis belongs to the ticks.
+                if (const auto strikes = restingStrikeMarks (channel, step))
+                    paintStrikePips (g, cell, strikes, Colours::background,
+                                     (float) ratchetPipMarkHeight);
             }
             else
             {
@@ -423,6 +465,28 @@ void StepGridComponent::paint (juce::Graphics& g)
         paintValueOverlay (g);
 }
 
+int StepGridComponent::restingStrikeMarks (int channel, int step) const
+{
+    // The mark is for the resting grid only, exactly as the notch is: with an overlay open
+    // the count is the whole subject of the cell and is already drawn, per cell, in colour.
+    if (overlay != Overlay::none)
+        return 0;
+
+    // A step that does not fire has no strikes to show. The engine only ever spreads a hit
+    // that happens, so a count on an off cell would be a promise about silence.
+    if (! processor.isStepOn (channel, step))
+        return 0;
+
+    const auto strikes = processor.getStepRatchet (channel, step);
+
+    // One strike is the neutral value and every cell of a new session carries it. Marking it
+    // would mark the grid.
+    if (strikes <= 1)
+        return 0;
+
+    return strikePipsFit (getCellBounds (channel, step).getWidth(), strikes) ? strikes : 0;
+}
+
 bool StepGridComponent::isStepMutable (int channel, int step) const
 {
     // The mark is for the resting grid only; see the header.
@@ -451,12 +515,17 @@ void StepGridComponent::setChanceMode (bool shouldEditChance)
     openOverlay (shouldEditChance ? Overlay::chance : Overlay::none);
 }
 
+void StepGridComponent::setRatchetMode (bool shouldEditRatchet)
+{
+    openOverlay (shouldEditRatchet ? Overlay::ratchet : Overlay::none);
+}
+
 void StepGridComponent::openOverlay (Overlay wanted)
 {
     if (overlay == wanted)
         return;
 
-    // One overlay at a time, and closing means closing whichever was open: the two
+    // One overlay at a time, and closing means closing whichever was open: the three
     // toggles that ask for one can disagree about it, and a grid that is editing two
     // numbers at once is a grid that writes a cell nobody meant to write.
     overlay = wanted;
@@ -472,16 +541,26 @@ void StepGridComponent::openOverlay (Overlay wanted)
 
 float StepGridComponent::valueOf (int channel, int step) const
 {
-    return overlay == Overlay::chance ? processor.getStepChance (channel, step)
-                                      : processor.getStepVelocity (channel, step);
+    switch (overlay)
+    {
+        case Overlay::ratchet: return strikesToAmount (processor.getStepRatchet (channel, step));
+        case Overlay::chance:  return processor.getStepChance (channel, step);
+        case Overlay::velocity:
+        case Overlay::none:    break;   // the level, below
+    }
+
+    return processor.getStepVelocity (channel, step);
 }
 
 void StepGridComponent::setValue (int channel, int step, float value)
 {
-    if (overlay == Overlay::chance)
-        processor.setStepChance (channel, step, value);
-    else
-        processor.setStepVelocity (channel, step, value);
+    switch (overlay)
+    {
+        case Overlay::ratchet: processor.setStepRatchet (channel, step, amountToStrikes (value)); return;
+        case Overlay::chance:  processor.setStepChance (channel, step, value);                     return;
+        case Overlay::velocity:
+        case Overlay::none:    processor.setStepVelocity (channel, step, value);                   return;
+    }
 }
 
 void StepGridComponent::setValueFromPointer (int channel, int step, juce::Point<int> position)
@@ -506,7 +585,7 @@ void StepGridComponent::setValueFromPointer (int channel, int step, juce::Point<
         than that snap would re-push the whole grid on every pixel of a drag that had
         not moved at all — and each of those pushes is a change the undo manager sees.
     */
-    if (std::abs (rounded - valueOf (channel, step)) < 0.025f)
+    if (std::abs (rounded - valueOf (channel, step)) < valueDeadBand())
         return;
 
     setValue (channel, step, rounded);
@@ -544,6 +623,7 @@ void StepGridComponent::paintValueOverlay (juce::Graphics& g)
 {
     const auto valueFont = juce::Font (juce::FontOptions (9.0f));
     const auto editingChance = overlay == Overlay::chance;
+    const auto editingRatchet = overlay == Overlay::ratchet;
 
     for (int channel = 0; channel < Layout::numChannels; ++channel)
     {
@@ -559,6 +639,36 @@ void StepGridComponent::paintValueOverlay (juce::Graphics& g)
             const auto colour = processor.getChannelColour (channel);
 
             const auto body = cell.toFloat().reduced (1.0f);
+
+            if (editingRatchet)
+            {
+                // A roll has no amount to draw as a bar: it is a number of hits, and the
+                // honest picture of that is one tick per hit on the axis the rest of the
+                // grid already reads as time. Full height, because with this overlay open
+                // nothing else is in the cell.
+                //
+                // The recess is not decoration. Under the other two overlays the *shape*
+                // carries the number — a bar whose height is the amount — so a bar that
+                // happens to be the same colour as the cell it lies on still reads, and at
+                // full velocity that is exactly what happens, since both are the lane
+                // colour. Here the count is the shape, and a tick the colour of the cell it
+                // is drawn on is not a tick: without this, every cell at the velocity a
+                // fresh session draws by default shows nothing at all in the overlay that
+                // exists to show its roll. So the cell is pushed down with the panel's own
+                // background first, which is the same cut the resting mark is drawn with,
+                // and the ticks then sit above their own cell rather than inside it.
+                g.setColour (Colours::background.withAlpha (0.62f));
+                g.fillRoundedRectangle (cell.toFloat().reduced (1.5f), (float) cornerRadius * 0.5f);
+
+                paintStrikePips (g, cell.toFloat(), amountToStrikes (value),
+                                 on ? colour : colour.withAlpha (0.35f),
+                                 (float) juce::jmax (2, cell.getHeight() - 2 * ratchetPipInset));
+
+                g.setColour (on ? Colours::text.withAlpha (0.45f) : Colours::chipBorder);
+                g.drawRoundedRectangle (cell.toFloat().reduced (0.5f), (float) cornerRadius * 0.5f, 1.0f);
+                continue;
+            }
+
             const auto barHeight = juce::jmax (2.0f, body.getHeight() * value);
 
             /**
@@ -594,14 +704,19 @@ void StepGridComponent::paintValueOverlay (juce::Graphics& g)
             g.setColour (Colours::text);
             g.drawRoundedRectangle (cell.toFloat().reduced (0.5f), (float) cornerRadius * 0.5f, 2.0f);
 
-            const auto value = juce::roundToInt (juce::jlimit (0.0f, 1.0f,
-                                 valueOf (valueHover.channel, valueHover.step)) * 100.0f);
+            // The roll counts things, so the readout prints the count: "3" over a cell that
+            // fires three times, not "36" -- a percentage of a whole that does not exist, and
+            // the one place this overlay would otherwise lie about what it is editing.
+            const auto hovered = valueOf (valueHover.channel, valueHover.step);
+            const auto readout = editingRatchet ? juce::String (amountToStrikes (hovered))
+                                                : juce::String (juce::roundToInt (juce::jlimit (0.0f, 1.0f,
+                                                                                   hovered) * 100.0f));
 
             g.setColour (Colours::background);
             g.fillRoundedRectangle (label.toFloat(), 2.0f);
             g.setColour (Colours::text);
             g.setFont (valueFont);
-            g.drawText (juce::String (value), label, juce::Justification::centred, false);
+            g.drawText (readout, label, juce::Justification::centred, false);
         }
     }
 }
@@ -786,8 +901,9 @@ void StepGridComponent::mouseDown (const juce::MouseEvent& e)
         isDraggingValue = true;
         valueHover = cell;
 
-        processor.beginTransaction (overlay == Overlay::chance ? "Edit step probability"
-                                                               : "Edit step velocity");
+        processor.beginTransaction (overlay == Overlay::ratchet ? "Edit strike count"
+                                       : overlay == Overlay::chance ? "Edit step probability"
+                                                                    : "Edit step velocity");
         setValueFromPointer (cell.channel, cell.step, e.getPosition());
         return;
     }

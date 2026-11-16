@@ -72,12 +72,23 @@ public:
     /**
         The same gesture on the other per-step number: how often the step fires.
 
-        One drag machinery, two fields, because the two are the same interaction on
-        the same cell — and because a third set of hover and drag state is how a grid
+        One drag machinery, three fields, because the three are the same interaction on
+        the same cell — and because a second set of hover and drag state is how a grid
         ends up with a bar that can be dragging two values at once.
     */
     void setChanceMode (bool shouldEditChance);
     bool isChanceMode() const noexcept { return overlay == Overlay::chance; }
+
+    /**
+        The third number each step carries: how many strikes one hit is spread into.
+
+        A count, not an amount, and the overlay is the one place in the panel that says so:
+        the drag still writes a 0..1 position because that is what a pointer is, but it is
+        quantised onto eight rungs on the way in and the readout prints the number rather
+        than a percentage of one.
+    */
+    void setRatchetMode (bool shouldEditRatchet);
+    bool isRatchetMode() const noexcept { return overlay == Overlay::ratchet; }
 
     /** Channel whose row contains `y`, or -1 when y is outside every row. */
     int channelAtY (int y) const;
@@ -90,6 +101,38 @@ public:
         the gap under the last row, where a drag does nothing at all.
     */
     juce::Rectangle<int> getCellBounds (int channel, int step) const;
+
+    /**
+        Can `strikes` ticks be told apart across a cell this wide?
+
+        The one answer behind the overlay, the resting mark and the layout test. A tick is
+        two pixels with a one pixel gap and a pixel of air at each end, so eight of them want
+        26 px. The editor's own width floor leaves a cell 68 px -- 1262 px of interior, 2 px
+        of grid border, a 108 px label column and fifteen 3 px gaps over sixteen cells -- so
+        the rule never fires in this layout; the layout test says so at the floor, which is
+        what keeps it honest if a future grid ever spends that headroom on something else.
+    */
+    static constexpr bool strikePipsFit (int cellWidth, int strikes) noexcept
+    {
+        return cellWidth >= strikes * (ratchetPipWidth + ratchetPipGap) + 2 * ratchetPipInset;
+    }
+
+    /** Tick geometry, typed once here for the same reason the bank numbers are. */
+    static constexpr int ratchetPipWidth = 2;
+    static constexpr int ratchetPipGap = 1;
+    static constexpr int ratchetPipInset = 1;
+    static constexpr int ratchetPipMarkHeight = 2;   // the resting mark; the overlay is full height
+
+    /**
+        How round a cell is.
+
+        Public because the mark that reports a roll's length sits in the cell's top edge,
+        and a rounded corner does not reach into its own corner: the columns a tick can
+        legitimately occupy start one radius in. A test that counts ticks has to skip that
+        many or it reads the bare background showing through the corner as a tick, which is
+        a second copy of this number written where a third would not be noticed.
+    */
+    static constexpr int cornerRadius = 4;
 
     /** The 16 cells of one channel, and the name column beside them.
 
@@ -118,6 +161,18 @@ public:
         and a notch cut into the corner would be eating the bar it shares the cell with.
     */
     bool isStepMutable (int channel, int step) const;
+
+    /**
+        How many strike ticks a resting cell draws, or zero when it draws none.
+
+        Public for the same reason `isStepMutable` is: the ticks are a claim about a stored
+        number, and a pixel check can only prove that ink appeared. Zero means "nothing to
+        say" -- the neutral one strike, a step that is switched off (nothing fires, so there
+        is nothing to spread), an open overlay (which shows the count itself), and a cell too
+        narrow to hold `strikes` ticks at their minimum pitch. The last one says nothing
+        rather than the wrong thing, which is the rule the bank strip already follows.
+    */
+    int restingStrikeMarks (int channel, int step) const;
 
     /**
         Where the number under the pointer is drawn, in this component's own coordinates.
@@ -268,7 +323,7 @@ private:
     //==========================================================================
     // Per-step value editing
     //
-    // One overlay, two fields. Which one is being edited is the only difference, so
+    // One overlay, three fields. Which one is being edited is the only difference, so
     // the drag state, the hover readout and the painting are shared.
     //==========================================================================
     enum class Overlay
@@ -276,16 +331,55 @@ private:
         none,
         velocity,   // how hard the step hits, drawn rising from the bottom
         chance,     // how often it fires, drawn falling from the top
+        ratchet,    // what one hit becomes, drawn as one tick per strike across the cell
     };
 
     /** Draws the value bars and the number under the pointer, for the active field. */
     void paintValueOverlay (juce::Graphics& g);
 
-    /** Opens one overlay and closes whichever other one was open. */
+    /** Opens one overlay and closes whichever other ones were open. */
     void openOverlay (Overlay wanted);
 
     /** Reads the active field of one cell. */
     float valueOf (int channel, int step) const;
+
+    /**
+        The overlay's 0..1 amount and the strike count it stands for, both ways.
+
+        Eight rungs, so a seventh of the row each, and the amount for a count is the rung's
+        *centre* rather than its low edge: a cell at the neutral one strike sits at zero, and
+        one at the top of its travel at 1.0, which is what lets the same pointer gesture that
+        edits a level edit this without one end of the drag being dead.
+    */
+    static float strikesToAmount (int strikes) noexcept
+    {
+        return (float) (juce::jlimit (1, Layout::maxRatchetHits, strikes) - 1)
+             / (float) (Layout::maxRatchetHits - 1);
+    }
+
+    /** The inverse, and the only place the lattice of eight lives. */
+    static int amountToStrikes (float amount) noexcept
+    {
+        return juce::jlimit (1, Layout::maxRatchetHits,
+                             (int) std::lround (juce::jlimit (0.0f, 1.0f, amount)
+                                                * (float) (Layout::maxRatchetHits - 1)) + 1);
+    }
+
+    /**
+        How far the pointer has to move before the overlay writes.
+
+        Not one number for all three fields, because the three quantise differently: the
+        level and the probability land on the byte the record carries (1/127 and 1/255, both
+        far tighter than a twentieth of the row) while the count lands on a rung a seventh of
+        the row wide. Half a rung is exactly "the written number would change"; the old
+        twentieth-plus-a-hair band would let a pointer wander the whole of one rung's band
+        re-writing the same strike count, and every write is a change the undo manager sees.
+    */
+    float valueDeadBand() const noexcept
+    {
+        return overlay == Overlay::ratchet ? 0.5f / (float) (Layout::maxRatchetHits - 1)
+                                           : 0.025f;
+    }
 
     /** Writes the active field of one cell. */
     void setValue (int channel, int step, float value);
@@ -376,7 +470,6 @@ private:
 
     static constexpr int cellGap = 3;
     static constexpr int labelTargetWidth = 108;
-    static constexpr int cornerRadius = 4;
     static constexpr int refreshIntervalMs = 30;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (StepGridComponent)

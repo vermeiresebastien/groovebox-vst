@@ -90,9 +90,11 @@ level, so a pattern can have accents.
 
 Press "Chance" for the other number every step carries: how often it is allowed
 to fire. The same drag sets it, and the bar hangs from the top of the cell, so
-the gap underneath is the part that gets dropped. Only one of the two is ever on
-the grid -- pressing one puts the other away -- and "100%" next to them resets
-whichever number you are looking at. A reset or a drag across the cells is one
+the gap underneath is the part that gets dropped. Only one overlay is ever on
+the grid -- pressing one puts the others away -- and the button beside them
+resets whichever number you are looking at: it says "100%" over a velocity or a
+probability and "x1" over a count of hits, because it puts that field back to
+its own nothing. A reset or a drag across the cells is one
 edit, so one undo takes the whole grid back rather than a step at a time.
 
 You do not have to open "Chance" to know which hits are in play: a step the
@@ -150,12 +152,36 @@ land, but from the 16 bits between them, so moving this fader changes neither yo
 take nor your groove, and "Reroll" re-deals all three at once. A note you play on a
 pad or keyboard is not struck by this knob -- it uses how hard you hit it.
 
+Press "Ratchet" for the third number, and the same drag now sets how many times
+that step fires instead of how hard or how often: 1 to 8, one tick per strike
+along the top of the cell. The strikes share the room between this step and the
+next one the grid will actually play, so a roll follows the tempo and follows
+swing the same way swing does -- the same eight on the head of a swung pair space
+themselves three times wider than the same eight on the off-beat, because that is
+how much room each was given. A roll cannot reach into the next step: eight of
+them start strictly before the onset after, even on the shortest room the grid
+offers, so what you drew is still what comes out.
+
+It is one hit, not eight, for everything else. The take decides once whether the
+step fires, so a dropped step is silent at 8 too, and a Humanize offset moves the
+whole roll rather than its first strike. In a choke group only the first strike
+chokes, and it chokes other hits, not its own: a rolled lane keeps all of its
+strikes ringing and still cuts the one you put in the group with it.
+
+A roll is louder, by arithmetic: eight voices playing your sample add up, and
+there is deliberately no automatic scaling back -- no limiter anywhere in this
+machine. Use the channel fader or the master trim if it is too much. And a rolled
+step costs voices: one lane at 8 is eight of them, the pool holds 64, and past
+that the oldest quietly gives way, so a dense roll can never make the plugin
+stutter, only thin out.
+
 Each strip's A D S R rows shape that channel: drag a row up or down, double-click
 to reset just that one. Sustain 0 (the default) makes the channel a one-shot --
 raise it and the sound holds until you release the note.
 
 The -12 / - / + / +12 buttons transpose a channel by semitones, and the two
-arrows shift its whole row one step earlier or later, velocities included.
+arrows shift its whole row one step earlier or later -- each step's level,
+chance and strike count go with it, and only the slot you are editing turns.
 
 MIDI notes C1 to B1 (36 to 47) play channels 1 to 12, with the note's velocity
 setting the hit's level. Notes play whether or not the transport is running, so
@@ -167,7 +193,7 @@ Four patterns per channel
 -------------------------
 
 Every channel holds four patterns of its own 16 steps, and each of them carries that
-step's velocity and probability with it. There is no file browser and nothing to
+step's velocity, probability and strike count with it. There is no file browser and nothing to
 import: the four slots live in the session, and a slot that holds nothing costs the
 session nothing on disk.
 

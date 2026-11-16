@@ -2679,14 +2679,15 @@ int main()
         // test-local arithmetic: a section that hard-coded v2's two bytes would agree
         // with a build that still wrote two bytes and say nothing about one that does
         // not. What is fixed here is the expectation, not the width.
-        struct StoredStep { bool on = false; int level = -1; int chance = 255; };
+        struct StoredStep { bool on = false; int level = -1; int chance = 255; int strikes = 1; };
 
         auto storedStep = [&processor] (int channel, int step) -> StoredStep
         {
             const auto pattern = processor.getValueTreeState().state
                                      .getProperty ("pattern").toString();
 
-            const auto stride = pattern.startsWith ("v3:") ? 3
+            const auto stride = pattern.startsWith ("v4:") ? 4
+                              : pattern.startsWith ("v3:") ? 3
                               : pattern.startsWith ("v2:") ? 2 : 0;
 
             if (stride == 0)
@@ -2705,7 +2706,8 @@ int main()
             const auto* raw = static_cast<const juce::uint8*> (bytes.getData());
 
             return { raw[at] != 0, (int) raw[at + 1],
-                     stride > 2 ? (int) raw[at + 2] : 255 };
+                     stride > 2 ? (int) raw[at + 2] : 255,
+                     stride > 3 ? (int) raw[at + 3] : 1 };
         };
 
         check (storedStep (0, 3).on && storedStep (0, 3).level == 127,
@@ -4706,19 +4708,20 @@ int main()
         // and the codec's own stride. A gate that derived its expectation from the code
         // under test could not disagree with it, and a format change is exactly the kind
         // of thing this section exists to make expensive: these two lines are the edit.
-        check ((int) state.getProperty ("stateVersion") == 3,
+        check ((int) state.getProperty ("stateVersion") == 4,
                "and the version it names is the one this build writes",
                "got " + juce::String ((int) state.getProperty ("stateVersion")));
 
-        check (payload.startsWith ("v3:"),
+        check (payload.startsWith ("v4:"),
                "the payload names its own codec, so a length cannot be mistaken for a version",
                "starts with " + payload.substring (0, 4));
 
-        // v3 is three bytes a step: the flag, the 7-bit level and the chance the step
-        // gets, as 255ths. Base64 of 192 steps is 4 characters per 3 bytes, rounded up.
+        // v4 is four bytes a step: the flag, the 7-bit level, the chance the step gets as
+        // 255ths, and the number of strikes that hit is spread into. Base64 of 192 steps is
+        // 4 characters per 3 bytes, rounded up.
         // Naming the width here is the point - a payload that quietly changes size
-        // changes what every session means.
-        constexpr int stepBytes = 3;
+        // changes what every session means. This is the line that moves when it does.
+        constexpr int stepBytes = 4;
         const auto expectedLength = 3
             + ((Layout::numChannels * Layout::numSteps * stepBytes + 2) / 3) * 4;
 
@@ -4953,6 +4956,78 @@ int main()
                        "and every step it says nothing about is rolled every time",
                        juce::String (neverRolled)
                            + " step(s) came in with a probability that is not 1.0");
+
+                // Two generations down, and the same claim about the field this build
+                // added: a v2 step never mentioned a strike count either, and what it
+                // means is one hit on the onset. Counted separately from the probability
+                // above because a reader that defaulted one and not the other is exactly
+                // the mistake, and one counter could not tell them apart.
+                auto neverRatcheted = 0;
+
+                for (int channel = 0; channel < Layout::numChannels; ++channel)
+                    for (int step = 0; step < Layout::numSteps; ++step)
+                        if (fromV2.getStepRatchet (channel, step) != 1)
+                            ++neverRatcheted;
+
+                check (neverRatcheted == 0,
+                       "and every step of a v2 session fires once, on the onset",
+                       juce::String (neverRatcheted)
+                           + " step(s) came in with a strike count that is not 1");
+            }
+
+            // v3: three bytes a step, the generation immediately behind this one. Every
+            // session saved since 4.2 is this shape, so it is not hypothetical, and what it
+            // lacks is again a *width* rather than a value. The chance has to arrive as it
+            // was written -- if the reader shifted by one byte it would read the chance as
+            // the count and the count as whatever followed -- and the count has to default.
+            {
+                std::array<juce::uint8, (size_t) Layout::numChannels * Layout::numSteps * 3> v3bytes {};
+
+                auto putV3 = [&v3bytes] (int channel, int step, int on, int level, int chance)
+                {
+                    const auto at = (size_t) (channel * Layout::numSteps + step) * 3;
+                    v3bytes[at] = (juce::uint8) on;
+                    v3bytes[at + 1] = (juce::uint8) level;
+                    v3bytes[at + 2] = (juce::uint8) chance;
+                };
+
+                putV3 (0, 4, 1, 100, 128);
+                putV3 (3, 15, 1, 64, 255);
+                putV3 (11, 0, 0, 33, 200);   // switched off, but still carrying three numbers
+
+                GrooveboxProcessor fromV3;
+                fromV3.prepareToPlay (sampleRate, blockSize);
+                clearAllSteps (fromV3);
+
+                loadSession (fromV3, "v3:" + juce::Base64::toBase64 (v3bytes.data(), v3bytes.size()), 3);
+
+                check (fromV3.isStepOn (0, 4) && fromV3.isStepOn (3, 15) && ! fromV3.isStepOn (11, 0),
+                       "a v3 session still loads, flag and all",
+                       "got " + juce::String ((int) fromV3.isStepOn (0, 4))
+                           + juce::String ((int) fromV3.isStepOn (3, 15))
+                           + juce::String ((int) fromV3.isStepOn (11, 0)));
+
+                const auto chanceOffBy = [&fromV3] (int channel, int step, int want)
+                {
+                    return std::abs (fromV3.getStepChance (channel, step)
+                                      - (float) want / 255.0f) * 255.0f;
+                };
+
+                check (chanceOffBy (0, 4, 128) < 1.0e-3f && chanceOffBy (11, 0, 200) < 1.0e-3f,
+                       "at the probability its own third byte named, off step 11 included",
+                       "off by " + juce::String (chanceOffBy (0, 4, 128), 4) + " and "
+                           + juce::String (chanceOffBy (11, 0, 200), 4));
+
+                auto spread = 0;
+
+                for (int channel = 0; channel < Layout::numChannels; ++channel)
+                    for (int step = 0; step < Layout::numSteps; ++step)
+                        if (fromV3.getStepRatchet (channel, step) != 1)
+                            ++spread;
+
+                check (spread == 0,
+                       "and every step of it fires once, because that is what a byte it never wrote means",
+                       juce::String (spread) + " step(s) came in on more than one strike");
             }
 
             // v0: one character per step, 1 meaning on at full velocity.
@@ -5055,7 +5130,7 @@ int main()
 
             future.setStep (1, 1, true);
 
-            check (payloadOf (future).startsWith ("v3:"),
+            check (payloadOf (future).startsWith ("v4:"),
                    "and painting one cell takes the row over in this build's own format",
                    "after an edit it writes " + payloadOf (future).substring (0, 4));
         }
@@ -5769,7 +5844,8 @@ int main()
         }
 
         //======================================================================
-        // The new field travels, and it is the third byte.
+        // What a row turn does to the fields, and what each of them is in the record:
+        // the probability is the third byte, the strike count the fourth.
         {
             GrooveboxProcessor held;
             held.prepareToPlay (sampleRate, blockSize);
@@ -5778,6 +5854,7 @@ int main()
             held.setStep (2, 7, true);
             held.setStepVelocity (2, 7, 64.0f / 127.0f);
             held.setStepChance (2, 7, 100.0f / (float) Layout::chanceLevels);
+            held.setStepRatchet (2, 7, 5);
 
             held.shiftChannelRow (2, 3);
 
@@ -5786,6 +5863,17 @@ int main()
                    "turning a row carries the probability with the step it belongs to",
                    "(2,7) " + juce::String (held.getStepChance (2, 7), 4)
                        + ", (2,10) " + juce::String (held.getStepChance (2, 10), 4));
+
+            // The fourth field, set on the same cell *before* the row turns. Everything
+            // below writes the roll at (2,10) itself, so a build whose shift moves three
+            // of the four stores would leave this block green apart from this line — the
+            // enumeration in `shiftChannelRow` is four loads and four stores, and only a
+            // field that was already elsewhere when the row moved can show one missing.
+            check (held.getStepRatchet (2, 10) == 5 && held.getStepRatchet (2, 7) == 1,
+                   "and the strike count travels with the step rather than staying behind",
+                   "(2,7) " + juce::String (held.getStepRatchet (2, 7))
+                       + ", (2,10) " + juce::String (held.getStepRatchet (2, 10))
+                       + " strikes");
 
             held.setStepChance (2, 10, 0.5f);
 
@@ -5813,26 +5901,38 @@ int main()
             // The byte itself, read out of the payload the way [19]'s probe does: a
             // codec that carries the number through the accessors but writes it to the
             // wrong offset is the failure this rules out, and no accessor can see it.
+            //
+            // Set on the same cell the other three bytes are being read from, and to a
+            // number that is not the default: the array the writer fills is zero-
+            // initialised, so a build that forgot the fourth byte would report 0 here
+            // rather than agree with an expectation of 1.
+            //
+            // Written again although the turn above already put five strikes on this
+            // cell: an offset probe that depended on the shift would give two gates one
+            // failure to report, and a broken shift is not a broken writer.
+            held.setStepRatchet (2, 10, 5);
+
             const auto pattern = held.getValueTreeState().state.getProperty ("pattern").toString();
             juce::MemoryBlock bytes;
             juce::MemoryOutputStream sink (bytes, false);
 
-            const auto at = (size_t) (2 * Layout::numSteps + 10) * 3;
-            const auto wantBytes = (size_t) Layout::numChannels * Layout::numSteps * 3;
+            const auto at = (size_t) (2 * Layout::numSteps + 10) * 4;
+            const auto wantBytes = (size_t) Layout::numChannels * Layout::numSteps * 4;
 
             /**
                 The sink is flushed before the block is measured, and the pointer taken
                 after that — not before.
 
                 Until the flush, `bytes` is holding the *allocation*, which a
-                MemoryOutputStream rounds up as it grows: 832 bytes for a 576-byte
-                payload. [19]'s probe only ever asks for a lower bound, so it never
+                MemoryOutputStream rounds up as it grows -- 832 bytes were allocated for
+                v3's 576-byte record -- and the number moves with the format. [19]'s probe
+                only ever asks for a lower bound, so it never
                 noticed, but a check that a field lands at the right offset has to say how
                 wide the record is, and that number only exists once the writer says it is
                 done. Taking `raw` before the flush would be worse still: shrinking the
                 block can move it, and the bytes would then be read from freed memory.
             */
-            const auto tagged = pattern.startsWith ("v3:");
+            const auto tagged = pattern.startsWith ("v4:");
 
             const auto flushed = tagged
                                    && juce::Base64::convertFromBase64 (
@@ -5860,14 +5960,16 @@ int main()
             };
 
             check (flushed && decoded == wantBytes
-                       && byteAt (at) == 1 && byteAt (at + 1) == 64 && byteAt (at + 2) == 128,
-                   "the third byte of a step is its chance, and the first two are still itself",
-                   (flushed ? juce::String ("v3 tag, ") : juce::String ("not a decodable v3 tag, "))
+                       && byteAt (at) == 1 && byteAt (at + 1) == 64 && byteAt (at + 2) == 128
+                       && byteAt (at + 3) == 5,
+                   "the four bytes of a step are itself, its level, its chance and its strikes",
+                   (flushed ? juce::String ("v4 tag, ") : juce::String ("not a decodable v4 tag, "))
                        + juce::String ((int) decoded) + " of "
                        + juce::String ((int) wantBytes) + " bytes decoded, and at byte "
                        + juce::String ((int) at) + ": flag " + juce::String (byteAt (at))
                        + ", level " + juce::String (byteAt (at + 1))
-                       + ", chance " + juce::String (byteAt (at + 2)) + " of 255");
+                       + ", chance " + juce::String (byteAt (at + 2)) + " of 255"
+                       + ", strikes " + juce::String (byteAt (at + 3)) + " of 8");
 
             // An undo has to reach the third field too, and the record with it.
             GrooveboxProcessor undoer;
@@ -5887,6 +5989,49 @@ int main()
             check (undoer.getStepChance (0, 0) == 1.0f,
                    "and undo takes the probability back with the step, not only the step",
                    "back to " + juce::String (undoer.getStepChance (0, 0), 4));
+        }
+
+        //======================================================================
+        // A row turn is one slot's business, and the fourth field is what proves it.
+        {
+            GrooveboxProcessor banked;
+            banked.prepareToPlay (sampleRate, blockSize);
+            clearAllSteps (banked);
+
+            // Slot 1 holds step 7 with three strikes and a level that is not the default;
+            // slot 0, which is where the lane points, holds the same step with five. The
+            // grid only ever shows slot 0, so a shift that walked the whole bank would
+            // move a take nobody asked it to move and nothing on screen would say so —
+            // and with only the on/off and the level to look at, that is exactly what a
+            // build reading `slots[*]` instead of the selected one would get away with.
+            banked.setChannelSlot (4, 1);
+            banked.setStep (4, 7, true);
+            banked.setStepRatchet (4, 7, 3);
+            banked.setStepVelocity (4, 7, 50.0f / 127.0f);
+
+            banked.setChannelSlot (4, 0);
+            banked.setStep (4, 7, true);
+            banked.setStepRatchet (4, 7, 5);
+
+            banked.shiftChannelRow (4, 1);
+
+            check (banked.isStepOn (4, 8) && banked.getStepRatchet (4, 8) == 5
+                       && ! banked.isStepOn (4, 7),
+                   "the slot the lane points at turns, strikes and all",
+                   "(4,8) on " + juce::String ((int) banked.isStepOn (4, 8))
+                       + " at " + juce::String (banked.getStepRatchet (4, 8))
+                       + " strikes, (4,7) on " + juce::String ((int) banked.isStepOn (4, 7)));
+
+            banked.setChannelSlot (4, 1);
+
+            check (banked.isStepOn (4, 7) && banked.getStepRatchet (4, 7) == 3
+                       && ! banked.isStepOn (4, 8)
+                       && std::abs (banked.getStepVelocity (4, 7) - 50.0f / 127.0f) < 1.0e-6f,
+                   "and the slot it is not editing stays exactly where it was written",
+                   "slot 1 now reads (4,7) on " + juce::String ((int) banked.isStepOn (4, 7))
+                       + " at " + juce::String (banked.getStepRatchet (4, 7))
+                       + " strikes, level " + juce::String (banked.getStepVelocity (4, 7), 4)
+                       + ", (4,8) on " + juce::String ((int) banked.isStepOn (4, 8)));
         }
 
         //======================================================================
@@ -8227,11 +8372,13 @@ int main()
             int chance = -1;
             int stride = 0;
             int bytesWritten = 0;
+            int strikes = 1;
         };
 
         auto storedCell = [] (const juce::String& record, int channel, int step) -> StoredCell
         {
-            const auto stride = record.startsWith ("v3:") ? 3
+            const auto stride = record.startsWith ("v4:") ? 4
+                              : record.startsWith ("v3:") ? 3
                               : record.startsWith ("v2:") ? 2 : 0;
 
             if (stride == 0)
@@ -8263,7 +8410,8 @@ int main()
             const auto* raw = static_cast<const juce::uint8*> (bytes.getData());
 
             return { raw[at] != 0, (int) raw[at + 1],
-                     stride > 2 ? (int) raw[at + 2] : 255, stride, (int) bytes.getSize() };
+                     stride > 2 ? (int) raw[at + 2] : 255, stride, (int) bytes.getSize(),
+                     stride > 3 ? (int) raw[at + 3] : 1 };
         };
 
         /** Feeds a hand-written session the way a host would, with these root properties. */
@@ -8346,12 +8494,16 @@ int main()
             const auto cell = storedCell (record, 0, 0);
 
             // The width is the claim that the bank did not widen slot 0's record: four
-            // slots of the same grid are four properties, not a longer property, so a
-            // build that cannot see the bank still reads this one byte for byte.
-            check (cell.bytesWritten == Layout::numChannels * Layout::numSteps * 3,
-                   "and it is the same record the previous build wrote, byte for byte wide",
+            // slots of the same grid are four properties, not one longer property, so a
+            // reader that indexes a record by cell never runs off the end of a slot into
+            // the next one. It stopped being a claim about the *generation* the day the
+            // fourth byte joined: 4.5 made every record a stride wider than the build
+            // before it wrote, and that migration is gated in [27] against a v3 payload,
+            // which is where a claim about the previous build belongs.
+            check (cell.bytesWritten == Layout::numChannels * Layout::numSteps * 4,
+                   "and one slot's record is exactly one grid wide, not four",
                    juce::String (cell.bytesWritten) + " decoded bytes against "
-                       + juce::String (Layout::numChannels * Layout::numSteps * 3)
+                       + juce::String (Layout::numChannels * Layout::numSteps * 4)
                        + " (" + juce::String ((int) record.length()) + " characters)");
         }
 
@@ -8381,7 +8533,7 @@ int main()
             const auto landed = storedCell (recordOf (machine, "pattern2"), 3, 6);
             const auto control = storedCell (recordOf (machine, "pattern"), 3, 6);
 
-            check (landed.stride == 3 && landed.level == 48,
+            check (landed.stride == 4 && landed.level == 48,
                    "the level seam writes the slot the lane points at",
                    "pattern2 says " + juce::String (landed.level) + " of 127 over a stride of "
                        + juce::String (landed.stride));
@@ -8449,6 +8601,7 @@ int main()
 
             copier.setStep (0, 4, true);
             copier.setStepChance (0, 4, 102.0f / 255.0f);      // slot 0: a real pattern
+            copier.setStepRatchet (0, 4, 3);
 
             copier.setChannelSlot (0, 1);
             copier.setStepVelocity (0, 9, 64.0f / 127.0f);     // slot 1: a level, no steps
@@ -8479,10 +8632,12 @@ int main()
             // engine but not the session would play right and save wrong.
             const auto copied = storedCell (recordOf (copier, "pattern2"), 0, 4);
 
-            check (copied.stride == 3 && copied.on && copied.level == 127 && copied.chance == 102,
-                   "and the copy carries all three fields into the new record",
+            check (copied.stride == 4 && copied.on && copied.level == 127 && copied.chance == 102
+                       && copied.strikes == 3,
+                   "and the copy carries all four fields into the new record",
                    "on " + juce::String ((int) copied.on) + ", level " + juce::String (copied.level)
-                       + ", chance " + juce::String (copied.chance) + " over a "
+                       + ", chance " + juce::String (copied.chance) + ", strikes "
+                       + juce::String (copied.strikes) + " over a "
                        + juce::String (copied.stride) + "-byte stride");
         }
 
@@ -8541,10 +8696,15 @@ int main()
                     const auto cell = storedCell (record, 5, step);
                     const auto expectOn = step == steps[slot];
 
-                    wrongCells += cell.stride != 3
+                    // The fourth column is the control rather than the exercise: this
+                    // fixture never touches the roll count, so what it proves is that a
+                    // record round-trips the neutral value at the new offset instead of
+                    // reading whatever the stride shift left in byte 3.
+                    wrongCells += cell.stride != 4
                                     || cell.on != expectOn
                                     || cell.level != (expectOn ? levels[slot] : 127)
-                                    || cell.chance != 255;
+                                    || cell.chance != 255
+                                    || cell.strikes != 1;
                 }
             }
 
@@ -8951,7 +9111,7 @@ int main()
             // an edit in any lane of that slot is what takes the held payload over.
             newer.setStep (1, 2, true);
 
-            check (recordOf (newer, "pattern1").startsWith ("v3:"),
+            check (recordOf (newer, "pattern1").startsWith ("v4:"),
                    "an edit in that slot is what takes it over, in this build's own format",
                    "after an edit slot 1 writes " + recordOf (newer, "pattern1").substring (0, 4));
 
@@ -8960,6 +9120,903 @@ int main()
                    "slot 0's record moved when only slot 1 was edited");
         }
     }
+
+    //======================================================================
+    std::printf ("\n[33] one hit can be several strikes\n");
+    {
+        /**
+            A roll is one hit that happens several times, not several hits.
+
+            Every expectation below is taken from a render of the machine rather than from
+            `getStrikeDelayInSteps`, because a spacing gate whose expected pitch came back
+            from the function being gated would be asking the predicate what it expects. The
+            ruler is the grid's own output: run a pass in which every step is a single
+            strike, read the onsets off it, and the room a step has is the distance from its
+            onset to the next one's, in samples, with no formula and no constant in it. The
+            law then says where strike `k` of `n` lands, and the render either agrees or not.
+
+            What the law claims, in the order the arms check it: the spacing follows that
+            measured room and nothing else; a strike can never reach into the next onset; the
+            first strike does not move, so a cell at one strike is the cell that shipped
+            before the field existed; the extra strikes carry the one draw of every dice, not
+            new ones; they are one choke, not eight; and the pool survives ninety-six of them
+            on every lane at once.
+        */
+        constexpr int probeStep = 4;
+        constexpr int strikes = 8;
+
+        /**
+            One bar, and deliberately not a sample into the next.
+
+            The arms below count onsets, so a render that reaches the top of the second bar
+            fires step nought again and every count comes out one too high -- which is exactly
+            how the first run of this section failed. The last onset it has to hold is step
+            fifteen's, plus the click's own hundred-odd samples.
+        */
+        const auto barSamples = (int) (exactStepSamples * ((double) Layout::numSteps - 0.05));
+
+        /**
+            Onsets in order, each searched for only after the last one has died away.
+
+            `ringOut` is how far past an onset the source is still loud enough to cross the
+            threshold. Without it one long source reads as a run of onsets at the same place.
+        */
+        auto scanOnsets = [] (const std::vector<float>& data, int ringOut)
+        {
+            std::vector<int> found;
+            int at = 0;
+
+            while (true)
+            {
+                const auto next = onsetAfter (data, at);
+
+                if (next < 0)
+                    break;
+
+                found.push_back (next);
+                at = next + ringOut;
+            }
+
+            return found;
+        };
+
+        auto rmsBetween = [] (const std::vector<float>& data, int from, int to)
+        {
+            const auto last = juce::jmin (to, (int) data.size());
+            double sum = 0.0;
+            int count = 0;
+
+            for (int i = juce::jmax (0, from); i < last; ++i, ++count)
+                sum += (double) data[(size_t) i] * (double) data[(size_t) i];
+
+            return count > 0 ? (float) std::sqrt (sum / (double) count) : 0.0f;
+        };
+
+        /** Click on lane 0, every step of it on, certain, full level, one strike. */
+        auto armEveryStep = [] (GrooveboxProcessor& p, const juce::File& sample)
+        {
+            juce::String error;
+            p.loadSampleIntoChannel (0, sample, error);
+            clearAllSteps (p);
+
+            for (int step = 0; step < Layout::numSteps; ++step)
+            {
+                p.setStep (0, step, true);
+                p.setStepVelocity (0, step, 1.0f);
+                p.setStepChance (0, step, 1.0f);
+                p.setStepRatchet (0, step, 1);
+            }
+
+            p.setMutate (0.0f);
+        };
+
+        /**
+            One bar, from the top, every time.
+
+            A render is a measurement and the transport is a cursor, so passing the same
+            machine to two arms without rewinding makes the second one a second bar -- which
+            moves every onset in it and quietly turns "within two samples of its share of the
+            room" into a comparison against a bar that has drifted a whole step along.
+        */
+        auto playBar = [&] (GrooveboxProcessor& p, int totalSamples)
+        {
+            p.setPlaying (true);
+            auto out = render (p, totalSamples, blockSize, sampleRate);
+            p.setPlaying (false);
+            return out;
+        };
+
+        /** The same, but with how many voices were still sounding at the last block. */
+        auto playBarAndCount = [&] (GrooveboxProcessor& p, int totalSamples, int& voicesStillOn)
+        {
+            p.setPlaying (true);
+            auto out = render (p, totalSamples, blockSize, sampleRate);
+            voicesStillOn = p.debugActiveVoices();   // before the stop, which is not what this asks
+            p.setPlaying (false);
+            return out;
+        };
+
+        auto roundTrip = [] (GrooveboxProcessor& from, GrooveboxProcessor& to)
+        {
+            juce::MemoryBlock blob;
+            from.getStateInformation (blob);
+            to.setStateInformation (blob.getData(), (int) blob.getSize());
+        };
+
+        //==================================================================
+        // a. the strikes fill the room the grid gave the step, and no more
+        //==================================================================
+        std::printf ("    a. strikes spread across the step's own room\n");
+        {
+            GrooveboxProcessor p;
+            p.prepareToPlay (sampleRate, blockSize);
+
+            auto click = makeClickWav ("ratchet-straight", 120, sampleRate);
+            armEveryStep (p, click);
+
+            auto straightBar = [&] ()
+            {
+                rearm (p);
+                return playBar (p, barSamples);
+            };
+
+            const auto flat = straightBar();
+            const auto onsets = scanOnsets (flat.left, 120);
+            const bool ruler = (int) onsets.size() == Layout::numSteps;
+
+            // The precondition everything else in this arm rests on: sixteen steps armed at
+            // one strike have to give sixteen onsets, or there is no room to measure.
+            check (ruler,
+                   "a single-strike pass puts one onset on every step, which is the ruler the"
+                   " rest of the section measures against",
+                   "found " + juce::String ((int) onsets.size()) + " onsets in a straight"
+                                                                   " single-strike bar");
+
+            const auto room = ruler ? onsets[probeStep + 1] - onsets[probeStep] : 0;
+
+            std::printf ("        step %d sits at %d, the next onset at %d: the room is %d"
+                         " samples (%s steps)\n",
+                         probeStep, ruler ? onsets[probeStep] : -1,
+                         ruler ? onsets[probeStep + 1] : -1, room,
+                         juce::String ((double) room / exactStepSamples, 4).toRawUTF8());
+
+            check (room > 4000 && room < 7000,
+                   "and the room is the step itself, which is what a straight grid means and"
+                   " keeps a roll of eight from being measured against a broken ruler",
+                   "the room off the grid is " + juce::String (room) + " samples");
+
+            p.setStepRatchet (0, probeStep, strikes);
+
+            const auto rolled = straightBar();
+            const auto marks = scanOnsets (rolled.left, 120);
+
+            // One onset became eight, so the bar now carries fifteen plus eight.
+            check ((int) marks.size() == Layout::numSteps + strikes - 1,
+                   "eight strikes replace the one onset rather than adding to a bar that"
+                   " already had it",
+                   "the rolled bar carries " + juce::String ((int) marks.size())
+                       + " onsets, expected " + juce::String (Layout::numSteps + strikes - 1));
+
+            const bool enough = (int) marks.size() >= probeStep + strikes;
+            int worstSpacing = 0;
+
+            for (int k = 1; k < strikes && enough; ++k)
+            {
+                const auto expected = onsets[probeStep]
+                                        + (int) std::llround ((double) room * (double) k / (double) strikes);
+                worstSpacing = juce::jmax (worstSpacing, std::abs (marks[probeStep + k] - expected));
+            }
+
+            check (enough && worstSpacing <= 2,
+                   "every strike lands within two samples of its share of that measured room,"
+                   " so the spacing is the grid's and not a milliseconds-per-roll constant",
+                   "worst spacing error " + juce::String (worstSpacing) + " samples against "
+                       + juce::String (room) + " divided eight ways");
+
+            // The other half of the room: the last strike stops short of the next onset by
+            // the same fraction the first started it. That is "a roll can fill a step, it
+            // cannot reach into the next one".
+            check (enough && marks[probeStep + strikes - 1] < onsets[probeStep + 1] - 50,
+                   "and the last of them is still clear of the next onset by more than a"
+                   " rounding, so eight cannot become nine by leaning on the step after",
+                   "the eighth strike reached "
+                       + juce::String (enough ? marks[probeStep + strikes - 1] : -1)
+                       + ", against the next onset at "
+                       + juce::String (ruler ? onsets[probeStep + 1] : -1));
+
+            // The count is the control's, not the knob's: two strikes have to cost two
+            // onsets, or "eight" would only be proving that some number works.
+            p.setStepRatchet (0, probeStep, 2);
+            const auto pair = straightBar();
+            const auto pairMarks = scanOnsets (pair.left, 120);
+
+            check ((int) pairMarks.size() == Layout::numSteps + 1 && ruler
+                     && std::abs (pairMarks[probeStep + 1] - (onsets[probeStep] + room / 2)) <= 2,
+                   "and two strikes cost two onsets half a room apart, so the number on the"
+                   " cell is the number that sounds",
+                   "two strikes produced " + juce::String ((int) pairMarks.size())
+                       + " onsets, second at "
+                       + juce::String ((int) pairMarks.size() > probeStep + 1 ? pairMarks[probeStep + 1] : -1)
+                       + ", expected "
+                       + juce::String (ruler ? onsets[probeStep] + room / 2 : -1));
+
+            // Strike nought is the hit itself. Everything up to and including its onset
+            // sample is the bytes the old build wrote, which is the one claim that makes the
+            // feature additive rather than a retuning.
+            check (ruler && firstDifference (flat.left, rolled.left, 0, onsets[probeStep] + 1) == -1,
+                   "and the first strike has not moved at all: up to its onset the rolled bar"
+                   " is the single-strike bar, sample for sample",
+                   "a cell at eight strikes differs from the same cell at one before its own"
+                   " onset, at "
+                       + juce::String (ruler ? firstDifference (flat.left, rolled.left, 0, onsets[probeStep] + 1) : -2));
+
+            // And the rest of the bar, which is what stops a voice-pool side effect from
+            // passing as correct spacing.
+            check (enough && ruler && std::abs (marks[probeStep + strikes] - onsets[probeStep + 1]) <= 2,
+                   "and the step after the roll still starts where it did, so eight strikes did"
+                   " not push the grid sideways",
+                   "step " + juce::String (probeStep + 1) + " moved "
+                       + juce::String (enough && ruler
+                                         ? std::abs (marks[probeStep + strikes] - onsets[probeStep + 1]) : -1)
+                       + " samples when its neighbour was rolled");
+
+            click.deleteFile();
+        }
+
+        //==================================================================
+        // b. on a shuffled grid the short room gets the short roll
+        //==================================================================
+        std::printf ("\n    b. the roll follows swing, because it follows the room\n");
+        {
+            GrooveboxProcessor p;
+            p.prepareToPlay (sampleRate, blockSize);
+
+            auto click = makeClickWav ("ratchet-shuffle", 120, sampleRate);
+            armEveryStep (p, click);
+
+            auto shuffledBar = [&] ()
+            {
+                rearm (p);
+                p.setSwing (1.0f);
+                p.setSwingGrid (4);
+                return playBar (p, barSamples);
+            };
+
+            const auto flat = shuffledBar();
+            const auto onsets = scanOnsets (flat.left, 120);
+
+            // Step 4 is the head of a shuffled pair and step 6 its off-beat. Both rooms come
+            // from the same render, so the arm cannot be handed a grid it did not measure.
+            const int head = probeStep, off = 6;
+            const bool ruler = (int) onsets.size() == Layout::numSteps;
+
+            check (ruler,
+                   "the shuffled bar still shows one onset per step, so the rooms below are"
+                   " measured and not assumed",
+                   "found " + juce::String ((int) onsets.size()) + " onsets");
+
+            const auto headRoom = ruler ? onsets[head + 1] - onsets[head] : 0;
+            const auto offRoom  = ruler ? onsets[off + 1] - onsets[off] : 0;
+
+            std::printf ("        shuffled rooms: step %d holds %d samples, step %d holds %d"
+                         " (ratio %s)\n",
+                         head, headRoom, off, offRoom,
+                         juce::String ((double) headRoom / (double) juce::jmax (1, offRoom), 3).toRawUTF8());
+
+            check (ruler && headRoom > 2 * offRoom,
+                   "the head of a shuffled pair really does have more than twice the room of"
+                   " its off-beat, which is what makes this a swing arm and not arm a twice",
+                   "the two rooms are " + juce::String (headRoom) + " and " + juce::String (offRoom)
+                       + " samples");
+
+            p.setStepRatchet (0, head, strikes);
+            p.setStepRatchet (0, off,  strikes);
+
+            const auto rolled = shuffledBar();
+            const auto marks = scanOnsets (rolled.left, 120);
+
+            const auto expectedCount = Layout::numSteps + 2 * (strikes - 1);
+            const bool complete = (int) marks.size() == expectedCount && ruler;
+
+            check ((int) marks.size() == expectedCount,
+                   "two rolled steps in one bar produce exactly fourteen extra onsets, eight to"
+                   " each, and no third roll appears anywhere",
+                   "the shuffled roll produced " + juce::String ((int) marks.size())
+                       + " onsets, expected " + juce::String (expectedCount));
+
+            if (complete)
+            {
+                // Where step `step`'s first strike sits in the scan: every rolled step before
+                // it contributed strikes-1 extra marks. Derived from the step order rather
+                // than remembered, which is what keeps this a scan and not a second law.
+                const auto startOf = [&] (int step)
+                {
+                    int start = step;
+                    if (step > head) start += strikes - 1;
+                    if (step > off)  start += strikes - 1;
+                    return start;
+                };
+
+                int worstHead = 0, worstOff = 0;
+
+                for (int k = 1; k < strikes; ++k)
+                {
+                    worstHead = juce::jmax (worstHead,
+                        std::abs (marks[startOf (head) + k]
+                                   - (onsets[head] + (int) std::llround ((double) headRoom * k / strikes))));
+                    worstOff = juce::jmax (worstOff,
+                        std::abs (marks[startOf (off) + k]
+                                   - (onsets[off] + (int) std::llround ((double) offRoom * k / strikes))));
+                }
+
+                check (worstHead <= 2 && worstOff <= 2,
+                       "and each roll spreads over its own room: the head within "
+                           + juce::String (worstHead) + " samples of an eighth of "
+                           + juce::String (headRoom) + ", the off-beat within "
+                           + juce::String (worstOff) + " of an eighth of " + juce::String (offRoom),
+                       "the shuffled spacing is wrong by " + juce::String (worstHead) + " and "
+                           + juce::String (worstOff) + " samples");
+
+                const auto headStep = (double) (marks[startOf (head) + strikes - 1] - marks[startOf (head)])
+                                        / (double) (strikes - 1);
+                const auto offStep  = (double) (marks[startOf (off) + strikes - 1] - marks[startOf (off)])
+                                        / (double) (strikes - 1);
+
+                std::printf ("        mean strike spacing: head %.1f samples, off-beat %.1f\n",
+                             headStep, offStep);
+
+                check (headStep > offStep * 1.5,
+                       "and the two rolls are audibly different machines: the same knob on the"
+                       " off-beat plays more than half again as fast, because the room it was"
+                       " given is smaller",
+                       "off-beat " + juce::String (offStep, 1) + " samples apart against the"
+                         " head's " + juce::String (headStep, 1) + ", so the count is being"
+                         " spread over a fixed time and not the grid");
+
+                check (marks[startOf (off) + strikes - 1] < onsets[off + 1] - 50,
+                       "and the tightest room the grid offers still holds all eight without"
+                       " leaning on the onset after it",
+                       "eight strikes in a " + juce::String (offRoom) + " sample room reached "
+                           + juce::String (marks[startOf (off) + strikes - 1]) + ", past the next"
+                             " onset at " + juce::String (onsets[off + 1]));
+            }
+
+            click.deleteFile();
+        }
+
+        //==================================================================
+        // c. eight strikes are one choke
+        //==================================================================
+        std::printf ("\n    c. the strikes do not cut each other off\n");
+        {
+            /**
+                A lane that holds, rolled to `hits`, in choke group `group`.
+
+                Broadband noise rather than a tone, because seven copies of one sine at
+                arbitrary phases can cancel to almost nothing and a level check on them would
+                be a check on their phases. Noise sums by power whatever the spacing, so the
+                growth this arm asks for is the accumulation and not a coincidence.
+            */
+            GrooveboxProcessor p;
+            p.prepareToPlay (sampleRate, blockSize);
+
+            auto source = makeNoiseWav ("ratchet-choke", makeNoiseSamples ((int) (2.0 * sampleRate)), sampleRate);
+
+            const auto hold = [&] (int hits, int group)
+            {
+                juce::String error;
+                p.loadSampleIntoChannel (0, source, error);
+                clearAllSteps (p);
+
+                p.setStep (0, probeStep, true);
+                p.setStepVelocity (0, probeStep, 1.0f);
+                p.setStepChance (0, probeStep, 1.0f);
+                p.setStepRatchet (0, probeStep, hits);
+
+                p.setChannelLevel (0, 0.12f);
+                p.setChannelDecay (0, 0.0f);
+                p.setChannelSustain (0, 1.0f);
+                p.setChannelChokeGroup (0, group);
+
+                p.setMutate (0.0f);
+                rearm (p);
+            };
+
+            const auto tailFrom = (int) (exactStepSamples * 5.5);
+            const auto tailTo   = (int) (exactStepSamples * 9.0);
+            int voices = 0;
+
+            // Group 0 is the control: nothing can choke anything there, so whatever this
+            // leaves ringing is what eight strikes cost. It is also the precondition for the
+            // voice count the claim arm compares against -- without it a pool that never
+            // filled would look like a choke that worked.
+            hold (strikes, 0);
+            const auto ungrouped = playBarAndCount (p, barSamples, voices);
+            const auto freeVoices = voices;
+            const auto ungroupedTail = rmsBetween (ungrouped.left, tailFrom, tailTo);
+
+            std::printf ("        %d strikes, no choke group: %d voices still sounding, tail"
+                         " rms %s\n", strikes, freeVoices, juce::String (ungroupedTail, 5).toRawUTF8());
+
+            check (freeVoices == strikes,
+                   "eight strikes leave eight voices ringing, which is what makes the count"
+                   " below a measurement of the roll and not of an empty pool",
+                   "a rolled lane with nothing to choke it holds " + juce::String (freeVoices)
+                       + " voices, expected " + juce::String (strikes));
+
+            // One and three strikes, so the count is seen to track the knob. A build that
+            // reported eight for any roll would pass the claim arm and fail here.
+            hold (1, 0);
+            const auto single = playBarAndCount (p, barSamples, voices);
+            const auto singleVoices = voices;
+            const auto singleTail = rmsBetween (single.left, tailFrom, tailTo);
+
+            hold (3, 0);
+            playBarAndCount (p, barSamples, voices);
+            const auto tripleVoices = voices;
+
+            check (singleVoices == 1 && tripleVoices == 3,
+                   "and the count is the count: one strike leaves one voice, three leave three",
+                   "strike counts of 1 and 3 left " + juce::String (singleVoices) + " and "
+                       + juce::String (tripleVoices) + " voices");
+
+            hold (strikes, 1);
+            const auto choked = playBarAndCount (p, barSamples, voices);
+            const auto chokedVoices = voices;
+            const auto chokedTail = rmsBetween (choked.left, tailFrom, tailTo);
+            const auto chokedPeak = peakOf (choked.left);
+
+            std::printf ("        %d strikes inside a choke group: %d voices still sounding,"
+                         " tail rms %s against %s ungrouped and %s for one hit, peak %s\n",
+                         strikes, chokedVoices, juce::String (chokedTail, 5).toRawUTF8(),
+                         juce::String (ungroupedTail, 5).toRawUTF8(),
+                         juce::String (singleTail, 5).toRawUTF8(),
+                         juce::String (chokedPeak, 4).toRawUTF8());
+
+            check (chokedVoices == freeVoices,
+                   "a lane in a choke group still holds all eight, because the strikes after"
+                   " the first are the same hit and a hit cannot cut itself up",
+                   "the choke group's roll kept " + juce::String (chokedVoices) + " of "
+                       + juce::String (freeVoices) + " voices, so every strike is firing the"
+                         " choke and the roll is a fade");
+
+            // The audible half, with the ceiling that keeps it honest: eight voices of
+            // incoherent noise add about the square root of eight (2.83, and 2.81 measured
+            // here), so the tail of a roll is far louder than the tail of a hit -- and none
+            // of it is the bus being overdriven.
+            check (chokedTail > singleTail * 1.5f && ungroupedTail > singleTail * 1.5f
+                     && std::abs (chokedTail - ungroupedTail) < ungroupedTail * 0.25f,
+                   "and you can hear it: the tail of a choked roll is more than half again as"
+                   " loud as a single hit, and within a fifth of the same roll with nothing to"
+                   " choke it, so the group costs no level",
+                   "tails " + juce::String (singleTail, 5) + " for one hit, "
+                       + juce::String (ungroupedTail, 5) + " ungrouped, "
+                       + juce::String (chokedTail, 5) + " choked");
+
+            check (chokedPeak < 0.9f,
+                   "and none of that is clipping: the whole render peaks under -1 dB, so the"
+                   " growth is voices summing and not the bus folding",
+                   "the accumulation fixture peaks at " + juce::String (chokedPeak, 4));
+
+            //==================================================================
+            // The other direction: a *different* hit in the same group is still cut. A roll
+            // that declined to choke anything at all would pass everything above and quietly
+            // switch the choke off. Lane 0 is a short click so that the late window belongs
+            // to the victim alone.
+            //==================================================================
+            {
+                GrooveboxProcessor q;
+                q.prepareToPlay (sampleRate, blockSize);
+
+                auto click = makeClickWav ("ratchet-choke-victim", 120, sampleRate);
+
+                juce::String error;
+                q.loadSampleIntoChannel (0, click, error);
+                q.loadSampleIntoChannel (1, source, error);
+                clearAllSteps (q);
+
+                q.setStep (0, probeStep, true);
+                q.setStepRatchet (0, probeStep, strikes);
+                q.setStep (1, 0, true);
+
+                q.setChannelLevel (0, 0.9f);
+                q.setChannelSustain (0, 0.0f);
+                q.setChannelChokeGroup (0, 1);
+
+                q.setChannelLevel (1, 1.0f);
+                q.setChannelDecay (1, 0.0f);
+                q.setChannelSustain (1, 1.0f);
+                q.setChannelChokeGroup (1, 1);
+                q.setMutate (0.0f);
+
+                const auto victimRms = [&] (int groupForVictim)
+                {
+                    q.setChannelChokeGroup (1, groupForVictim);
+                    rearm (q);
+                    return playBar (q, barSamples);
+                };
+
+                const auto cutRender = victimRms (1);
+                const auto heldRender = victimRms (0);
+
+                const auto lateFrom = (int) (exactStepSamples * 8.0);
+                const auto lateTo   = (int) (exactStepSamples * 11.0);
+
+                const auto cut  = rmsBetween (cutRender.left, lateFrom, lateTo);
+                const auto held = rmsBetween (heldRender.left, lateFrom, lateTo);
+
+                std::printf ("        a held lane in the group, late rms %s with the roll"
+                             " allowed to choke it, %s with it not\n",
+                             juce::String (cut, 5).toRawUTF8(), juce::String (held, 5).toRawUTF8());
+
+                check (held > 0.05f && cut < held * 0.1f,
+                       "and the choke is not gone: a held lane in the same group is still cut"
+                       " by the roll's first strike, so eight strikes decline to choke"
+                       " themselves and not the hit next to them",
+                       "the grouped victim reads " + juce::String (cut, 5) + " against "
+                           + juce::String (held, 5) + " when it was left alone");
+
+                click.deleteFile();
+            }
+
+            source.deleteFile();
+        }
+
+        //==================================================================
+        // d. one draw of each dice, eight strikes carrying it
+        //==================================================================
+        std::printf ("\n    d. the roll is one hit for the variation too\n");
+        {
+            GrooveboxProcessor p;
+            p.prepareToPlay (sampleRate, blockSize);
+
+            auto click = makeClickWav ("ratchet-dice", 120, sampleRate);
+
+            armEveryStep (p, click);
+            p.setStepRatchet (0, probeStep, strikes);
+
+            rearm (p);
+            const auto certain = playBar (p, barSamples);
+            const auto certainMarks = scanOnsets (certain.left, 120);
+            const auto spacing = (int) certainMarks.size() >= probeStep + strikes
+                                   ? certainMarks[probeStep + 1] - certainMarks[probeStep] : 0;
+
+            std::printf ("        an eighth of the straight room is %d samples\n", spacing);
+
+            check (spacing >= 600 && spacing <= 800,
+                   "the straight-grid strike spacing is an eighth of a step, which is the ruler"
+                   " the humanised arm is about to be compared with",
+                   "the strike spacing off a straight grid is " + juce::String (spacing)
+                       + " samples");
+
+            // Now open the timing knob. If every strike re-rolled its own lateness the
+            // spacing would jitter by up to a quarter of a step -- more than a third of the
+            // spacing itself. The claim is that it does not, because one hit is drawn once
+            // and all eight strikes carry that one draw.
+            rearm (p);
+            p.setHumanize (1.0f);
+
+            const auto late = playBar (p, barSamples);
+            const auto lateMarks = scanOnsets (late.left, 120);
+
+            check ((int) lateMarks.size() == Layout::numSteps + strikes - 1,
+                   "opening the timing knob does not change how many strikes sound",
+                   "the humanised roll shows " + juce::String ((int) lateMarks.size())
+                       + " onsets, expected " + juce::String (Layout::numSteps + strikes - 1));
+
+            if ((int) lateMarks.size() == Layout::numSteps + strikes - 1 && spacing > 0)
+            {
+                int worst = 0;
+
+                for (int k = 1; k < strikes; ++k)
+                    worst = juce::jmax (worst, std::abs ((lateMarks[probeStep + k] - lateMarks[probeStep])
+                                                         - k * spacing));
+
+                check (worst <= 2,
+                       "and with the timing knob wide open the eight strikes are still exactly"
+                       " as evenly spaced as they were shut, off by at most two samples over"
+                       " seven of them",
+                       "opening the timing knob spread the roll by up to " + juce::String (worst)
+                           + " samples, so each strike draws its own lateness and a roll is"
+                             " eight hits instead of one");
+
+                const auto drawn = p.wouldThisStepStartLate (0, probeStep, 0);
+                const auto expected = certainMarks[probeStep]
+                                        + (int) std::llround (drawn * exactStepSamples);
+                const auto error = std::abs (lateMarks[probeStep] - expected);
+
+                std::printf ("        the take says step %d is %.4f steps late (%d samples); the"
+                             " roll starts at %d, the certain one at %d\n",
+                             probeStep, drawn, (int) std::llround (drawn * exactStepSamples),
+                             lateMarks[probeStep], certainMarks[probeStep]);
+
+                check (error <= 2,
+                       "and the first strike sits on the lateness this take was already going to"
+                       " have, so the hit that got rolled is the hit that would have played"
+                       " anyway",
+                       "the rolled hit starts " + juce::String (error)
+                           + " samples away from the lateness its own take reports");
+            }
+
+            // And the probability: a step the dice reject has to cost nothing at all, eight
+            // strikes or one.
+            p.setHumanize (0.0f);
+            p.setMutate (1.0f);
+
+            for (int step = 0; step < Layout::numSteps; ++step)
+                p.setStepChance (0, step, 0.5f);
+
+            int dropped = 0, kept = 0;
+
+            for (int step = 0; step < Layout::numSteps; ++step)
+                p.wouldThisStepHit (0, step, 0) ? ++kept : ++dropped;
+
+            std::printf ("        at half chance with the knob wide open the first bar keeps %d"
+                         " steps and drops %d\n", kept, dropped);
+
+            check (dropped > 0 && kept > 0,
+                   "the dice are actually rolling here, so a check that a dropped step is silent"
+                   " is a check about something that happens",
+                   "half chance over sixteen steps dropped " + juce::String (dropped)
+                       + " and kept " + juce::String (kept));
+
+            // Arm one kept step early in the bar and one dropped step late in it, so the
+            // silence around the second cannot be the tail of the first.
+            int quietStep = -1, loudStep = -1;
+
+            for (int step = 1; step < Layout::numSteps; ++step)
+            {
+                const auto hits = p.wouldThisStepHit (0, step, 0);
+                if (hits && loudStep < 0)  loudStep = step;
+                if (! hits && step >= 9)   quietStep = step;
+            }
+
+            check (loudStep >= 0 && quietStep >= 0,
+                   "and there is a kept step early in the bar and a dropped one late in it to"
+                   " compare",
+                   "kept " + juce::String (loudStep) + ", dropped " + juce::String (quietStep));
+
+            if (loudStep >= 0 && quietStep >= 0 && spacing > 0)
+            {
+                clearAllSteps (p);
+                p.setStep (0, loudStep, true);
+                p.setStep (0, quietStep, true);
+                p.setStepRatchet (0, loudStep, strikes);
+                p.setStepRatchet (0, quietStep, strikes);
+
+                rearm (p);
+                p.setMutate (1.0f);
+
+                const auto take = playBar (p, barSamples);
+                const auto marks = scanOnsets (take.left, 120);
+
+                const auto centre = (int) std::llround (exactStepSamples * (double) quietStep);
+
+                int inWindow = 0;
+
+                for (auto m : marks)
+                    if (m >= centre - 500 && m <= centre + 500)
+                        ++inWindow;
+
+                std::printf ("        step %d is kept and rolled, step %d is dropped and rolled;"
+                             " %d onsets around the dropped one, %d in the bar\n",
+                             loudStep, quietStep, inWindow, (int) marks.size());
+
+                check (inWindow == 0 && (int) marks.size() == strikes,
+                       "a step the dice reject sounds nothing at eight strikes either, and the"
+                       " step they kept still sounds all eight",
+                       "the rejected step showed " + juce::String (inWindow)
+                           + " onsets and the bar " + juce::String ((int) marks.size())
+                           + ", so the probability is being drawn per strike");
+            }
+
+            click.deleteFile();
+        }
+
+        //==================================================================
+        // e. the pool, asked for ninety-six strikes at once
+        //==================================================================
+        std::printf ("\n    e. every lane rolled at once still fits\n");
+        {
+            int worstVoices = 0;
+            bool finite = true;
+
+            /**
+                Renders in blocks and watches the pool while it goes.
+
+                `playBar` cannot be used here: the claim is about the highest the count ever
+                reaches, and a number read only once the pass is over has already been brought
+                back down by every voice that finished.
+            */
+            auto watch = [&] (GrooveboxProcessor& proc, int totalSamples)
+            {
+                juce::AudioBuffer<float> buffer (2, blockSize);
+                juce::MidiBuffer midi;
+
+                for (int done = 0; done < totalSamples; done += blockSize)
+                {
+                    buffer.clear();
+                    proc.processBlock (buffer, midi);
+
+                    worstVoices = juce::jmax (worstVoices, proc.debugActiveVoices());
+
+                    for (int channel = 0; channel < 2; ++channel)
+                        for (int i = 0; i < blockSize; ++i)
+                            if (! std::isfinite (buffer.getSample (channel, i)))
+                                finite = false;
+                }
+            };
+
+            GrooveboxProcessor p;
+            p.prepareToPlay (sampleRate, blockSize);
+
+            // A source long enough that a hit is still ringing four steps on, or the pool
+            // would drain between strikes and the ceiling would never be reached.
+            auto source = makeNoiseWav ("ratchet-pool", makeNoiseSamples (22050), sampleRate);
+
+            for (int channel = 0; channel < Layout::numChannels; ++channel)
+            {
+                juce::String error;
+                p.loadSampleIntoChannel (channel, source, error);
+                p.setChannelLevel (channel, 0.02f);
+                p.setChannelDecay (channel, 0.0f);
+                p.setChannelSustain (channel, 1.0f);
+            }
+
+            clearAllSteps (p);
+
+            for (int channel = 0; channel < Layout::numChannels; ++channel)
+                for (int step = 0; step < Layout::numSteps; ++step)
+                {
+                    p.setStep (channel, step, true);
+                    p.setStepRatchet (channel, step, Layout::maxRatchetHits);
+                }
+
+            p.setMutate (0.0f);
+            rearm (p);
+
+            std::printf ("        %d lanes x %d strikes at every step = %d hits a bar, against"
+                         " a pool of %d\n",
+                         Layout::numChannels, Layout::maxRatchetHits,
+                         Layout::numChannels * Layout::maxRatchetHits, Layout::maxVoices);
+
+            check (Layout::numChannels * Layout::maxRatchetHits > Layout::maxVoices,
+                   "the fixture is deliberately over the pool: one step of it alone wants more"
+                   " voices than the engine owns, so the ceiling below is tested and not"
+                   " admired",
+                   "the load is only " + juce::String (Layout::numChannels * Layout::maxRatchetHits)
+                       + " against " + juce::String (Layout::maxVoices));
+
+            p.setPlaying (true);
+            watch (p, (int) (exactStepSamples * Layout::numSteps * 2.0));
+            p.setPlaying (false);
+
+            std::printf ("        highest the pool ever got: %d voices\n", worstVoices);
+
+            check (worstVoices == Layout::maxVoices,
+                   "a fully rolled kit does fill the pool, which is the precondition for"
+                   " calling the next line a ceiling",
+                   "the pool peaked at " + juce::String (worstVoices) + ", expected to reach "
+                       + juce::String (Layout::maxVoices));
+
+            check (worstVoices <= Layout::maxVoices,
+                   "and it never once asks for a voice the engine does not own, so a dense roll"
+                   " steals rather than overrunning the array",
+                   "the pool peaked at " + juce::String (worstVoices)
+                       + " against a ceiling of " + juce::String (Layout::maxVoices));
+
+            check (finite,
+                   "and nothing went non-finite on the way, which is what a pool overrun would"
+                   " leave behind",
+                   "a fully rolled bar produced a non-finite sample");
+
+            source.deleteFile();
+        }
+
+        //==================================================================
+        // f. what the count can be, and where it is remembered
+        //==================================================================
+        std::printf ("\n    f. what the count can be, and what survives a reset\n");
+        {
+            GrooveboxProcessor p;
+            p.prepareToPlay (sampleRate, blockSize);
+
+            p.setStepRatchet (3, 7, 999);
+            p.setStepRatchet (3, 8, -3);
+            p.setStepRatchet (3, 9, 0);
+            p.setStepRatchet (3, 10, 5);
+
+            check (p.getStepRatchet (3, 7) == Layout::maxRatchetHits
+                     && p.getStepRatchet (3, 8) == 1 && p.getStepRatchet (3, 9) == 1
+                     && p.getStepRatchet (3, 10) == 5,
+                   "the count is clamped at both ends rather than trusted: a thousand asks for"
+                   " eight, and nothing above one asks for one",
+                   "999, -3 and 0 came back as " + juce::String (p.getStepRatchet (3, 7)) + ", "
+                       + juce::String (p.getStepRatchet (3, 8)) + " and "
+                       + juce::String (p.getStepRatchet (3, 9)));
+
+            /** The strike byte of one cell, straight out of the record the session carries. */
+            const auto recordOf = [] (GrooveboxProcessor& proc)
+            {
+                return proc.getValueTreeState().state.getProperty (juce::Identifier ("pattern")).toString();
+            };
+
+            const auto storedStrikes = [] (const juce::String& payload, int channel, int step)
+            {
+                juce::MemoryBlock bytes;
+                juce::MemoryOutputStream sink (bytes, false);
+                juce::Base64::convertFromBase64 (sink, payload.fromFirstOccurrenceOf (":", false, false));
+                sink.flush();
+
+                const auto* at = static_cast<const juce::uint8*> (bytes.getData())
+                                   + (size_t) ((channel * Layout::numSteps) + step) * 4;
+
+                return (int) at[3];
+            };
+
+            const auto payload = recordOf (p);
+
+            check (payload.startsWith ("v4:")
+                     && storedStrikes (payload, 3, 7) == Layout::maxRatchetHits
+                     && storedStrikes (payload, 3, 8) == 1,
+                   "and the clamp is in the bytes the session carries, not only in the getter"
+                   " that reads them back, so a record written by something that believed a"
+                   " hundred was possible cannot get a hundred strikes out of one cell",
+                   "the stored strike bytes for the clamped cells are "
+                       + juce::String (storedStrikes (payload, 3, 7)) + " and "
+                       + juce::String (storedStrikes (payload, 3, 8)) + " in a record tagged "
+                       + payload.substring (0, 3));
+
+            p.resetRatchets();
+
+            bool allOne = true;
+
+            for (int channel = 0; channel < Layout::numChannels && allOne; ++channel)
+                for (int step = 0; step < Layout::numSteps; ++step)
+                    if (p.getStepRatchet (channel, step) != 1)
+                        allOne = false;
+
+            check (allOne,
+                   "the reset returns every cell to one, which is the value that means this"
+                   " build never made a roll at all",
+                   "after the reset at least one cell still holds a roll");
+
+            // A reset only counts if the neutral value it wrote is the one the next save
+            // carries. Otherwise the button would undo the screen and leave the file.
+            GrooveboxProcessor restored;
+            restored.prepareToPlay (sampleRate, blockSize);
+            roundTrip (p, restored);
+
+            bool storedOnes = true;
+
+            for (int channel = 0; channel < Layout::numChannels && storedOnes; ++channel)
+                for (int step = 0; step < Layout::numSteps; ++step)
+                    if (restored.getStepRatchet (channel, step) != 1)
+                        storedOnes = false;
+
+            check (storedOnes,
+                   "and a session saved after the reset opens with no rolls in it, so the"
+                   " button is an edit and not a view",
+                   "the reset did not reach the state tree: the restored grid still has a roll");
+
+            // The one place the field is worth storing on its own: a cell that is switched
+            // off, at full level and certain still carries a roll, so the count belongs to the
+            // cell and not to the hit it is not making.
+            p.setStep (5, 2, false);
+            p.setStepRatchet (5, 2, 6);
+
+            GrooveboxProcessor carried;
+            carried.prepareToPlay (sampleRate, blockSize);
+            roundTrip (p, carried);
+
+            check (carried.getStepRatchet (5, 2) == 6 && ! carried.isStepOn (5, 2),
+                   "and a switched-off step keeps the roll it was given, so the fourth field"
+                   " survives on its own rather than only riding on a hit",
+                   "an off step gave up its strikes on the round trip (reads "
+                       + juce::String (carried.getStepRatchet (5, 2)) + ")");
+        }
+    }
+
 
     //======================================================================
     std::printf ("\n%s  %d checks, %d failures\n",

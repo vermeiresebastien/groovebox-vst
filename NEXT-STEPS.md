@@ -151,7 +151,7 @@ sample-exact clock invariant that test `[12]` protects.
 | **U2** | Kit workflow: multi-file drop fills lanes (`StepGridComponent.cpp`'s `filesDropped` uses `files[0]` and ignores the rest; its silence was fixed earlier, it raises the same error box the browse path does), lane menu from `getSampleIds()`, remembered folder, audition on click (B7) | 12 file dialogs → one gesture | 12-20 h | low | U3 |
 | **U3** | Live programs/kits (`getNumPrograms()==1`) = a free preset browser in Live's browser | makes the thing shareable and recallable | 16-24 h, partly blocked by path-only refs | med | — |
 | **U4** | Pattern → MIDI clip export by drag (`juce::MidiFile` already linked; `skulpt/Source/SequenceView.cpp:507` is the precedent) | gets your groove into the arranger | 4-8 h | low | — |
-| **U5** | Editor floor for a 1366×768 laptop, all-12-strip layout test — **done, all three halves**: the row half (2026-11-16, pulled into 4.3b — the bar wraps to two lines below 1774 px, `TransportBar::oneRowWidth`/`wrappedRowWidth`), the strip-height half (2026-11-16, 5.6 — `Layout::stripPlan` prices four stages) and the editor-height half (2026-11-16, 5.6 — `Layout::editorPlan`, and the 5.6 entry below has the numbers and the gates). `LayoutTest.cpp` walked one size and the first strip; it now walks nine sizes × all twelve strips, two of them deliberately below the editor's own minimum, and each one asserts `0 clipped` **and** that it ran the shared rule. The published floor is **1218 × 695 px** — the width is `TransportBar::wrappedRowWidth + 2 * Layout::editorMargin`, the height is `Layout::editorFloorHeight (TransportBar::twoRowHeight, gridFloor)`, and neither is typed. 695 px fits the roughly 730 px a 768 px screen leaves for a window; it still does not fit Live maximised on that screen. The default is untouched at 1832×844 | done | low | — |
+| **U5** | Editor floor for a 1366×768 laptop, all-12-strip layout test — **done, all three halves**: the row half (2026-11-16, pulled into 4.3b — the bar wraps to two lines below 1774 px, `TransportBar::oneRowWidth`/`wrappedRowWidth`), the strip-height half (2026-11-16, 5.6 — `Layout::stripPlan` prices four stages) and the editor-height half (2026-11-16, 5.6 — `Layout::editorPlan`, and the 5.6 entry below has the numbers and the gates). `LayoutTest.cpp` walked one size and the first strip; it now walks nine sizes × all twelve strips, two of them deliberately below the editor's own minimum, and each one asserts `0 clipped` **and** that it ran the shared rule. The published floor is **1298 × 695 px** — the width is `TransportBar::wrappedRowWidth + 2 * Layout::editorMargin`, the height is `Layout::editorFloorHeight (TransportBar::twoRowHeight, gridFloor)`, and neither is typed. 695 px fits the roughly 730 px a 768 px screen leaves for a window; it still does not fit Live maximised on that screen. The default is **1890×844** — 1832 until 4.5 put a fourth control on the bar, which took 80 px off the row rule and nothing off the grid | done | low | — |
 | **V1** | `verify.ps1`: build → both test exes with `$LASTEXITCODE` checked → SHA-256 manifest of `launch/` vs artefacts | today `installer/build-installer.ps1:92-105` only `Test-Path`s 5 files; nothing hashes anything | 3-4 h | low | — |
 | **V2** | RT tripwire (counting allocator armed inside `processBlock`) + click metric (max \|x[n]−x[n−1]\|) + level-matched A/B render rig | makes "sounds better" falsifiable, which is your rule | 12-16 h | med — JUCE 8.0.4 has **no** `OfflineRenderer`, BS.1770 LUFS would be hand-rolled | everything audio |
 | **M1** | Positioning: free BYO-sample in-plugin sequencer is genuinely unoccupied (Triaz Player can't load custom samples; TerminalVST is one sound per instance; Hydrogen isn't a plugin; Battery/Maschine sequence nothing in-plugin) | decide what the next 20 hours are *for* | 2 h decision | n/a | — |
@@ -332,6 +332,17 @@ touches the velocity law. No step here is allowed to be reported as better becau
   (step, subslot) and is the highest-risk item in the plan because it touches the split loop repaired in 2.3
   — do it only after Phase 2 is a week old and stable. ~6-8 h. Alternative that avoids the keystone:
   `Voice.startDelaySamples`, which leaves the clock untouched.
+  **Done 2026-11-16.** Route decided for it on 2026-11-16: the alternative, and the keystone stays
+  deferred. The entry's own
+  precondition is unmet — Phase 2 landed this week — so none of the three onset functions is touched. What
+  ships is the feature the keystone was only a route to: every grid cell carries a hit count of 1..8, and an
+  onset fires that many voices through the `Voice.startDelay` countdown 4.3a built for humanize. The spacing
+  is `gapToNextOnsetInSteps (step) / hits`, in steps, converted to samples at the one moment the engine knows
+  both halves — so it follows tempo and it follows swing, and the last strike of a roll starts strictly
+  before the next onset. A roll can fill the space it was given and cannot reach into the next step, which
+  is the same shape of guarantee `maxHumanizeLateSteps` gives the timing knob. A cell at 1 hit makes the old
+  call with the old arguments, so the section [28] fingerprint is the gate on that claim rather than an
+  argument for it. See the 4.5 record in section G.
 
 *Phase 4 total ≈ 25-30 h.*
 
@@ -369,7 +380,9 @@ touches the velocity law. No step here is allowed to be reported as better becau
   multi-size layout test were pulled forward into 4.3b and shipped there — one row at
   **1774 px** and wider, two lines below it, editor floor **1218×844**, which fits 1366 px of
   *width* and not 768 px of height. *(That clause was true of the floor as 4.3b shipped it; the
-  height half below is what paid for it, and the published floor is **1218×695** now.)*
+  height half below is what paid for it, and the published floor is **1298×695** now — 695 from
+  5.6, and the width 80 px wider again since 4.5, whose fourth control moved the wrap rule from
+  1774 to 1854.)*
   **The strip-height half, and the defect was worse than this entry claimed.** The 4.3b
   write-up said the `tight` branch "is broken": a probe arm at a 500 px window put **2 of
   every strip's 17 visible controls outside it**, at 236 px of strip with
@@ -381,7 +394,7 @@ touches the velocity law. No step here is allowed to be reported as better becau
   at any height, and `spare` could not say so because it was `area.getHeight()` after a
   `removeFromTop`, which clamps: a strip 44 px short leaves a rectangle of exactly 0, so the
   check built on it had no red state to reach. Fixed as one budget-chosen rule.
-  `Layout::stripPlan (room)` (`Source/Common.h:446`) returns four stages priced at exactly
+  `Layout::stripPlan (room)` (`Source/Common.h:490`) returns four stages priced at exactly
   their own cost — **268** full / **246** gaps in / **210** rows at their floors / **166**
   captions gone — over a hard floor of **123 px** of room, and `ChannelStrip::resized`
   (`Source/ChannelStrip.cpp:241`) asks it for every row height instead of holding a copy of
@@ -406,13 +419,14 @@ touches the velocity law. No step here is allowed to be reported as better becau
   **The editor-height half, paid for the same day.** The strip held its 285 px down to a 585 px
   window, so the debt was never the strip: it was that `editorHeight 844` did double duty as the
   default *and* the minimum, and nobody had ever asked what the layout costs at its cheapest.
-  `Layout::editorPlan (interior, barHeight, gridFloor)` (`Source/Common.h:565`) answers that in
+  `Layout::editorPlan (interior, barHeight, gridFloor)` (`Source/Common.h:609`) answers that in
   four stages, each giving up exactly one thing, in a fixed order: the GROOVEBOX row — 34 px that
   holds the mark, the one-line load/MIDI hint *and* the rule, all three drawn inside it — then the
   strip's slack and its rows down to the floors `stripPlan` already prices, then the strip's four
   captions. Costs **800 / 766 / 703 / 659 px** below the margins, so the published floor is stage 3
   plus 36 px of margin = **695 px**. The bar in that price is `TransportBar::twoRowHeight`, not the
-  60 the default width gets, because the minimum *width* the same rule publishes — 1218 — is under
+  60 the default width gets, because the minimum *width* the same rule publishes — 1298, since
+  4.5; 1218 when this was written — is under
   `oneRowWidth`: there is one corner where both limits are met at once, and pricing the height
   against the one-line bar would leave it 36 px short exactly there, which is gated rather than
   assumed. `GrooveboxEditor::paint` and `::resized` read one plan through `currentPlan()`, so the
@@ -421,7 +435,9 @@ touches the velocity law. No step here is allowed to be reported as better becau
   row rule read backwards from the 27 px the bank strip needs to carry a name line without
   ellipsising it, so the marks and the name survive to the last px — and `Layout::gridGuardHeight`
   (120) is what the strip may never take from the grid on the way *below* the floor. The default is
-  untouched: **1832×844 is stage 0**, strip 285, grid 405, rows 30, wordmark drawn.
+  untouched: **1832×844 is stage 0**, strip 285, grid 405, rows 30, wordmark drawn. *(4.5 made the
+  default 1890×844, and 1890 is still over `oneRowWidth`, so stage 0 is still what you get when the
+  editor opens — the height plan did not move.)*
   Gated by **13 new check sites**: twelve in `LayoutTest.cpp:825` (each stage boundary built out of
   the terms it is made of — the bar's `twoRowHeight`, the strip's own budget for the stage, the
   grid's row rule inverted — rather than by calling `editorCostForStage`; one px under every
@@ -500,24 +516,24 @@ touches the velocity law. No step here is allowed to be reported as better becau
   | where | sentence cites | right at `460b3bf` | in the tree today |
   |---|---|---|---|
   | B1 | `PluginProcessor.cpp:183` (engine renders the block) | yes | `processBlock` at `PluginProcessor.cpp:272`, the call at `:289` |
-  | B1 | `SequencerEngine.cpp:296-320` (the host branch) | yes | `renderVoices` at `:938`, the boundary walk at `:1325-1375` |
-  | B1 | `SequencerEngine.cpp:449-452` (`outLeft[i] += …`) | **no — the accumulate was at 445, four lines above** | `SequencerEngine.cpp:1250` |
-  | B2 | `SequencerEngine.cpp:525-532` (position from PPQ, disarm) | yes | `:1425-1445`, with `position = hostHead` at `:1472` |
+  | B1 | `SequencerEngine.cpp:296-320` (the host branch) | yes | `renderVoices` at `:1021`, the boundary walk at `:1408-1458` |
+  | B1 | `SequencerEngine.cpp:449-452` (`outLeft[i] += …`) | **no — the accumulate was at 445, four lines above** | `SequencerEngine.cpp:1333` |
+  | B2 | `SequencerEngine.cpp:525-532` (position from PPQ, disarm) | yes | `:1508-1528`, with `position = hostHead` at `:1555` |
   | B4 | `SampleStore.h:62` (the 512 ceiling) | yes | unchanged, `SampleStore.h:62` |
   | B4 | `SampleStore.cpp:123-131` (`addSample` returns 0) | yes | `SampleStore.cpp:151` |
-  | B5 | `PluginProcessor.h:244` (`getUndoManager`, "no callers") | yes | `PluginProcessor.h:460`; **it has a caller now** — `PluginEditor.cpp:166` |
+  | B5 | `PluginProcessor.h:244` (`getUndoManager`, "no callers") | yes | `PluginProcessor.h:497`; **it has a caller now** — `PluginEditor.cpp:182` |
   | B6 | `PluginProcessor.cpp:92,97` (two `substring` parses) | yes | `parameterChanged` at `:113`, and the parse is **gone** — ids are looked up in `Params::laneTargets()` |
   | B7 | `TransportBar.cpp:235-237` (audition) | **no — that is the swing grid** | no audition call exists in `TransportBar.cpp` at all |
-  | B7 | `PluginProcessor.cpp:884` (`previewChannel`) | yes | `PluginProcessor.cpp:1682` — still no UI caller |
+  | B7 | `PluginProcessor.cpp:884` (`previewChannel`) | yes | `PluginProcessor.cpp:1748` — still no UI caller |
   | B7 | `SampleStore.h:88` (`getSampleIds`) | yes | `SampleStore.h:108`, `SampleStore.cpp:225` |
-  | F1 | `PluginProcessor.cpp:673-693` (1/100-quantised velocity) | yes, and discharged by 4.1/4.2 | the codec is `slotPropertyName`/`pushPatternToState`/`applySlotFromState` at `:1136-1300` |
-  | F1 | `:334-361` (`shiftChannelRow`) | yes | `PluginProcessor.cpp:522` |
-  | U5 | `ChannelStrip.cpp:197-209` (the `tight` branch) | yes | **discharged by 5.6** — that branch is gone: the row heights come from `Layout::stripPlan` (`Common.h:446`), which `ChannelStrip.cpp:241-332` asks once per strip |
+  | F1 | `PluginProcessor.cpp:673-693` (1/100-quantised velocity) | yes, and discharged by 4.1/4.2 | the codec is `slotPropertyName`/`pushPatternToState`/`applySlotFromState` at `:1185-1358` |
+  | F1 | `:334-361` (`shiftChannelRow`) | yes | `PluginProcessor.cpp:563` |
+  | U5 | `ChannelStrip.cpp:197-209` (the `tight` branch) | yes | **discharged by 5.6** — that branch is gone: the row heights come from `Layout::stripPlan` (`Common.h:490`), which `ChannelStrip.cpp:241-332` asks once per strip |
   | E2 | `SequencerEngine.cpp:368,457` (`free()` via a refcount) | **no — no refcount, no `free` in that file, at any baseline** | the registry is append-only with dedupe-not-free; the sentence is describing a design that was rejected |
-  | 3.x | `SequencerEngine.cpp:290,138` (velocity is gain only) | **half — 138 was the gain line, 290 a MIDI argument** | the gain is `SequencerEngine.cpp:337`, inside `trigger` at `:296` — and the sentence is out of date too, since 4.3b velocity is gain *and* tone |
-  | 2.8 | `SequencerEngine.h:317` (the only read of `soundingChannels`) | **no — 317 was `double position = 0.0;`, the read was 309** | `SequencerEngine.h:642` |
+  | 3.x | `SequencerEngine.cpp:290,138` (velocity is gain only) | **half — 138 was the gain line, 290 a MIDI argument** | the gain is `SequencerEngine.cpp:385`, inside `trigger` at `:343` — and the sentence is out of date too, since 4.3b velocity is gain *and* tone |
+  | 2.8 | `SequencerEngine.h:317` (the only read of `soundingChannels`) | **no — 317 was `double position = 0.0;`, the read was 309** | `SequencerEngine.h:682` |
   | P2 | `PluginProcessor.cpp:10` (the hand-written id list) | yes | `:24`, derived from `Params::globalIds()` since 4.2 |
-  | 4.x | `SequencerEngine.cpp:858` (`dropRemaining` per sample) | **no — the file was 618 lines then, so it was written from a dirty copy** | `SequencerEngine.cpp:1257-1264`, inside `renderVoice` at `:981` |
+  | 4.x | `SequencerEngine.cpp:858` (`dropRemaining` per sample) | **no — the file was 618 lines then, so it was written from a dirty copy** | `SequencerEngine.cpp:1340-1347`, inside `renderVoice` at `:1064` |
 
   ~1-2 h, no build. Two things this list does *not* cover, and the re-pointing has to:
 
@@ -701,7 +717,7 @@ designed around, and the strip now reports 5 px to spare. *(Dated record, and th
 changed meaning under 5.6: it used to be the leftover of the layout rectangle and is now the plan's
 own deficit. They are the same number wherever the old roomy set fitted — stage 0 is priced at that
 set — and differed only where it did not, which is where the old reading was the lie. The strip is 285
-px today, `PluginEditor.cpp:47`.)* The box is a 34 px `ComboBox` sharing the last row
+px today, `Layout::stripDesignHeight` at `Source/Common.h:540`.)* The box is a 34 px `ComboBox` sharing the last row
 with Mute (40 px), items `0 1 2 3` at ids `1 2 3 4` because JUCE keeps 0 for "no selection"; a combo box
 rather than a popup menu because it shows the value without a click and `setSelectedId` fires synchronously,
 which is what makes both directions testable headless.
@@ -867,7 +883,9 @@ nothing else). The grid keeps its
 the debt Phase 5 U5 had to pay back, and it is paid. *(5.6 covered both halves: that 14 is now
 `Layout::stripPlan`'s `dropRow`, 14 px in the two roomy stages and 12 in the two at floors, and the strip is
 285 px at the default; and the 844 quoted above is the **default** only — the *minimum* is 695 px now, which
-`Layout::editorPlan` prices rather than types. The 5.6 entry has the numbers and the gates.)*
+`Layout::editorPlan` prices rather than types. The 5.6 entry has the numbers and the gates. *4.5 is the third
+width in that chain: a fourth control on the bar took the default to **1890** and the minimum to **1298**, and
+left 844 and 695 where they were.)*
 
 *What `[25]` measures.* Periods are counted from zero crossings, so the claim is about pitch and not about a
 waveform shape; the fixture tone is a known 220 Hz, hence a known 200.455-sample period.
@@ -1223,7 +1241,8 @@ else to go rather than only trim heights. *(Closed 2026-11-16 by 4.3b, which is 
 gave it somewhere else to go: the row wraps below 1774 px and the floor came down to
 **1218×844** (the height half of that is 5.6's, and is now 695). The widening sentence above stayed true for the default size and stopped being
 true of the minimum the moment `editorWidth` became a default rather than a floor — which is
-what `PluginEditor.cpp`'s comment now says.)* It is no longer reachable from `1240×830`, and
+what `PluginEditor.cpp`'s comment now says. Both of those numbers are 4.3b's own; 4.5's fourth
+control moved the wrap to 1854 px and the floor to **1298×695**.)* It is no longer reachable from `1240×830`, and
 it cites `PluginEditor`'s `editorWidth`/`editorHeight` rather than a line number, because
 the comment block above them just moved both.
 
@@ -1518,7 +1537,12 @@ as a default rather than a floor. *(Superseded the same day on the height axis: 
 default pasted in as a minimum. `Layout::editorPlan` prices the minimum instead, and the floor is
 **1218×695** — the width half of this row is untouched, the 36 px the grid paid is now its own
 361 px floor, and the 5.6 entry above has the gates.)* Widening past 1832 was rejected: the cost lands on the grid, which
-is the thing being looked at while the faders are not.
+is the thing being looked at while the faders are not. *(Rejected, and then spent — 4.5 put a fourth control
+in the row and there was nowhere to take 80 px from that was not a control: `oneRowWidth` is **1854**, the
+default **1890×844**, and the editor floor **1298×695**. Two of the three numbers in that sentence moved, and
+the grid paid none of it — the wrap rule is what grew, so the cost is 80 px of window width and the floor moves
+by exactly the same 80 because it is `wrappedRowWidth + margin * 2`, derived. The 4.5 entry has what the control
+is and why nothing else gave way.)*
 
 **The layout gates that were false greens, and what each one asks now.** Six sizes × six claims.
 (i) The first version compared `height` with `heightForWidth (getWidth)` — the same function
@@ -1585,10 +1609,10 @@ in here, since the bank is what they finally have somewhere to go.
 **The law, in one place.** `Layout::numPatternSlots` is 4 (`Source/Common.h:34`) and slot 0 is the grid that
 already existed: the property is still `pattern`, with the same bytes, so a session written before the bank
 opens as one lane, one pattern, pointed at slot 0, counter shut. The other three are **sparse** —
-`slotPropertyName` (`Source/PluginProcessor.cpp:1136`) names them and `slotCarriesAnything` (the next function,
-at `:1143`) decides whether they are on the tree at all, so an empty slot costs a session nothing and the
+`slotPropertyName` (`Source/PluginProcessor.cpp:1185`) names them and `slotCarriesAnything` (the next function,
+at `:1192`) decides whether they are on the tree at all, so an empty slot costs a session nothing and the
 census a test can read is *which names are present*, not a count. Which slot a bar sounds is
-`SequencerEngine::slotPlaying` (`Source/SequencerEngine.cpp:230`): it starts at the lane's selected slot and
+`SequencerEngine::slotPlaying` (`Source/SequencerEngine.cpp:277`): it starts at the lane's selected slot and
 walks **forward over the filled ones only**, so two filled slots of four alternate those two rather than going
 quiet for the other two, and one filled slot never rotates at all. `isSlotFilled` (`:208`) is the one answer
 to "does this slot hold something" and is shared by the dot, the rotation and the copy rule — the engine's own
@@ -1604,13 +1628,13 @@ this cell store, and is it worth storing"; that sentence written three times is 
 retunes a kit, and it already bit once this year with `allParameterIds`.
 
 **The panel.** Each lane's label column carries a strip of marks (`getSlotDotBounds` at
-`Source/StepGridComponent.cpp:223`, hit-tested by `bankTargetAt` at `:262`, dispatched at `:745`): four slot
+`Source/StepGridComponent.cpp:257`, hit-tested by `bankTargetAt` at `:296`, dispatched at `:860`): four slot
 marks — solid when filled, outline when not, a white ring on the selected one and a dot inside a mark when the
 sounding slot is not the selected one — then a copy mark, then the rotate chip. Copy duplicates the row into
 the next *unfilled* slot starting after the selected one and moves the pointer there
-(`GrooveboxProcessor::duplicateChannelRowToNextSlot`, `Source/PluginProcessor.cpp:642`, which ends by storing
+(`GrooveboxProcessor::duplicateChannelRowToNextSlot`, `Source/PluginProcessor.cpp:686`, which ends by storing
 the new pointer at `:676`); it is wrapped in `beginTransaction ("Duplicate row")` at
-`Source/StepGridComponent.cpp:756` so one undo takes the copy and the pointer back together, and a half-copied
+`Source/StepGridComponent.cpp:871` so one undo takes the copy and the pointer back together, and a half-copied
 bank cannot be a thing. `cycleChannelEvolve` (`:615`) walks the ladder and wraps back to off,
 because off has to be reachable by the same gesture that turns it on.
 
@@ -1618,7 +1642,7 @@ because off has to be reachable by the same gesture that turns it on.
 patterns, and a lane the user is editing must not change under them because a bar boundary arrived.
 
 **It is state, not a parameter.** `slots` and `evolve` are tree properties on the atomics (`pushBankToState`
-at `Source/PluginProcessor.cpp:1402`, `applyBankFromState` at `:1434`, gated by `isGridProperty` at `:1457`)
+at `Source/PluginProcessor.cpp:1468`, `applyBankFromState` at `:1500`, gated by `isGridProperty` at `:1523`)
 and they are deliberately **not** in the 116-parameter table, so the host cannot ramp a slot change and Live's
 arrangement cannot draw one. The README says so next to the limitation about no song mode, and the reason it
 stays that way is that a slot is a *pattern*, and the other patterns — the grid itself — are not automatable
@@ -1683,6 +1707,182 @@ has no check that renders *across* a slot change with a long release: what prote
 new bar's hit on the previous bar's tail is 3.1's steal hand-off, which is general and was not written for
 this — the gap is stated under section A's table instead of being glossed over.
 
+### 4.5 — one hit, several strikes (done 2026-11-16)
+
+The plan offered two routes and made one of them conditional on its own precondition: *"This
+rewrites the three onset functions into (step, subslot) and is the highest-risk item in the plan
+because it touches the split loop repaired in 2.3 — do it only after Phase 2 is a week old and
+stable."* Phase 2 landed this week, so the keystone stays deferred and what shipped is the
+alternative: `Voice.startDelay`, the countdown 4.3a built for humanize, spread one hit over the
+space its own step owns. No onset function was rewritten, no split loop was touched, and the
+clock, the playhead and the swing grid are exactly where 4.4 left them.
+
+**The law, in two functions and one conversion.** `SequencerEngine::gapToNextOnsetInSteps`
+(`Source/SequencerEngine.cpp:140`) answers how far the *next onset this grid will actually play*
+is from this step, in steps — so it already knows about the swing grid and about which division
+the row is on. `strikeDelayInSteps` (`:166`) is `gap * strike / strikes`, and strike 0 is always
+zero, which is what makes a roll additive on top of the humanize offset rather than a second
+opinion about timing. Both halves go into one rounding at the one call site (`:830`,
+`std::lround ((late + strikeDelayInSteps (...)) * samplesPerStep)`) because a rule that rounded
+the wait and the lateness separately could land a strike on either side of the sample the grid
+means, and the seam the tests ask about is the sum. The wait itself is spent in
+`renderVoice` (`:1093`) before a sample is read or the envelope is touched, so it survives any
+block size for the reason 4.3a recorded.
+
+**It follows swing because it follows the room, and both are measured, not derived in the test.**
+On the straight 1/16 grid step 4's room is 5513 samples (1.0001 steps — the ruler arm, so the
+eight-strike arms are not measured against a broken ruler). At the shuffle the head of a pair
+holds **8269** and its off-beat **2756**, ratio 3.000, and the same eight strikes space
+themselves **1033.6** samples apart in the first and **344.6** in the second. An eighth of the
+straight room is **689** samples, 15.6 ms. That is the argument for a fraction of a step instead
+of milliseconds, stated as numbers: a fixed delay would play the off-beat's roll three times
+slower than its own grid. And the ceiling holds where it is tightest — eight on the *smaller*
+room still clears the next onset by more than a rounding, so eight cannot become nine by leaning
+on the step after it.
+
+**One hit for every other law the engine runs.** The probability draw is keyed once per
+(bar, step, lane), so a rejected step sounds nothing at eight strikes (measured arm: a bar that
+kept 10 steps and dropped 6 at half chance, with the dropped cell rolled to eight and
+returning zero onsets); the humanize draw is keyed once too, so the whole roll carries the one
+lateness (the take said step 4 is 0.0435 steps late, the unrolled hit starts at 22050 and the
+rolled one at 22290 — 240 samples, both, and the seven intervals stay within two samples of even
+with the knob wide open). Only **strike 0 fires the choke group** (`StrikeChoke::apply` /
+`.skip`, `:834`): a rolled lane keeps all eight of its voices inside a group, because a hit
+cannot cut itself up, and a *different* hit in that group is still cut (the held lane under it
+goes 0.41241 → 0.00000). A MIDI note is not rolled at all — `trigger` is called from the note
+paths with its defaults (`:642`, `:695`) and only the step loop asks for a count.
+
+**The level cost is arithmetic, and it is stated rather than bought back.** There is no
+per-strike gain scaling: eight strikes are eight voices playing the sample. On one lane, one
+step, full velocity and chance, channel level 0.12, on a noise bed with decay shut and sustain
+at 1 so the voices genuinely overlap, at the default trim, the tail window reads 0.04951 for one
+hit and 0.13897 for eight — **×2.81, +8.97 dB**, against √8 = 2.83 for eight incoherent voices.
+Same roll inside a choke group: 0.13897 again, so the group costs no level. That fixture peaks at
+0.5385 and the render stays under −1 dB, which is why the check can call the growth summation and
+not the bus folding. There is still no limiter, and the trim is the user's. A whole kit rolled at
+once — 12 lanes × 8 at every step — is 96 hits a bar against a pool of **64** voices: the pool
+fills to exactly 64, never past it, nothing goes non-finite, and the densest roll steals rather
+than overrunning.
+
+**State, and the fourth byte.** The step record is generation 4: stride 4, 768 bytes a slot,
+1027 characters of payload (`[27]` prints the width it wrote). `Layout::maxRatchetHits` is 8
+(`Source/Common.h:305`) and `Layout::ratchetByte` (`:389`) is the one clamp, applied on the way
+in, on the way out of the codec, and again where the engine reads the atomic — so a byte that
+meant 60 costs eight strikes, not sixty, and a hand-edited preset cannot ask for a hundred
+voices. A record with no fourth byte — every session written before this — reads as one strike
+everywhere, which with off / full / every-time is exactly the state a missing record already
+meant, so `cellSaysAnything` gained its fourth term and the sparse encoding still writes nothing
+for it. One strike at the engine is one turn of a loop whose delay is zero, which is why the
+**[28] fingerprint `4BC3AA231178C071` is a gate on this change rather than a hope about it**: it
+did not move.
+
+**The panel: the third overlay, and 80 px of bar.** **Ratchet** joins **Velocity** and **Chance**
+as a hand-made exclusive trio (`TransportBar::handleRatchetClicked`,
+`Source/TransportBar.cpp:699` — JUCE's radio group cannot express "neither", and all three
+overlays *can* be off). The shared reset now does three fields and says which: `x1` over a strike
+count, `100%` over the other two, with the tooltip moving with it. A cell carries one tick per
+strike on the axis the rest of the grid already reads as time — `paintStrikePips` under
+`strikePipsFit` (`Source/StepGridComponent.h:115`), which is the same arithmetic the drawing does
+rather than a second copy of it; the resting grid marks a rolled cell with a 2 px cut at its top
+edge (`restingStrikeMarks`, `Source/StepGridComponent.cpp:468`) and nothing at all on one strike,
+on an off cell, or under an open overlay. Adding the control moved `oneRowWidth` 1774 → **1854**
+and with it the derived floor 1218 → **1298** and the default 1832 → **1890**; nothing else gave
+way, and the 68 × 27 px cell the floor now measures was verified to hold all eight ticks at the
+published minimum.
+
+**Two defects found by reading, not by a red test.** The reset's `x1` label was *promised by a
+comment that had no code under it* — the button said "100%" over a number of hits, which is a
+button describing something it is not going to do. And the overlay's ticks were invisible at the
+velocity a fresh session draws by default: a tick painted in the channel's own colour on a cell
+filled by that same colour is not a tick, so every cell of a new session showed *nothing* in the
+one overlay whose whole job is to show a count. Both fixed; arm **G** below exists because the
+second fix is load-bearing, not decorative.
+
+**Gates, and what each arm killed.** SmokeTest **[33] "one hit can be several strikes"**, six
+arms (a ruler, swing, choke, the three other laws, the pool, the clamp and the reset), plus two
+travel gates in `[29]`'s field-travel block — that a row shift carries the strike count with the
+step it belongs to, and that it turns only the slot the lane points at — for **465 checks,
+0 failures**, `[28]` unchanged. LayoutTest: the variation-control block rewritten to look
+every control up **by name**, six directed exclusivity pairs, a drag arm, an eleven-position
+monotonic walk, a reset-and-undo arm, and a new pixel section that counts ticks out of real
+renders — **651 checks, 0 problems**. Nine panel falsification arms (`out/ab-45.py`, log
+`out/ab-45.txt`) and two state arms over `Source/PluginProcessor.cpp` run against the smoke suite
+(`out/ab-45b.py`, log `out/ab-45b.txt`), each restoring the recorded good file before it mutates,
+and the restore hash-checked against `out/*.45.good` and `out/PluginProcessor.cpp.45b.good` with
+a green re-run after: A the ratchet handler stops
+closing Velocity → 1 problem; B the label never follows the overlay → 2; C the reset stops doing
+strike counts → 1; D the control is unnamed → 1 problem **and 629 checks instead of 651**; E the
+ticks under-count (`jmin 4`) → 3; F the neutral value gets marked → 2; G the recess goes → 1; H
+the mark draws itself under an overlay → 2; I the roll drag writes chance → 4; J the shift drops
+the fourth store → **2 failures, and they are exactly the two new travel gates**; K the shift
+turns the slot next to the selected one → 12 failures, the named carrier among them.
+
+**Why J and K exist, and what they say about a travel gate.** 4.1's own record said the shape out
+loud: *"`shiftChannelRow` taught to carry every per-step field it now moves" is gated rather than
+refactored … what a new field will still need is a line in the two loops, and the turn-and-save is
+where a field that stays behind gets caught.* It was not caught here, because the block that has
+played that role since 4.2 writes the roll **after** the shift — so a missing fourth store left
+every check in the file agreeing. A travel gate only travels a field that was already on the cell
+when the move happened, and arm J is what proves the line is now load-bearing: drop the store and
+the only two checks that move are the two written for it. **K** is the other half of the same
+field: the grid paints the selected slot and nothing else, so a shift that turns a different take
+of the same lane is invisible on screen *and* invisible to every check that only ever reads the
+slot it edits — the gate reads the slot the shift is not supposed to touch.
+
+**Arms A and I did not bite the first time, and the reasons are the useful part.** A removed the
+line that closes Velocity when Ratchet opens, and the suite came back green at 651. The helper
+that claims to test exclusivity shut *all three* toggles before opening the wanted one — so when
+it clicked Ratchet there was nothing lit to fail to close, and all three arms were green on a
+build that had the exact bug the rule exists to prevent. Open one rival first, then the wanted
+overlay on top of it, and do it for both rivals: six directed pairs where three had been. The
+second version reports "bar lit **2**, grid modes 1" — the bar lights two buttons while the grid
+edits one field, which is the lie the rule was written against, and which is now visible in the
+log instead of inferred. (Its sibling defect was in the *report*: the failure message recomputed
+the counts after the loop had already run the next pair and cleaned up, so it printed "bar lit 1,
+grid modes 1" beside its own failure — a number that says nothing is wrong under a sentence that
+says something is. The counts now come from the pair that broke.) **I** skipped for a different
+reason, and the duller one: the anchor was indented for a nesting level the real `switch` does not
+have, so the arm mutated nothing and reported nothing. An arm that cannot apply and an arm that
+applies and cannot bite both look like a suite that passed; the driver prints SKIP for one and a
+count for the other, which is why the log line beside every arm is its *problem count*, not just
+its exit code.
+
+**Deliberately not here.** No (step, subslot) onset keystone — deferred on its own precondition,
+and this feature did not need it. No per-strike accent or velocity taper: the count is the only
+new number, and a taper would be the engine deciding a level the grid already says. No rolls from
+MIDI, no rolls as a host parameter, no autoplay of the count from **Mutate** — the count belongs
+to the cell, like the level and the chance, and **Reroll** does not re-deal it.
+
+**What the citation sweep did, and the nine numbers it refused to move.** 4.5 put lines into seven
+`Source/` files, so every pointer into them that was true at `9a7d942` reads false now — 62
+citations flagged, and a doc that cites `Common.h:446` for `stripPlan` while 446 is a sentence
+about the editor's floor is worse than one with no pointer, because it is trusted.
+`out/cite-sweep.py -apply` (base `bcd6188`, the tracked tool) offered nine corrections and every
+one of them was declined after reading the code it landed on: 93 → `setHumanize`/`getTouch`,
+176 → `distanceToNextOnsetInSteps` for a sentence about voice stealing, 290 → `chokeVoicesInGroup`
+for a sentence about kernel weights, 1066 → `loadSampleDataIntoChannel` for "is the codec". Those
+numbers were already wrong *at the base* — the same condition `out/cite-pin.txt` records for its
+fifteen `unverified` entries — and the sweep's guarantee is text identity, which preserves a
+mistake and stamps it current. The docs came back off `out/pre-cite/` byte for byte.
+What went in instead is per-citation: each candidate was opened both at the number the doc gives
+and at the number a HEAD→working map proposes, and decided by which one holds the thing the
+sentence names (`out/cite-head-check.py` to enumerate, `out/cite-judge.py` to print both sides,
+`out/repoint45.py` to write the 23 decisions, each matched once on the line it names). The gate
+`out/cite-audit.py` now prints **UNPINNED miss: 0**; it printed 5 before, and all five were
+symbols this lane moved.
+Three of the refused shifts are the inverse trap and worth naming: `Common.h:305`/`:389`,
+`StepGridComponent.h:115`, `StepGridComponent.cpp:468`, `SequencerEngine.cpp:140` and
+`TransportBar.cpp:699` are *already* current-tree numbers, written by this lane, and a map keyed
+on HEAD moves them a second time — which is the failure mode `cite-sweep.py`'s own docstring
+records from the 4.4 sitting, arrived at by a different road. And one correction was not a move
+at all: 5.6's record says "the strip is 285 px today, `PluginEditor.cpp:47`", and 47 is the
+editor's own initialiser list at every recent commit — the number is `Layout::stripDesignHeight`,
+`Source/Common.h:540`, and the sentence says that now. Wrong the day it was typed, not drift, and
+the difference only shows up if something reads the line rather than shifting it.
+`cite-pin.txt`'s `base:` stays at `bcd6188`: the seventeen ranges under it are coordinates in
+that commit, and advancing it means re-checking every one in the same pass — a 23-pointer fix
+against the working tree does not need it.
+
 ### Verification/export handover — the `b603107` records, three corrections, and what a rebuild hash can say (2026-11-16)
 
 **What the export lane sent, and what it is evidence of.** Run records for the shipped commit `b603107`
@@ -1738,11 +1938,18 @@ differ — so the comparison is usable across builds, not abandoned. Which is al
 and `installer/README.txt`, so once it lands, Program Files holds `b603107`-era code while the tree holds 4.4
 — and the payload should be re-hashed against that lane's own new artefact tree, with the user answering the
 prompt. Numbers for that verification: 422 smoke / 441 layout / 85 planner checks, 0 problems, guard OK, `[28]`
-fingerprint `4BC3AA231178C071` unchanged.
+fingerprint `4BC3AA231178C071` unchanged. *(Five commits on from `bcd6188`, and the same sentence is true one
+level up: 4.4 landed, 5.6's two halves and the two `AGENTS.md` corrections landed, and 4.5 is what this lane is
+handing over now — so Program Files is behind the tree by every `Source/`-changing commit since `b603107`, with
+4.4, 5.6 and 4.5 among them, and the payload has to be re-hashed against this lane's artefact tree. Current
+numbers for the next verification: **465 smoke / 651 layout / 85 planner checks, 0 problems, guard OK**, and
+`[28]`'s fingerprint is the same `4BC3AA231178C071` — 4.5 was required not to move it, and did not.)*
 
 **Still open, and whose.** Item 14 stays with the owner: `PatternPlanner.h` and `GenrePatterns.h` still have
 no UI or state caller, only the planner suite — the three planner/panel contracts are decisions, not work to
-invent under commit pressure. 5.6's height half, 4.4 and 4.5 stay in this lane. The duplicate subject line
+invent under commit pressure. 5.6's height half, 4.4 and 4.5 stay in this lane. *(Written before any of the
+three landed; all three have now shipped from it, and the lane's open list is 6.5's false spec sentence and
+nothing else it owns.)* The duplicate subject line
 (`4724922` reusing `4e6a7ef`'s text verbatim while containing two lines of `AGENTS.md`) is recorded under
 `AGENTS.md` "Commit log" conventions, with the replacement subject the export lane asked for. Measured there
 before recommending anything: the rewrite would be *local* — `origin/master` is `ecfe76c` and nothing from

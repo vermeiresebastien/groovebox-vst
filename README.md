@@ -20,14 +20,15 @@ sample you drag onto its row, and which also plays from MIDI notes.
 | Swing | 0–100 % on either a 1/8 or 1/16 grid |
 | **Humanize** | **0–100 %: a hit is allowed to start a little behind its step. Late only, never past a quarter of a step, and it follows the tempo rather than a fixed delay — the *Humanize* fader in the top bar, double-click to shut** |
 | **Touch** | **0–100 %: a hit is allowed to be struck a little off the velocity its step says. Both ways, never past a quarter of that step's own level, and a rest stays a rest — the *Touch* fader in the top bar, double-click to shut** |
+| **Rolls** | **Every step can fire 1–8 times instead of once. Hit *Ratchet* in the top bar and drag inside a step: each strike gets an equal share of the room to the next onset, so the roll follows the tempo and the swing grid the way swing does, and eight of them cannot reach into the step after** |
 | Tempo | Follows the host project tempo; in the standalone build it has its own transport and tempo |
 | Mix | Per-channel level and mute, plus a "clear row" button |
 | **Master trim & meter** | **A −24 to +6 dB master trim you can see and reach, a bar for the sample peak with a tick for the true peak hiding between the samples, and a clip latch on the output** |
 | **Automation** | **Levels, pitches, pitch drops, envelopes, mutes, choke groups, swing, swing grid, tempo, the master trim, Mutate, Humanize, Touch and Seed are host parameters — automate them, and the panel follows what the host drew** |
 | **Pattern bank** | **Four patterns per channel. The row of marks in a channel's label column points the lane at one of them, the copy mark duplicates the row into the next empty slot, and the chip on the right lets the lane rotate through what it holds every 1, 2, 4 or 8 bars** |
 | Row editing | Click a cell to toggle it; drag across cells to paint a run |
-| **Shift a row** | **The ← and → buttons in a channel strip turn that whole row one step earlier or later, and every step's velocity goes with it** |
-| Persistence | Every slot's steps, velocities and probabilities, which slot each lane points at, each lane's rotate period, pitch, levels, mutes, names, colours, seed and sample paths are saved in the session; a session saved before the parameter migration is read in and its values carried over |
+| **Shift a row** | **The ← and → buttons in a channel strip turn that whole row one step earlier or later, and each step's level, chance and strike count go with it** |
+| Persistence | Every slot's steps, velocities, probabilities and strike counts, which slot each lane points at, each lane's rotate period, pitch, levels, mutes, names, colours, seed and sample paths are saved in the session; a session saved before the parameter migration is read in and its values carried over |
 
 ## Step velocity
 
@@ -43,12 +44,16 @@ high the pointer is in the row, so the bar follows the pointer.
   switched off, and dragging to nothing never switches a step off. An on step is
   never stored as "off", so a quiet hit stays a hit.
 - **Press 100%** to put every step back to full velocity. It is the same button the
-  probability overlay uses and it does whichever of the two is on the grid; the
-  tooltip says which before you click, and one undo takes the whole grid back.
-- **Shifting a row moves its velocities too.** The ← and → buttons in a channel
+  probability and strike-count overlays use, and it does whichever of the three is on
+  the grid — the button reads **x1** rather than **100%** over a strike count, and a
+  click then puts every step back to one strike. The tooltip says which before you
+  click, and one undo takes the whole grid back.
+- **Shifting a row moves what each step says too.** The ← and → buttons in a channel
   strip turn that row one step earlier or later, and each step carries its velocity
-  with it, so an accented pattern stays accented after it moves. The last step
-  wraps round to the first rather than falling off the end.
+  with it, so an accented pattern stays accented after it moves — its probability and
+  its strike count go the same way, and the other three pattern slots of that lane are
+  left where they were written. The last step wraps round to the first rather than
+  falling off the end.
 - Outside velocity mode the steps are dimmed by their velocity, so you can see the
   dynamics without opening the overlay.
 - The grid's velocity and a played note's velocity are separate: the grid uses the
@@ -252,12 +257,83 @@ at the level the draw said, at 64, 256 and 1024 sample blocks alike.
 **A session that predates the parameter opens shut.** A missing entry takes its default, here
 0 %, and the grid, the seed and the neighbouring globals come through anyway.
 
+## How many times a hit fires
+
+**The *Ratchet* overlay lets one step fire more than once inside its own space.** It is the
+third of the three grid fields — **Velocity**, **Chance**, **Ratchet** — and it is a number
+per cell rather than per machine: open the overlay, drag a step, and that cell says how many
+times its hit strikes, from 1 to 8. A cell at 1 is the machine as it was before this existed,
+down to the render fingerprint the whole-kit check compares against a recorded literal. The
+shared reset puts every cell back to 1 while this overlay is open, which is why the button
+reads **x1** here and **100%** over the other two fields.
+
+| The cell says | What sounds |
+|---|---|
+| 1 | one hit on the step's onset — nothing delayed, nothing added |
+| 2 | two hits, half of that step's room apart |
+| 8 | eight, each an eighth of the room behind the last |
+
+**The room is the step's own, counted in steps, and measured.** A strike is late by
+`gapToNextOnsetInSteps (step) * strike / strikes` — the distance to the *next onset this grid
+will actually play*, divided by the number of hits. So a roll follows the tempo the way swing
+does, and it follows the swing grid too: at the shuffle on 1/16 the head of a pair holds 8269
+samples and its off-beat holds 2756 (ratio 3.000), and the same eight strikes space themselves
+1033.6 samples apart in the first and 344.6 in the second. That is the whole reason the spacing
+is a fraction of a step rather than a number of milliseconds — a fixed delay would play the
+off-beat's roll three times slower than the grid it sits on, and at double the tempo it would
+not be a roll at all.
+
+**A roll fills the space it was given and cannot reach into the next step.** The last strike of
+an eight starts strictly before the next onset and, on the tightest room this grid offers, still
+clears it by more than a rounding — eight cannot become nine by leaning on the step after it.
+Nothing around it moves either: the first strike is on the onset, the bar holds one onset per
+step as it did, and the step after a roll begins exactly where it began before the roll.
+
+**It is one hit, not eight, for everything else the engine decides.** The dice are rolled once
+for the cell, so a step the probability rejects sounds nothing at eight strikes either, and the
+step the take kept still sounds all eight. The take's lateness applies once, so a hit this seed
+was going to play 240 samples late plays its whole roll 240 samples late and keeps its spacing
+to within two samples of even. And only the first strike fires a choke group: a rolled lane in a
+group still cuts a *different* hit in that group — the lane held under it goes to silence, 0.00000
+against 0.41241 — while its own eight strikes ring on, because a hit cannot cut itself up.
+
+**A roll is louder, and nothing buys it back.** There is deliberately no per-strike scaling:
+eight strikes are eight voices playing the sample, and they sum. Measured on one lane, one step,
+at full velocity and chance, channel level 0.12, on a noise bed with the decay shut and the
+sustain at 1 so the voices genuinely overlap, at the default trim: the tail of the bar goes from
+0.04951 for one hit to 0.13897 for eight, **+8.97 dB** — the square root of eight voices, which
+is what incoherent noise sums to. The same roll inside a choke group costs no level, 0.13897
+either way. That fixture peaks at 0.5385 and the render stays under −1 dB, so the growth is
+voices adding and not the bus folding — but eight across twelve lanes is a different load again,
+and there is no limiter here: the master trim and the lane faders are what you have.
+
+**The count is clamped where it is stored, not only where it is read.** `Layout::ratchetByte`
+limits to 1..8 on the way in and on the way out, so a byte that once meant 60 costs one hit
+rather than sixty. The step record is generation 4: four bytes a cell instead of three, 768 of
+them per slot, and a session written before the fourth byte existed reads as one strike in every
+cell — which, with off / full / every-time, is the state a missing record already meant, so the
+sparse encoding still writes nothing at all for it.
+
+**Every lane rolled at once is 96 hits a bar against a pool of 64 voices.** The pool fills, never
+overruns, and steals: the engine asked for 64 at the busiest step and was given 64, on every one
+of them, with nothing non-finite anywhere in the render. A dense roll cannot allocate its way
+into a dropout — the same ceiling that has always applied to a fast grid.
+
+**Drawing it is the same gesture as the other two fields.** Open **Ratchet** and each cell shows
+one tick per strike along its top edge, counted out to the last one the cell has room for; an
+overlay is the only thing on screen, so the cell gets a recess behind the ticks rather than a
+tick the colour of the button it is drawn on. With the overlay shut the count keeps a lower
+profile — a short mark at the top of a step that fires, and nothing on a step that does not,
+because the engine only ever spreads a hit that happens and a mark on a silent cell would be a
+promise about it. The count itself belongs to the step either way: switch a rolled cell off and
+it keeps its roll, dimmed in the overlay, for when you switch it back.
+
 ## Four patterns per channel
 
 Every channel holds four patterns of its own 16 steps, and each of those carries that
-step's velocity and probability with it. There is no file browser and nothing to import:
-the four slots live on the session, and a slot that holds nothing costs a session nothing
-on disk.
+step's velocity, probability and strike count with it. There is no file browser and nothing
+to import: the four slots live on the session, and a slot that holds nothing costs a session
+nothing on disk.
 
 What the lane's sound is set to — its sample, pitch, pitch drop, envelope, level, mute and
 choke group — is **one setting for the lane, not one per slot**. The bank holds the row and
@@ -305,7 +381,7 @@ pointed at slot 0 and every counter shut, which is the same machine as before: t
 state of the bank is one grid wide.
 
 The marks need room. They appear when a row is at least 27 px tall **and** the label column
-at least 89 px wide, and every size this editor allows satisfies both — at the 1218 × 695
+at least 89 px wide, and every size this editor allows satisfies both — at the 1298 × 695
 floor the row comes out at exactly 27 px, with nothing to spare. Narrower or shorter than
 the editor permits, the strip is not drawn, is not clickable and there is nothing to explain
 the difference: the rule is one answer behind the painting, the hit test and the test suite.
@@ -434,11 +510,13 @@ and leaves it alone.
 
 - **Top bar** — transport, tempo, swing and its grid, the **Variation** group (the knob,
   the **Humanize** and **Touch** faders, **Reroll** and the seed readout), "Clear pattern",
-  the **Velocity** and **Chance** toggles with the shared **100%** reset, and the master
-  trim and meter. A 1774 px bar lays all of that on one row; narrower, the Variation group
-  moves to a second line and the bar grows 36 px to take it. Either way no control gives up
-  width to fit the window. The smallest editor is **1218 × 695 px** — the width is
-  `TransportBar::wrappedRowWidth + 2 * Layout::editorMargin`, the height is
+  the **Velocity**, **Chance** and **Ratchet** toggles with the shared reset — which reads
+  **100%** over a level or a probability and **x1** over a strike count, because a button
+  that says "100%" about a number of hits is describing something it is not going to do —
+  and the master trim and meter. An 1854 px bar lays all of that on one row; narrower, the
+  Variation group moves to a second line and the bar grows 36 px to take it. Either way no
+  control gives up width to fit the window. The smallest editor is **1298 × 695 px** — the
+  width is `TransportBar::wrappedRowWidth + 2 * Layout::editorMargin`, the height is
   `Layout::editorFloorHeight (TransportBar::twoRowHeight, gridFloor)`, and neither is a typed
   literal: the height is what the cheapest of the four stages of `Layout::editorPlan` costs,
   under a two-line bar and a grid left at its own 361 px floor. That fits a 1366 × 768 laptop
@@ -919,19 +997,24 @@ Notes on the design:
   thread.
 - **The grid is one property, not 192 parameters.** A host's automation list would
   be buried by a parameter per cell, and nobody draws a step as a lane. So the
-  pattern travels as a string on the root of the parameter state: `v3:` followed by
-  base64 of three bytes a step — the switched-on flag, the level as a 7-bit MIDI
-  number, then the probability as a number of 255ths — which is 771 characters for
-  the whole grid. The level and the probability travel whether or not the step is
+  pattern travels as a string on the root of the parameter state: `v4:` followed by
+  base64 of four bytes a step — the switched-on flag, the level as a 7-bit MIDI
+  number, the probability as a number of 255ths, then the strike count as itself —
+  which is 1027 characters for the whole grid. The level, the probability and the
+  count travel whether or not the step is
   lit, which is what lets a step keep the values you set while it was still switched
-  off; 127 divisions is every velocity a controller can send, and 255 is as fine a
-  slice of "how often" as one byte can name. The root also carries `stateVersion`,
+  off; 127 divisions is every velocity a controller can send, 255 is as fine a
+  slice of "how often" as one byte can name, and the count is clamped to 1..8 on its
+  way through the byte as well as on the way in, so a value that once meant 60 costs
+  one hit. The root also carries `stateVersion`,
   and the payload names its own codec as well, so a string says what it is instead of
   being guessed at from how long its rows happen to be. Sessions from the older
-  two-bytes-a-step, two-digits-a-step and one-digit-a-step formats still load — the
-  width is read from the tag, not assumed — and saving one writes it back in the
+  three-bytes-a-step, two-bytes-a-step, two-digits-a-step and one-digit-a-step formats
+  still load — the width is read from the tag, not assumed — and saving one writes it
+  back in the
   current format, so a step from a two-byte record comes in meaning *fires every
-  time*, which is what it did before there was a choice.
+  time*, and one whose record never wrote a fourth byte means *fires once*, which is
+  what each of them did before there was a choice.
 - **A take, not a shimmer.** Whether a lit step sounds is decided by one function,
   `SequencerEngine::wouldThisHitFire`, keyed on the seed and on the bar, step and
   lane of the hit — splitmix64 over those four, and the top 24 bits of the answer

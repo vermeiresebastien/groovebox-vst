@@ -2158,24 +2158,45 @@ int main()
     {
         juce::TextButton* velocityButton = nullptr;
         juce::TextButton* chanceButton = nullptr;
+        juce::TextButton* ratchetButton = nullptr;
         juce::TextButton* resetButton = nullptr;
         juce::TextButton* rerollButton = nullptr;
         juce::Label* seedLabel = nullptr;
 
+        /**
+            Asked by name, not recognised by label.
+
+            The reset used to be findable by its text because its text never changed. It
+            changes now — over the third overlay the button says what the neutral value of a
+            count is, not "100%" — so "the button that says 100%" stopped being an identity,
+            which is what it stopped being honest as. Telling two faders apart by their range
+            made the same mistake one layer down and mis-filed Mutate as a swing fader; the
+            bar names its controls for that reason, and this is the only place allowed to go
+            looking.
+        */
+        const auto namedButton = [transportBar] (const juce::String& name)
+        {
+            for (int i = 0; i < transportBar->getNumChildComponents(); ++i)
+            {
+                if (auto* button = dynamic_cast<juce::TextButton*> (transportBar->getChildComponent (i)))
+                {
+                    if (button->getName() == name)
+                        return button;
+                }
+            }
+
+            return static_cast<juce::TextButton*> (nullptr);
+        };
+
+        velocityButton = namedButton ("Velocity");
+        chanceButton = namedButton ("Chance");
+        ratchetButton = namedButton ("Ratchet");
+        resetButton = namedButton ("ResetValues");
+        rerollButton = namedButton ("Reroll");
+
         for (int i = 0; i < transportBar->getNumChildComponents(); ++i)
         {
-            auto* child = transportBar->getChildComponent (i);
-
-            if (auto* button = dynamic_cast<juce::TextButton*> (child))
-            {
-                const auto text = button->getButtonText();
-
-                if (text == "Velocity")       velocityButton = button;
-                else if (text == "Chance")    chanceButton = button;
-                else if (text == "100%")      resetButton = button;
-                else if (text == "Reroll")    rerollButton = button;
-            }
-            else if (auto* label = dynamic_cast<juce::Label*> (child))
+            if (auto* label = dynamic_cast<juce::Label*> (transportBar->getChildComponent (i)))
             {
                 if (label->getName() == "Seed")
                     seedLabel = label;
@@ -2217,6 +2238,36 @@ int main()
             return true;
         };
 
+        /**
+            The same claim for the third number, against its own neutral value: one strike.
+            Over the whole grid for the same reason the other two are — a reset that only
+            did the cell under the pointer passes a check that only looks at one cell.
+        */
+        const auto singleStrikeEverywhere = [&processor]
+        {
+            for (int channel = 0; channel < Layout::numChannels; ++channel)
+                for (int step = 0; step < Layout::numSteps; ++step)
+                    if (processor.getStepRatchet (channel, step) != 1)
+                        return false;
+
+            return true;
+        };
+
+        // How many cells carry a roll at all. The reset below asks for all of them to be
+        // at one, which is satisfied by a grid that was never rolled, so the census has to
+        // be non-degenerate before that answer means anything.
+        const auto rolledCells = [&processor]
+        {
+            int rolled = 0;
+
+            for (int channel = 0; channel < Layout::numChannels; ++channel)
+                for (int step = 0; step < Layout::numSteps; ++step)
+                    if (processor.getStepRatchet (channel, step) > 1)
+                        ++rolled;
+
+            return rolled;
+        };
+
         const auto countLit = [&processor]
         {
             int lit = 0;
@@ -2231,35 +2282,149 @@ int main()
 
         ++checked;
 
-        if (velocityButton == nullptr || chanceButton == nullptr || resetButton == nullptr
-            || rerollButton == nullptr || seedLabel == nullptr)
+        if (velocityButton == nullptr || chanceButton == nullptr || ratchetButton == nullptr
+            || resetButton == nullptr || rerollButton == nullptr || seedLabel == nullptr)
         {
             fail ("the variation controls are not all on the transport bar");
         }
         else
         {
-            pass ("Chance, 100%, Reroll and the seed readout are all there");
+            pass ("Velocity, Chance, Ratchet, the shared reset, Reroll and the seed readout are all there");
 
             //---- one number on the grid at a time --------------------------------
-            clickToggle (*velocityButton, true);
-            clickToggle (*chanceButton, true);
+            /**
+                Three toggles that each claim the whole grid, so the exclusivity is proved
+                from each of the three, and each of those asks the bar and the grid.
+
+                One direction per pair is not enough: a handler that closed one rival and
+                forgot the other would pass a matrix that only ever opened the two the first
+                version had. The bar's lit count and the grid's mode count have to agree, and
+                the mode that is on has to be the one that was asked for — the second half is
+                what stops the grid being left in whatever it was while a third button lit.
+
+                Each wanted overlay is opened *on top of* a rival that is already lit, and
+                both rivals get asked, because an exclusivity rule is only observable when
+                there is something to exclude. The first version of this helper shut all three
+                before clicking the wanted one, and a build whose ratchet handler had deleted
+                the velocity close came back with all three arms green: Velocity was already
+                off, so there was nothing for the missing line to do. A check that cannot go
+                red is not a control, and this one is now six directed pairs, not three.
+            */
+            juce::String brokeWith;   // which rival the last openOnly call survived
+            int litAtBreak = 0;       // and what the bar and the grid looked like then
+            int modesAtBreak = 0;
+
+            const auto openOnly = [&] (juce::TextButton& wanted)
+            {
+                auto rivalWasLit = true;
+                auto pairOk = true;
+                auto lit = 0;
+                auto editing = 0;
+
+                brokeWith.clear();
+                litAtBreak = 0;
+                modesAtBreak = 0;
+
+                for (auto* rival : { velocityButton, chanceButton, ratchetButton })
+                {
+                    if (rival == &wanted)
+                        continue;
+
+                    clickToggle (*velocityButton, false);
+                    clickToggle (*chanceButton, false);
+                    clickToggle (*ratchetButton, false);
+
+                    clickToggle (*rival, true);
+                    rivalWasLit = rivalWasLit && (bool) rival->getToggleState();
+
+                    clickToggle (wanted, true);
+
+                    lit = (int) velocityButton->getToggleState()
+                        + (int) chanceButton->getToggleState()
+                        + (int) ratchetButton->getToggleState();
+
+                    editing = (int) stepGrid->isVelocityMode()
+                            + (int) stepGrid->isChanceMode()
+                            + (int) stepGrid->isRatchetMode();
+
+                    const auto right = wanted.getName() == "Velocity" ? stepGrid->isVelocityMode()
+                                                 : wanted.getName() == "Chance" ? stepGrid->isChanceMode()
+                                                                                : stepGrid->isRatchetMode();
+
+                    const auto survived = lit == 1 && editing == 1
+                                       && (bool) wanted.getToggleState() && right;
+
+                    if (! survived && brokeWith.isEmpty())
+                    {
+                        brokeWith = "the " + rival->getName() + " overlay";
+                        litAtBreak = lit;
+                        modesAtBreak = editing;
+                    }
+
+                    pairOk = pairOk && survived;
+                }
+
+                return rivalWasLit && pairOk;
+            };
+
+            /**
+                The counts have to come from the pair that broke, not from wherever the
+                loop happened to end. The first version recomputed them in the message, and
+                the ratchet arm printed "bar lit 1, grid modes 1" beside its own failure —
+                a number that says nothing is wrong under a sentence that says something is,
+                because the second pair had already cleaned up after the first.
+            */
+            const auto breakDetail = [&]
+            {
+                return " (bar lit " + juce::String (litAtBreak)
+                     + ", grid modes " + juce::String (modesAtBreak) + ")";
+            };
+
+            const auto detail = [&] (const juce::String& what)
+            {
+                return what + (brokeWith.isNotEmpty() ? " over " + brokeWith : "") + breakDetail();
+            };
 
             ++checked;
 
-            if (chanceButton->getToggleState() && stepGrid->isChanceMode()
-                && ! stepGrid->isVelocityMode() && ! velocityButton->getToggleState())
-                pass ("opening Chance closes Velocity, on the bar and on the grid");
+            if (openOnly (*chanceButton))
+                pass ("opening Chance closes each rival that was already lit, on the bar and on the grid");
             else
-                fail ("the two overlays are open at once (chance lit="
-                        + juce::String (chanceButton->getToggleState() ? 1 : 0)
-                        + " velocity lit=" + juce::String (velocityButton->getToggleState() ? 1 : 0)
-                        + " grid chance=" + juce::String (stepGrid->isChanceMode() ? 1 : 0)
-                        + " grid velocity=" + juce::String (stepGrid->isVelocityMode() ? 1 : 0) + ")");
+                fail (detail ("more than one overlay survived Chance"));
+
+            ++checked;
+
+            if (openOnly (*velocityButton))
+                pass ("opening Velocity closes Chance and Ratchet the same way");
+            else
+                fail (detail ("a second overlay survived Velocity"));
+
+            ++checked;
+
+            if (openOnly (*ratchetButton))
+                pass ("opening Ratchet closes the other two, and the grid follows the bar");
+            else
+                fail (detail ("Ratchet did not take the grid for itself"));
+
+            // The shared reset says which number it is about to overwrite, and over a field
+            // that counts hits it cannot honestly say "100%". refresh() is the same call the
+            // editor's timer makes on the live panel; this harness pumps no messages.
+            ++checked;
+
+            transportBar->refresh();
+
+            if (resetButton->getButtonText() == "x1"
+                 && resetButton->getTooltip().contains ("one strike"))
+                pass ("over a roll count the shared reset calls itself x1 and the tip says one strike");
+            else
+                fail ("the reset still reads \"" + resetButton->getButtonText()
+                        + "\" over the strike count (tooltip: " + resetButton->getTooltip() + ")");
 
             //---- a drag writes the field that is on screen -----------------------
             processor.setStep (1, 3, true);
             processor.setStepVelocity (1, 3, 1.0f);
             processor.setStepChance (1, 3, 1.0f);
+            processor.setStepRatchet (1, 3, 1);
 
             const auto cell = stepGrid->getCellBounds (1, 3);
 
@@ -2272,8 +2437,127 @@ int main()
             }
             else
             {
+                // Low in the cell: that is where a probability of a few tenths lives.
                 const auto point = juce::Point<int> (cell.getX() + 3,
                                                      cell.getBottom() - juce::jmax (2, cell.getHeight() / 4));
+
+                // And high, for the count: the number of strikes is quantised off the same
+                // position, and a fifth of the way up the row rounds onto one strike, which
+                // is the value the drag started from and would answer "nothing happened".
+                const auto upPoint = juce::Point<int> (cell.getX() + 3,
+                                                       cell.getY() + cell.getHeight() / 4);
+
+                int walkEnd = 1;
+
+                //---- the third number, edited alone ------------------------------
+                stepGrid->mouseDown (makeEvent (*stepGrid, upPoint.toFloat()));
+                stepGrid->mouseUp (makeEvent (*stepGrid, upPoint.toFloat()));
+
+                const auto strikes = processor.getStepRatchet (1, 3);
+
+                ++checked;
+
+                if (strikes > 1 && strikes <= Layout::maxRatchetHits
+                    && std::abs (processor.getStepVelocity (1, 3) - 1.0f) < 0.001f
+                    && std::abs (processor.getStepChance (1, 3) - 1.0f) < 0.001f
+                    && processor.isStepOn (1, 3))
+                    pass ("a drag with Ratchet open moves the strike count and nothing else ("
+                            + juce::String (strikes) + " strikes)");
+                else
+                    fail ("the Ratchet drag wrote more than the strike count ("
+                            + juce::String (strikes) + " strikes, velocity "
+                            + juce::String (processor.getStepVelocity (1, 3), 2) + ", chance "
+                            + juce::String (processor.getStepChance (1, 3), 2) + ", step on "
+                            + juce::String (processor.isStepOn (1, 3) ? 1 : 0) + ")");
+
+                // Walking the pointer up the cell is what proves the direction the tooltip
+                // promises ("drag up inside a step for faster rolls"), and that the ladder
+                // has rungs rather than a slide: a count that left 1..8 would be a law the
+                // codec cannot store. Started from one, because the walk begins at the
+                // bottom of the cell — from the seven strikes the drag above left behind,
+                // the first position of the walk would read as a step backwards.
+                ++checked;
+                {
+                    processor.setStepRatchet (1, 3, 1);
+
+                    auto below = 0, above = 0, backwards = 0;
+                    auto previous = 1;
+
+                    for (int tenth = 0; tenth <= 10; ++tenth)
+                    {
+                        const auto walk = juce::Point<int> (cell.getX() + 3,
+                                                            cell.getBottom() - (cell.getHeight() * tenth) / 10);
+
+                        stepGrid->mouseDown (makeEvent (*stepGrid, walk.toFloat()));
+                        stepGrid->mouseUp (makeEvent (*stepGrid, walk.toFloat()));
+
+                        const auto now = processor.getStepRatchet (1, 3);
+
+                        below += now < 1;
+                        above += now > Layout::maxRatchetHits;
+                        backwards += now < previous;
+                        previous = now;
+                    }
+
+                    walkEnd = previous;
+
+                    if (below == 0 && above == 0 && backwards == 0 && walkEnd > 1)
+                        pass ("and the drag goes only up: 11 positions, none out of 1..8, "
+                                "none fewer strikes than the last (" + juce::String (walkEnd)
+                                + " strikes at the top, " + juce::String (strikes)
+                                + " where the single drag landed)");
+                    else
+                        fail ("the Ratchet drag came off the ladder (" + juce::String (below)
+                                + " below one, " + juce::String (above) + " above the ceiling, "
+                                + juce::String (backwards) + " steps backwards, ended at "
+                                + juce::String (walkEnd) + ")");
+                }
+
+                // Precondition, stated before the click: with one rolled cell there is
+                // something for "every step back to one" to do.
+                ++checked;
+
+                if (rolledCells() == 1)
+                    pass ("exactly one cell carries a roll before the reset ("
+                            + juce::String (rolledCells()) + ")");
+                else
+                    fail ("the roll census before the reset was " + juce::String (rolledCells())
+                            + ", expected one");
+
+                clickButton (*resetButton);
+
+                ++checked;
+
+                if (strikes > 1 && singleStrikeEverywhere()
+                    && std::abs (processor.getStepVelocity (1, 3) - 1.0f) < 0.001f
+                    && std::abs (processor.getStepChance (1, 3) - 1.0f) < 0.001f)
+                    pass ("with Ratchet open, the same button puts every step back to one strike"
+                            " and leaves the other two numbers alone");
+                else
+                    fail ("the reset did not do the strike counts (all at one "
+                            + juce::String (singleStrikeEverywhere() ? 1 : 0)
+                            + ", " + juce::String (rolledCells()) + " cells still rolled, velocity "
+                            + juce::String (processor.getStepVelocity (1, 3), 2) + ")");
+
+                // One gesture, one undo — the transaction is per click, not per cell, and
+                // the third field is the one that needed saying again: a grid-wide roll
+                // reset that landed as 192 undoes would be unusable in a live set.
+                ++checked;
+
+                if (processor.getUndoManager().undo() && processor.getStepRatchet (1, 3) == walkEnd)
+                    pass ("and undoing it puts the whole roll back in one step ("
+                            + juce::String (processor.getStepRatchet (1, 3)) + " strikes)");
+                else
+                    fail ("undo after the strike reset did not bring the roll back (ratchet at 1,3 is "
+                            + juce::String (processor.getStepRatchet (1, 3)) + ", the walk ended at "
+                            + juce::String (walkEnd) + ")");
+
+                // Back to the neutral count before the probability arms run, so nothing
+                // below inherits a roll it did not ask for.
+                processor.setStepRatchet (1, 3, 1);
+
+                clickToggle (*ratchetButton, false);
+                clickToggle (*chanceButton, true);
 
                 stepGrid->mouseDown (makeEvent (*stepGrid, point.toFloat()));
                 stepGrid->mouseUp (makeEvent (*stepGrid, point.toFloat()));
@@ -2306,7 +2590,7 @@ int main()
 
                 if (chancesAtFull() && std::abs (processor.getStepVelocity (1, 3) - 0.4f) < 0.002f
                     && std::abs (processor.getStepVelocity (2, 7) - 0.6f) < 0.002f)
-                    pass ("with Chance open, 100% puts every probability back and leaves the levels alone");
+                    pass ("with Chance open, the reset puts every probability back and leaves the levels alone");
                 else
                     fail ("the reset did not do the probabilities (all full "
                             + juce::String (chancesAtFull() ? 1 : 0) + ", velocity at 1,3 "
@@ -2345,11 +2629,12 @@ int main()
                 ++checked;
 
                 if (stepGrid->isVelocityMode() && ! stepGrid->isChanceMode()
-                    && ! chanceButton->getToggleState())
+                    && ! chanceButton->getToggleState() && ! ratchetButton->getToggleState())
                     pass ("opening Velocity closes Chance the same way");
                 else
                     fail ("the grid did not go back to velocity editing (chance lit="
                             + juce::String (chanceButton->getToggleState() ? 1 : 0)
+                            + " ratchet lit=" + juce::String (ratchetButton->getToggleState() ? 1 : 0)
                             + " grid velocity=" + juce::String (stepGrid->isVelocityMode() ? 1 : 0) + ")");
 
                 const auto chanceStillDrawn = processor.getStepChance (1, 3);
@@ -2366,6 +2651,35 @@ int main()
                     fail ("the reset did not do the velocities (all full "
                             + juce::String (velocitiesAtFull() ? 1 : 0) + ", chance at 2,7 "
                             + juce::String (processor.getStepChance (2, 7), 2) + ")");
+
+                // Back over the count, with the label the only thing that moved: the reset
+                // is one button whose target the panel states, so after three overlays the
+                // tip has to have followed the toggle back, not stayed where it was.
+                ++checked;
+
+                clickToggle (*velocityButton, false);
+                clickToggle (*chanceButton, false);
+                clickToggle (*ratchetButton, true);
+                transportBar->refresh();
+
+                if (resetButton->getButtonText() == "x1"
+                     && resetButton->getTooltip().contains ("one strike"))
+                    pass ("and the reset's own label follows the overlay back to the roll count");
+                else
+                    fail ("the reset kept saying \"" + resetButton->getButtonText()
+                            + "\" (" + resetButton->getTooltip() + ") after Ratchet was opened again");
+
+                clickToggle (*ratchetButton, false);
+                transportBar->refresh();
+
+                ++checked;
+
+                if (resetButton->getButtonText() == "100%"
+                     && resetButton->getTooltip().contains ("full velocity"))
+                    pass ("with no overlay open it says what it has always done: full velocity");
+                else
+                    fail ("the idle reset reads \"" + resetButton->getButtonText()
+                            + "\" (" + resetButton->getTooltip() + ")");
 
                 //---- Reroll: a new take, the same grid ---------------------------
                 // Emptied first, because "a reroll is not an edit" can only be shown
@@ -2414,11 +2728,13 @@ int main()
 
                 clickToggle (*velocityButton, false);
                 clickToggle (*chanceButton, false);
+                clickToggle (*ratchetButton, false);
 
                 ++checked;
 
-                if (! stepGrid->isVelocityMode() && ! stepGrid->isChanceMode())
-                    pass ("clearing both toggles leaves the grid painting steps");
+                if (! stepGrid->isVelocityMode() && ! stepGrid->isChanceMode()
+                    && ! stepGrid->isRatchetMode())
+                    pass ("clearing the three toggles leaves the grid painting steps");
                 else
                     fail ("a toggle was cleared but the grid kept editing");
 
@@ -2790,6 +3106,457 @@ int main()
             processor.setStep (probeChannel, s, false);
     }
 
+
+    //======================================================================
+    // How many times one hit is spread into, seen without opening the overlay that
+    // edits it. Three claims, and none of them are answerable by inspecting components:
+    // the ticks have no bounds, no click target and no parameter, they are pixels that
+    // `paint()` puts on the grid out of a stored number. So each arm below is a pair of
+    // renders that differ in exactly one strike count, plus one that counts the ticks.
+    //
+    // The counting arm is the one a diff cannot do. "Something moved in this cell" is
+    // satisfied just as happily by a mark that draws three ticks for eight strikes, which
+    // is the failure this rule exists to refuse: a picture of a shorter roll than there is.
+    std::printf ("\n-- the strike ticks --\n");
+    {
+        const int probeChannel = 0;
+        const int probeStep = 7;   // not 0: earlier sections park the playhead there
+
+        // One row, identical but for the count under test. Velocity is left at full on
+        // purpose: it is the state every cell of a fresh session is in, and it is also the
+        // state where a tick painted in the lane colour on a cell painted in the lane
+        // colour would vanish — which is what the overlay arm below is there to catch.
+        for (int s = 0; s < Layout::numSteps; ++s)
+        {
+            processor.setStep (probeChannel, s, false);
+            processor.setStepVelocity (probeChannel, s, 1.0f);
+            processor.setStepChance (probeChannel, s, 1.0f);
+            processor.setStepRatchet (probeChannel, s, 1);
+        }
+
+        processor.setStep (probeChannel, probeStep, true);
+        processor.setMutate (0.0f);
+
+        stepGrid->setVelocityMode (false);
+        stepGrid->setChanceMode (false);
+        stepGrid->setRatchetMode (false);
+
+        const auto render = [&] { return renderGrid (*stepGrid); };
+        const auto cell = stepGrid->getCellBounds (probeChannel, probeStep);
+        const auto window = cell.expanded (1);
+
+        // The band the resting mark occupies, and the columns a rounded corner cannot
+        // reach: both read off the class's own numbers, so a corner that grows takes its
+        // columns with it instead of leaving this file a constant to forget.
+        const auto band = cell.withHeight (StepGridComponent::ratchetPipMarkHeight)
+                              .withY (cell.getY() + StepGridComponent::ratchetPipInset);
+
+        const auto skip = StepGridComponent::cornerRadius + 1;
+
+        std::printf ("   probe cell at %s, mark band %s, corner columns skipped %d, grid %d x %d\n",
+                     asText (cell).toRawUTF8(), asText (band).toRawUTF8(), skip,
+                     stepGrid->getWidth(), stepGrid->getHeight());
+
+        /**
+            Changed pixels inside a rectangle, which is the question the two marks in one
+            cell ask. `compareImages` reports where the difference *is not*; the notch lives
+            in the bottom-right corner and the ticks along the top, and that they do not eat
+            each other is a claim about two rectangles rather than about a bounding box.
+        */
+        const auto changedIn = [] (const juce::Image& a, const juce::Image& b,
+                                   juce::Rectangle<int> area)
+        {
+            auto moved = 0;
+
+            for (int y = area.getY(); y < area.getBottom(); ++y)
+                for (int x = area.getX(); x < area.getRight(); ++x)
+                    if (a.getPixelAt (x, y) != b.getPixelAt (x, y))
+                        ++moved;
+
+            return moved;
+        };
+
+        /**
+            How many ticks the painter actually laid down in this band.
+
+            A column is ink where it sits nearer `wanted` than the halfway point of the
+            contrast the band itself shows. Both ends of that line are measured out of the
+            render, and nothing about the lane's hue is assumed, so the same helper reads on
+            the resting mark (ticks the colour of the panel background, on a cell the colour
+            of its lane) and on the overlay (ticks the lane's own colour, on a cell recessed
+            toward the background).
+
+            A band with no contrast at all reports zero runs, which is the answer this needs
+            rather than a coin toss: a tick the colour of the cell it is drawn on is not a
+            tick, and the arm that asks for eight has to be able to be told there are none.
+        */
+        const auto countRuns = [] (const juce::Image& img, juce::Rectangle<int> area,
+                                   const juce::Colour& wanted, int skipLeft, int skipRight)
+        {
+            std::vector<float> closest;
+            closest.reserve ((size_t) juce::jmax (0, area.getWidth() - skipLeft - skipRight));
+
+            for (int x = area.getX() + skipLeft; x < area.getRight() - skipRight; ++x)
+            {
+                auto best = 1.0e9f;
+
+                for (int y = area.getY(); y < area.getBottom(); ++y)
+                    best = juce::jmin (best, colourDistance (img.getPixelAt (x, y), wanted));
+
+                closest.push_back (best);
+            }
+
+            auto lo = 1.0e9f, hi = 0.0f;
+
+            for (const auto d : closest)
+            {
+                lo = juce::jmin (lo, d);
+                hi = juce::jmax (hi, d);
+            }
+
+            if (hi - lo < 0.05f)
+                return 0;
+
+            const auto line = lo + (hi - lo) * 0.5f;
+
+            auto runs = 0;
+            auto inside = false;
+
+            for (const auto d : closest)
+            {
+                const auto ink = d < line;
+
+                if (ink && ! inside)
+                    ++runs;
+
+                inside = ink;
+            }
+
+            return runs;
+        };
+
+        const auto background = gb::Colours::background;
+        const auto lane = processor.getChannelColour (probeChannel);
+
+        //---- the mark, and what it is local to ----------------------------------
+        processor.setStepRatchet (probeChannel, probeStep, 1);
+        const auto one = render();
+
+        processor.setStepRatchet (probeChannel, probeStep, 8);
+        const auto eight = render();
+
+        ++checked;
+        {
+            const auto d = compareImages (one, eight, window);
+
+            if (d.pixels > 0)
+                pass ("a cell at eight strikes paints differently from the same cell at one");
+            else
+                fail ("the roll count changed and the grid painted exactly the same picture —"
+                        " the ticks are not reaching the screen");
+
+            ++checked;
+
+            // Two-sided, as always: "nothing moved outside the cell" is what a missing
+            // mark also answers.
+            if (d.pixels > 0 && d.outside == 0)
+                pass ("and only that cell moved: the mark is local, not a repaint");
+            else
+                fail ("the mark moved " + juce::String (d.outside) + " of "
+                        + juce::String (d.pixels) + " pixels outside its own cell");
+
+            ++checked;
+
+            // Along the top, because that is where the notch is not. A centroid in the
+            // bottom half would mean the ticks had been drawn over the mutable mark.
+            const auto centreY = (double) d.sumY / (double) juce::jmax (1, d.pixels);
+
+            if (d.darker > 0 && centreY < (double) (cell.getY() + cell.getHeight() / 2))
+                pass ("it is a cut along the top edge: " + juce::String (d.darker)
+                        + " pixels pushed toward the background, centred "
+                        + juce::String (centreY - (double) cell.getY(), 1)
+                        + " px into a " + juce::String (cell.getHeight()) + " px cell");
+            else
+                fail ("the strike mark drew " + juce::String (d.darker) + " darker pixels"
+                        " with a centroid " + juce::String (centreY, 1) + " px down, in a cell"
+                        " starting at " + juce::String (cell.getY()) + " px");
+
+            ++checked;
+
+            // The two marks in one cell have to stay in their own halves. The notch is a
+            // claim about the take and the ticks are a claim about the count, and a change
+            // to one that moves the other's pixels is a change to how the user reads a
+            // number they did not touch.
+            processor.setMutate (1.0f);
+            processor.setStepChance (probeChannel, probeStep, 0.5f);
+            const auto notchedEight = render();
+
+            processor.setStepRatchet (probeChannel, probeStep, 1);
+            const auto notchedOne = render();
+
+            const auto corner = cell.withSize (cell.getWidth() / 2, cell.getHeight() / 2)
+                                        .withX (cell.getX() + cell.getWidth() / 2)
+                                        .withY (cell.getY() + cell.getHeight() / 2);
+
+            const auto cornerMoved = changedIn (notchedOne, notchedEight, corner);
+
+            ++checked;
+
+            if (cornerMoved == 0 && changedIn (notchedOne, notchedEight, cell) > 0)
+                pass ("and the ticks leave the mutable mark's corner alone ("
+                        + juce::String (cornerMoved) + " of "
+                        + juce::String (corner.getWidth() * corner.getHeight())
+                        + " px moved, while the cell itself moved)");
+            else
+                fail ("changing the roll count moved " + juce::String (cornerMoved)
+                        + " pixels of the bottom-right corner, and "
+                        + juce::String (changedIn (notchedOne, notchedEight, cell))
+                        + " of the cell");
+
+            processor.setStepRatchet (probeChannel, probeStep, 8);
+            processor.setMutate (0.0f);
+            processor.setStepChance (probeChannel, probeStep, 1.0f);
+        }
+
+        //---- one tick per strike, counted ---------------------------------------
+        ++checked;
+        {
+            auto wrong = 0;
+            juce::String detail {};
+
+            for (const int strikes : { 1, 2, 3, 5, Layout::maxRatchetHits })
+            {
+                /**
+                    One strike asks for no mark at all, and it is the one rung of the ladder
+                    the count does not equal. It is also the value every cell of a fresh
+                    session carries, so a mark on it would be a mark on the grid — which is
+                    why this arm expects zero rather than skipping the rung.
+                */
+                const auto want = strikes == 1 ? 0 : strikes;
+
+                processor.setStepRatchet (probeChannel, probeStep, strikes);
+
+                const auto seen = countRuns (render(), band, background, skip, skip);
+
+                std::printf ("     %2d strike%s measured as %d tick runs (%d wanted)\n",
+                             strikes, strikes == 1 ? "" : "s", seen, want);
+
+                if (seen != want)
+                {
+                    ++wrong;
+                    detail += juce::String (strikes) + " -> " + juce::String (seen) + ", ";
+                }
+            }
+
+            processor.setStepRatchet (probeChannel, probeStep, 1);
+
+            if (wrong == 0)
+                pass ("the resting mark counts: five rungs, ticks equal to strikes on every one"
+                        " that is not the neutral value");
+            else
+                fail ("the mark mis-counts (" + detail
+                        + "a picture of a roll that is not the one stored)");
+        }
+
+        //---- what the overlay draws, at the loudest velocity there is ------------
+        /**
+            The overlay is the view a user edits in, so it carries the same count — and this
+            is the arm that catches a tick painted in the colour of the cell it sits on.
+
+            The cell below is on, at full velocity, which is what every cell of a fresh
+            session looks like, and it is the case where the tick colour and the body colour
+            are the same number unless the overlay recesses the cell first. A diff between
+            two renders that differ in one count stays green on a grid that draws nothing
+            for either of them, which is why this one reads the ticks.
+        */
+        ++checked;
+        {
+            stepGrid->setRatchetMode (true);
+
+            processor.setStepRatchet (probeChannel, probeStep, Layout::maxRatchetHits);
+            const auto overlayEight = render();
+
+            processor.setStepRatchet (probeChannel, probeStep, 1);
+            const auto overlayOne = render();
+
+            const auto body = cell.reduced (2);   // the overlay paints full height
+
+            const auto eightSeen = countRuns (overlayEight, body, lane, skip, skip);
+            const auto oneSeen = countRuns (overlayOne, body, lane, skip, skip);
+
+            const auto d = compareImages (overlayOne, overlayEight, window);
+
+            std::printf ("     overlay at %d strikes: %d tick runs; at one: %d\n",
+                         Layout::maxRatchetHits, eightSeen, oneSeen);
+
+            if (eightSeen == Layout::maxRatchetHits && oneSeen == 1 && d.pixels > 0
+                 && d.outside == 0)
+                pass ("with the overlay open on a cell at full velocity the ticks still count:"
+                        + juce::String (oneSeen) + " for one strike, "
+                        + juce::String (eightSeen) + " for eight, all inside the cell");
+            else
+                fail ("the roll overlay does not show the count on a loud cell ("
+                        + juce::String (oneSeen) + " ticks at one strike, "
+                        + juce::String (eightSeen) + " at eight, "
+                        + juce::String (d.pixels) + " pixels moved, "
+                        + juce::String (d.outside) + " outside the cell) — a tick the colour of"
+                          " its own cell is not a tick");
+
+            stepGrid->setRatchetMode (false);
+        }
+
+        //---- the two states where the resting mark stands down -------------------
+        /**
+            Four renders of one cell in one geometry, and the strike count is the only
+            number any pair of them differs in.
+
+            The first pair is the control for the other three: `mustMatch` is what a grid
+            that paints nothing at all answers, so an arm that asks for identity has to be
+            quoted next to an arm that asks for a difference in the same pixels. The
+            velocity is a tenth for all four, for the reason the notch's own section learned
+            — a bar at 1.0 fills the cell and paints over anything that leaked into the
+            overlay, and a negative control that cannot go red is not a control. At a tenth
+            the bar is three pixels at the bottom and the mark's band is exposed.
+        */
+        ++checked;
+        {
+            processor.setStepVelocity (probeChannel, probeStep, 0.1f);
+
+            processor.setStepRatchet (probeChannel, probeStep, 1);
+            const auto restOne = render();
+
+            processor.setStepRatchet (probeChannel, probeStep, Layout::maxRatchetHits);
+            const auto restEight = render();
+
+            const auto bites = ! mustMatch (restOne, restEight);
+
+            //---- off: a count on a cell that never fires is a promise about silence ----
+            processor.setStep (probeChannel, probeStep, false);
+
+            processor.setStepRatchet (probeChannel, probeStep, Layout::maxRatchetHits);
+            const auto offEight = render();
+
+            processor.setStepRatchet (probeChannel, probeStep, 1);
+            const auto offOne = render();
+
+            //---- overlay open: the count is already drawn, per cell, in colour --------
+            processor.setStep (probeChannel, probeStep, true);
+            processor.setStepRatchet (probeChannel, probeStep, Layout::maxRatchetHits);
+
+            stepGrid->setVelocityMode (true);
+
+            const auto overlayEight = render();
+
+            processor.setStepRatchet (probeChannel, probeStep, 1);
+
+            const auto overlayOne = render();
+
+            stepGrid->setVelocityMode (false);
+            processor.setStepRatchet (probeChannel, probeStep, 1);
+            processor.setStepVelocity (probeChannel, probeStep, 1.0f);
+
+            if (bites)
+                pass ("the same two pictures at rest do differ, so the two arms below can bite");
+            else
+                fail ("the mark paints the same picture at one strike and eight, so every"
+                      " mustMatch in this section is green on nothing");
+
+            ++checked;
+
+            if (mustMatch (offEight, offOne))
+                pass ("an off cell with a roll stored paints nothing");
+            else
+                fail ("a count was marked on a cell that is switched off ("
+                        + juce::String (changedIn (offOne, offEight, window))
+                        + " of " + juce::String (window.getWidth() * window.getHeight())
+                        + " px moved)");
+
+            ++checked;
+
+            if (mustMatch (overlayEight, overlayOne))
+                pass ("and with an overlay open the mark stands down, whatever the number");
+            else
+                fail ("the resting ticks drew themselves under an open overlay ("
+                        + juce::String (changedIn (overlayOne, overlayEight, window))
+                        + " px moved in the mark's own band and around it)");
+        }
+
+        //---- the rule the pixels were obtained under -----------------------------
+        ++checked;
+        {
+            processor.setStepRatchet (probeChannel, probeStep, 1);
+            const auto neutral = stepGrid->restingStrikeMarks (probeChannel, probeStep);
+
+            processor.setStepRatchet (probeChannel, probeStep, 5);
+            const auto atRest = stepGrid->restingStrikeMarks (probeChannel, probeStep);
+
+            stepGrid->setChanceMode (true);
+            const auto inOverlay = stepGrid->restingStrikeMarks (probeChannel, probeStep);
+            stepGrid->setChanceMode (false);
+
+            processor.setStep (probeChannel, probeStep, false);
+            const auto whileOff = stepGrid->restingStrikeMarks (probeChannel, probeStep);
+            processor.setStep (probeChannel, probeStep, true);
+            processor.setStepRatchet (probeChannel, probeStep, 1);
+
+            if (neutral == 0 && atRest == 5 && inOverlay == 0 && whileOff == 0)
+                pass ("the rule says: neutral none, five at rest, none in an overlay, none off");
+            else
+                fail ("the mark's rule came back neutral " + juce::String (neutral)
+                        + ", at rest " + juce::String (atRest) + ", in an overlay "
+                        + juce::String (inOverlay) + ", off " + juce::String (whileOff));
+        }
+
+        //---- the whole ladder at the floor the editor publishes ------------------
+        // The one place this feature could quietly stop being true, and the one place a
+        // width typed into this file would be a second copy of a number the layout already
+        // decides. So: ask the editor for its own minimum, put the real grid there, read
+        // the real cell, and ask the one function the painter asks.
+        ++checked;
+        {
+            const auto* limits = editor->getConstrainer();
+            const auto floorWidth = limits != nullptr ? limits->getMinimumWidth() : 0;
+            const auto floorHeight = limits != nullptr ? limits->getMinimumHeight() : 0;
+
+            editor->setSize (floorWidth, floorHeight);
+
+            const auto narrow = stepGrid->getCellBounds (probeChannel, probeStep);
+            const auto fits = StepGridComponent::strikePipsFit (narrow.getWidth(),
+                                                                Layout::maxRatchetHits);
+
+            processor.setStepRatchet (probeChannel, probeStep, Layout::maxRatchetHits);
+
+            const auto narrowBand = narrow.withHeight (StepGridComponent::ratchetPipMarkHeight)
+                                          .withY (narrow.getY() + StepGridComponent::ratchetPipInset);
+
+            const auto floorTicks = countRuns (renderGrid (*stepGrid), narrowBand,
+                                               background, skip, skip);
+
+            processor.setStepRatchet (probeChannel, probeStep, 1);
+            editor->setSize (preferredWidth, preferredHeight);
+
+            std::printf ("     at the published floor of %d x %d px the probe cell is %d x %d\n",
+                         floorWidth, floorHeight, narrow.getWidth(), narrow.getHeight());
+
+            if (fits && floorTicks == Layout::maxRatchetHits)
+                pass ("and the whole ladder still fits the floor the editor publishes: a "
+                        + juce::String (narrow.getWidth()) + " px cell at "
+                        + juce::String (floorWidth) + " px wide shows "
+                        + juce::String (floorTicks) + " ticks");
+            else
+                fail ("at the published floor of " + juce::String (floorWidth) + " px the cell is "
+                        + juce::String (narrow.getWidth()) + " px, strikePipsFit says "
+                        + juce::String (fits ? 1 : 0) + " and the render counted "
+                        + juce::String (floorTicks) + " of "
+                        + juce::String (Layout::maxRatchetHits) + " ticks");
+        }
+
+        // Back as found: the knob and the row are what a fresh session opens with.
+        processor.setMutate (0.0f);
+
+        for (int s = 0; s < Layout::numSteps; ++s)
+            processor.setStep (probeChannel, s, false);
+    }
     //======================================================================
     // The bank strip is the only place the pattern bank can be seen or reached: there is
     // no file browser, no menu and no parameter for a slot. So five claims have to hold,

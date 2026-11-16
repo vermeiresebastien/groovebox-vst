@@ -1,8 +1,8 @@
 # Groovebox -- agent instructions
 
 JUCE 8.0.4 C++17 sample step sequencer (16 steps x 12 channels, per-channel pitch,
-ADSR, velocity, probability and choke group, swing, late-only timing humanize, master
-trim + peak meter). VST3 + Standalone.
+ADSR, velocity, probability, strike count 1-8 and choke group, swing, late-only timing
+humanize, four pattern slots per lane, master trim + peak meter). VST3 + Standalone.
 Plugin manufacturer code `Eruw`, product code `Grvb`, version from
 `project(... VERSION ...)` in [CMakeLists.txt](CMakeLists.txt).
 
@@ -123,9 +123,11 @@ It is fully gitignored and nothing in it is authored in place.
   `floorHeight` off the editor's own constrainer, so this was one subtraction away rather than a
   measurement away -- a claim that survives checking only one axis is the dangerous shape. Both
   sentences were corrected by the shipping lane in `71c04fd`, and the defect was closed by 5.6's
-  height half, which is why the copy now reads **1218 × 695** with the two deciding expressions
-  beside their own axes: `TransportBar::wrappedRowWidth + 2 * Layout::editorMargin` for the width
-  and `Layout::editorFloorHeight (TransportBar::twoRowHeight, gridFloor)` for the height. Three
+  height half, which is why the copy now reads **1298 × 695** (4.5's fourth control took the
+  derived width from 1218 to 1298; 695 is 5.6's and has not moved) with the two deciding
+  expressions beside their own axes: `TransportBar::wrappedRowWidth + 2 * Layout::editorMargin`
+  for the width and `Layout::editorFloorHeight (TransportBar::twoRowHeight, gridFloor)` for the
+  height. Three
   things that rule has to keep saying out loud: the *height* floor is priced against the
   **wrapped** bar, because the published width floor is below `oneRowWidth` and the corner where
   both limits are met at once is the worst case; the word "fits" states what it fits as -- a
@@ -135,12 +137,12 @@ It is fully gitignored and nothing in it is authored in place.
 - **A verified number is not a verified claim.** The Touch A/B quoted `peak 1.438488 -> 1.485904`
   straight out of the run log, so every digit was true -- and both numbers are past 0 dBFS, because
   the fixture is four lanes x all sixteen steps at chance 1.0 on the whole velocity ladder
-  (`Tests/SmokeTest.cpp:7861-7867`), a load the genre table never asks for (densest row 10 of 16,
+  (`Tests/SmokeTest.cpp:8006-8012`), a load the genre table never asks for (densest row 10 of 16,
   average 3.4). So the copy reported a rise in *clipping* as if it were the cost of a control, while
   the headroom section two pages earlier says the latch fires at 0 dBFS and there is no limiter.
   When shipped copy quotes a measured level it states the fixture that produced it, whether that
   fixture is a playing state, and which trim was in place -- and the same test arm's relative ceiling
-  (`<= shut * 1.25`, `Tests/SmokeTest.cpp:8012`) is an anti-renormalisation gate, not a headroom gate,
+  (`<= shut * 1.25`, `Tests/SmokeTest.cpp:8157`) is an anti-renormalisation gate, not a headroom gate,
   which is worth saying in its comment because nothing else in the suite bounds the summed peak.
   Corrected by the shipping lane in `fbf973c`.
 
@@ -159,7 +161,7 @@ no generated header ([CMakeLists.txt:232-335](CMakeLists.txt)), which is what ke
 second. All four entries are `add_test` cases carrying a `PASS_REGULAR_EXPRESSION` that requires a
 `, 0 ` problem count, so a run that prints nothing and a run that prints a problem both fail the
 tracked path even at process exit 0, and `-V` is the documented form because the quiet one prints no
-counts. Last green run: 422 smoke checks, 619 layout checks, 85 planner checks, 0 problems, guard OK.
+counts. Last green run: 465 smoke checks, 651 layout checks, 85 planner checks, 0 problems, guard OK.
 
 **CTest does not build.** Measured by the lane that wired it (`ecfe76c`): with `GenrePatterns.h:101`
 broken and no rebuild, `ctest` reported 4/4 passed while the sources no longer matched the binaries.
@@ -293,15 +295,45 @@ gate. The two are not interchangeable and neither alone is the whole check; run 
   `JUCE_MODAL_LOOPS_PERMITTED` and JUCE 8 has no public single-step message pump, so the
   layout test drives `ChannelStrip::refresh()` -- the same `syncAutomatableControls()`
   path the 30 ms timer uses -- instead of pumping messages.
-- **A JUCE radio group cannot express "neither", so the two exclusive grid toggles are
+- **A JUCE radio group cannot express "neither", so the three exclusive grid toggles are
   made exclusive by hand.** `Button::internalClickCallback` computes
   `shouldBeOn = (radioGroupId != 0 || ! lastToggleState)`: a button in a group lights and
-  never goes out when you click it again. Both overlays *can* be off -- that is the
+  never goes out when you click it again. All three overlays *can* be off -- that is the
   resting state -- so `TransportBar` uses `clickingTogglesState` with no group and closes
   the other button in the handler (`closeOverlay`, TransportBar.cpp). Enforcement belongs
   there rather than in the grid: `StepGridComponent::openOverlay` already keeps one
   overlay, but a panel with two lit buttons for one overlay is a panel that lies about
   which field a drag is going to write, and only the bar can see both controls.
+- **An exclusivity gate has to start from the state the rule exists to leave behind.** The
+  4.5 helper that proved the three overlays cannot coexist shut *all three* buttons, then
+  clicked the wanted one and counted what was lit -- and a build whose ratchet handler had
+  deleted the line closing Velocity came back green on all three arms, because with nothing
+  open there is nothing for the missing close to do. Open one rival first, then the wanted
+  overlay on top of it, and cover every directed pair: three arms became six, and the deleted
+  line now reports "bar lit 2, grid modes 1" -- the bar showing two modes for a grid editing
+  one, which is the lie the rule was written against. The same arm had a second hole, in its
+  *report*: the failure message recomputed the counts after the loop had run the next pair and
+  cleaned up, so it printed "bar lit 1, grid modes 1" beside its own failure. Evidence a check
+  quotes has to come from the iteration that broke, not from wherever the loop happened to end.
+- **A claim about what is visible is a claim about contrast, and only a render can answer it.**
+  The roll overlay drew its ticks in the channel's colour on a cell filled with the channel's
+  colour at the velocity a fresh session uses, so the overlay whose entire job is to show a
+  count showed *nothing at all* on every cell of every new session -- and nothing said so,
+  because the only question any pixel check thought to ask was whether pixels moved *somewhere*.
+  The fix is a recess behind the ticks; the gate is four renders that differ in exactly one
+  number (same velocity, same cell, same everything), a zero-contrast band that must report
+  *zero* runs rather than noise, and an arm that deletes the recess and counts the ticks that
+  disappear. Read the other way: a negative control that cannot go red is not a control, and a
+  colour chosen because "it is the channel's own colour" is a colour nobody measured.
+- **A comment that names a control is not a control.** `TransportBar`'s comment on the shared
+  reset says it puts back "the *current* overlay value", and the first cut of the third overlay
+  left the button reading "100%" over a number of hits -- a reset of strikes described as a
+  reset to full. Nothing caught it: the label was one of two states nobody had ever rendered,
+  and the sentence that promised it predates the field it now gets wrong about. Found by reading
+  the handler against the comment during review, before any gate existed for it. The rule: when
+  a comment states that the UI shows something, that sentence is a gate waiting to be written --
+  and a new state for an existing control is exactly when the old prose stops being true and
+  keeps passing.
 - **Drive a headless toggle with `setToggleState (v, sendNotificationSync)`, not
   `triggerClick()`.** `triggerClick` posts a message and this harness has no pump; the
   former sets the state and *then* runs the click callback synchronously, so `onClick`
@@ -322,12 +354,31 @@ gate. The two are not interchangeable and neither alone is the whole check; run 
   removing pixels from a picture that had none. Restore the recorded good file at the top
   of every arm. The tell afterwards is that the arms disagree -- five of them now kill
   4 / 1 / 2 / 2 / 1 checks -- and every check is killed by at least one.
+  The same trap in its quiet form is an arm whose anchor does not match: nothing is
+  mutated, the suite runs against the good build, and it prints a pass. `out/ab-45.py`
+  therefore prints one of three things per arm and they are not the same claim -- `SKIP`
+  (anchor not found, nothing was measured), a problem *count* (the mutation applied and
+  was seen), and `BUILD FAILED` (it applied and did not compile, which is also not a
+  pass). One anchor was written for the wrong indentation level and printed SKIP for a
+  lap; an arm that is missing from the log is not an arm that passed.
 - **Choose the control where the defect can actually show.** The overlay half of that
   mark's test compared two renders at velocity 1.0, and a velocity bar at 1.0 fills the
   whole cell, so a mark that leaked into the overlay was painted over and the check passed
   on a build with the overlay rule deleted -- a negative control that cannot go red is
   not a control. At velocity 0.1 the bar is 3 px tall, the notch is 10, and the same
   mutation fails it. State in the comment what geometry makes the check able to bite.
+- **A travel gate only travels a field that was already on the cell when the move
+  happened.** `shiftChannelRow` carries four loads and four stores, and the block that has
+  caught a field left behind since 4.2 writes the roll *after* the shift -- so a build that
+  dropped the fourth store kept every check in the file. Setting the strike count on the
+  source step before `shiftChannelRow (2, 3)`, and asking that the destination read 5 while
+  the place it left reads 1, is what makes that store load-bearing: arm **J** of
+  `out/ab-45b.py` deletes it and exactly the two new gates move, 2 failures out of 465.
+  **K** is the same trap one layer up: the grid paints the selected slot and nothing else, so
+  a shift that turns a different take of the same lane is invisible on screen *and* invisible
+  to a check that only reads the slot it edited -- the gate has to read the slot the shift is
+  not supposed to touch, and K's "wrong slot" mutation is what proves that line bites (12
+  failures, the named carrier among them).
 - **A claim about pixels needs pixels.** `StepGridComponent::paint` is public, so the
   layout test renders the grid into a `juce::Image` and compares two renders that differ
   in one number: where the pixels moved, that they moved only inside that one cell, and
@@ -371,7 +422,7 @@ gate. The two are not interchangeable and neither alone is the whole check; run 
   does not fit and compact only below 219 where its own 228 does not fit either -- the compact
   arm had never worked at any strip height. Note what that does *not* look like: the branch was
   not unreachable, it was reached and then overflowed, so a check for "is the tight branch ever
-  exercised" passes on it. `Layout::stripPlan` (`Source/Common.h:446`) is one budget that picks a
+  exercised" passes on it. `Layout::stripPlan` (`Source/Common.h:490`) is one budget that picks a
   stage at exactly that stage's cost -- 268 / 246 / 210 / 166, hard floor 123 -- and the gate
   asserts cost <= room for every room the editor can reach, one px under each boundary, and that
   the floor is where the absorber runs out rather than a rounded guess (`LayoutTest.cpp:653`,
@@ -552,7 +603,7 @@ reproducible from `git checkout`.
   with no base context has no key to shift by, and the run prints how many it declined to touch.
   Each current location in that table was therefore checked against the tree by hand,
   and two of them changed the sentence beside them: `getUndoManager` has a caller now
-  (`PluginEditor.cpp:166`), so "has no callers" is false at any line number, and since 4.3b velocity
+  (`PluginEditor.cpp:182`), so "has no callers" is false at any line number, and since 4.3b velocity
   is gain *and* tone, so "gain only" is prose that needs rewriting rather than renumbering.
 - **These files are CRLF on disk, and `grep -c $'\r'` cannot tell you.** `git ls-files --eol` says
   `i/lf w/crlf` for all four docs; the count returns 0 with exit 1 on a genuinely CRLF file, so it

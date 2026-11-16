@@ -16,12 +16,12 @@ namespace
                                     / (MasterMeter::ceilingDb - MasterMeter::floorDb);
 
     /**
-        Puts one of the two grid overlays away, and tells whoever is listening.
+        Puts one of the grid overlays away, and tells whoever is listening.
 
         The bar enforces this rather than leaving it to the grid. The grid can only edit
-        one number at a time and closes the other one for itself, but only the bar can
-        see both buttons, and a button still lit for an overlay that has been closed is
-        a panel that lies about what a drag is going to write.
+        one number at a time and closes the others for itself, but only the bar can
+        see all three buttons, and a button still lit for an overlay that has been closed
+        is a panel that lies about what a drag is going to write.
     */
     void closeOverlay (juce::TextButton& button, std::function<void (bool)>& callback)
     {
@@ -184,14 +184,14 @@ TransportBar::TransportBar (GrooveboxProcessor& processorToUse)
     addAndMakeVisible (clearPatternButton);
 
     /**
-        The two numbers each step carries, one button each.
+        The three numbers each step carries, one button each.
 
         A toggle rather than a mode switch with somewhere else to go back to: the
         grid's default gesture is the one everybody uses, so editing has to be able to
         stop. The "on" colours invert the button, which is how the lit one reads as
         "the grid is showing you this" from across the room.
     */
-    for (auto* button : { &velocityButton, &chanceButton })
+    for (auto* button : { &velocityButton, &chanceButton, &ratchetButton })
     {
         button->setClickingTogglesState (true);
         button->setColour (juce::TextButton::buttonOnColourId, Colours::text);
@@ -199,10 +199,20 @@ TransportBar::TransportBar (GrooveboxProcessor& processorToUse)
         addAndMakeVisible (*button);
     }
 
+    // Named, so a test can ask for the control rather than recognise it. The reset is the
+    // one that needs it: its label follows the overlay that is open, so "the button that
+    // says 100%" is not an identity any more, and the faders set the precedent above.
+    resetValuesButton.setName ("ResetValues");
+    velocityButton.setName ("Velocity");
+    chanceButton.setName ("Chance");
+    ratchetButton.setName ("Ratchet");
+    rerollButton.setName ("Reroll");
+
     velocityButton.setTooltip ("Edit how hard each step hits: drag up and down inside a step");
     chanceButton.setTooltip ("Edit how often each step fires: drag down inside a step to drop some of them");
+    ratchetButton.setTooltip ("Edit how many strikes one hit becomes: drag up inside a step for faster rolls");
 
-    // The reset belongs to whichever of the two is open, so its tooltip says which
+    // The reset belongs to whichever of the three is open, so its tooltip says which
     // before you click it rather than after. refresh() keeps it in step.
     resetValuesButton.setTooltip ("Put every step back to full velocity");
     addAndMakeVisible (resetValuesButton);
@@ -333,6 +343,7 @@ TransportBar::TransportBar (GrooveboxProcessor& processorToUse)
     clearPatternButton.onClick = [this] { handleClearPatternClicked(); };
     velocityButton.onClick    = [this] { handleVelocityClicked(); };
     chanceButton.onClick      = [this] { handleChanceClicked(); };
+    ratchetButton.onClick     = [this] { handleRatchetClicked(); };
     resetValuesButton.onClick = [this] { handleResetValuesClicked(); };
     rerollButton.onClick      = [this] { handleRerollClicked(); };
 
@@ -438,12 +449,30 @@ void TransportBar::refresh()
                              juce::dontSendNotification);
     seedLabel.setText (juce::String (processor.getSeed()), juce::dontSendNotification);
 
-    // The shared reset follows the overlay that is open, so the hover text names the
-    // number it is about to overwrite. With neither open it does velocities, which is
-    // what the button said before there was a choice — and what the tooltip says.
-    resetValuesButton.setTooltip (chanceButton.getToggleState()
-                                      ? "Put every step back to firing every time"
-                                      : "Put every step back to full velocity");
+    /**
+        The shared reset follows the overlay that is open, so the hover text names the
+        number it is about to overwrite. With none open it does velocities, which is
+        what the button said before there was a choice — and what the tooltip says.
+
+        The ratchet case also moves the button's *label*, because its neutral value is one
+        strike and not the top of its range: a button reading "100%" over a field that
+        counts hits would be asking to be read as a percentage where there is no whole to
+        be a per cent of. The width does not move, so nothing else on the row pays for it.
+    */
+    const auto editingRatchet = ratchetButton.getToggleState();
+
+    resetValuesButton.setTooltip (editingRatchet ? "Put every step back to one strike"
+                                   : chanceButton.getToggleState() ? "Put every step back to firing every time"
+                                                                   : "Put every step back to full velocity");
+
+    resetValuesButton.setButtonText (editingRatchet ? "x1" : "100%");
+
+    // Written unconditionally, because the guard is already in the widget: JUCE's
+    // `Button::setButtonText` compares before it assigns and only repaints on a change
+    // (juce_Button.cpp:105), so a label that has to be restated on every 200 ms refresh
+    // tick costs nothing until an overlay actually opens. Checked rather than assumed,
+    // because the first version of this comment claimed the opposite and asked for a
+    // guard nobody needed.
 }
 
 void TransportBar::layoutVariation (juce::Rectangle<int> band)
@@ -550,6 +579,8 @@ void TransportBar::resized()
     line.removeFromLeft (4);
     chanceButton.setBounds (line.removeFromLeft (76).withSizeKeepingCentre (76, 24));
     line.removeFromLeft (4);
+    ratchetButton.setBounds (line.removeFromLeft (76).withSizeKeepingCentre (76, 24));
+    line.removeFromLeft (4);
     resetValuesButton.setBounds (line.removeFromLeft (46).withSizeKeepingCentre (46, 22));
 }
 
@@ -644,7 +675,10 @@ void TransportBar::handleClearPatternClicked()
 void TransportBar::handleVelocityClicked()
 {
     if (velocityButton.getToggleState())
+    {
         closeOverlay (chanceButton, onChanceModeChanged);
+        closeOverlay (ratchetButton, onRatchetModeChanged);
+    }
 
     if (onVelocityModeChanged != nullptr)
         onVelocityModeChanged (velocityButton.getToggleState());
@@ -653,16 +687,31 @@ void TransportBar::handleVelocityClicked()
 void TransportBar::handleChanceClicked()
 {
     if (chanceButton.getToggleState())
+    {
         closeOverlay (velocityButton, onVelocityModeChanged);
+        closeOverlay (ratchetButton, onRatchetModeChanged);
+    }
 
     if (onChanceModeChanged != nullptr)
         onChanceModeChanged (chanceButton.getToggleState());
 }
 
+void TransportBar::handleRatchetClicked()
+{
+    if (ratchetButton.getToggleState())
+    {
+        closeOverlay (velocityButton, onVelocityModeChanged);
+        closeOverlay (chanceButton, onChanceModeChanged);
+    }
+
+    if (onRatchetModeChanged != nullptr)
+        onRatchetModeChanged (ratchetButton.getToggleState());
+}
+
 void TransportBar::handleResetValuesClicked()
 {
     /**
-        One button, two numbers, and it does the one that is on the grid.
+        One button, three numbers, and it does the one that is on the grid.
 
         That is only honest because the tooltip and the lit toggle both say which it is
         before the click; a button whose target moved silently would be the same control
@@ -674,10 +723,18 @@ void TransportBar::handleResetValuesClicked()
         ninety-two undoes.
     */
     const auto editingChance = chanceButton.getToggleState();
+    const auto editingRatchet = ratchetButton.getToggleState();
 
-    processor.beginTransaction (editingChance ? "Reset probabilities" : "Reset velocities");
+    processor.beginTransaction (editingRatchet ? "Reset roll counts"
+                                   : editingChance ? "Reset probabilities"
+                                                   : "Reset velocities");
 
-    if (editingChance)
+    // Three branches, and the order is the one the buttons are in on the row. Only one of
+    // them can be lit — the handlers above make sure of it — so this is a read of which
+    // overlay is open and not a decision about what to do when two disagree.
+    if (editingRatchet)
+        processor.resetRatchets();
+    else if (editingChance)
         processor.resetChances();
     else
         processor.resetVelocities();
