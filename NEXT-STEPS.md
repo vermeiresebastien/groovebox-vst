@@ -1975,3 +1975,41 @@ is the commit `out/cite-pin.txt` writes its pin ranges in while six of those ids
 docs as the provenance of a corrected claim. So the recommendation is **leave the log, fix retrieval**: the
 collision is disambiguated in the carrier a reader actually opens, and an amend costs a re-anchored pin base
 and a renamed SHA in another lane's verification worktree to buy nothing. The owner's call either way.
+### Receipt -- the 14a/14b handover, checked at the ref it names (2026-11-16, export lane)
+
+`a942cd0` cold in its own fresh SHA-named worktree: 546 smoke / 675 layout / 85 planner,
+`stale=0` at 25/25/3 inputs, `GUARD OK`, ctest 4/4, exit 0 -- and the run one commit earlier at
+`8e49944` printed the same 546/675/85, which is what `git diff --name-only 8e49944..a942cd0` =
+`NEXT-STEPS.md` alone predicts: a docs commit cannot move a verdict. Against this lane's own
+`d8bbeb8` receipt (484/675/85) 14a is +62 smoke checks, and the `[28]` baseline is one of them in
+kind, not in name: `4BC3AA231178C071` is an asserted constant at Tests/SmokeTest.cpp:5174 in
+`8e49944` (5159 in this tree), never
+printed by a green run, so the receipt for it is the `0 failures` line and nothing more.
+`writeSlotRows` is defined at Source/PluginProcessor.cpp:736 in `a942cd0`, declared at :364 there,
+and driven from section [35]; at that ref `PatternPlanner` still has no caller in Source/, so the
+handover's future-tense exclusion is
+the tree's shape and item 21's blocker stands now that the seam exists.
+Merge preview `git merge-tree --write-tree master lane-44`: AGENTS.md is the only conflicted path.
+Two corrections. Ancestry: `9c872f7` is not an ancestor of `lane-44` -- merge-base is `5d071b0`,
+master +2, lane-44 +5, and the tip has moved again to `ccd6308` (`NEXT-STEPS.md` only over the
+verified `a942cd0`), so a ship is named by SHA, never by a count over a branch someone may push.
+Hashes: the exes from the two cold runs differ by far more than the two link clocks -- the std-only
+planner by exactly 4 bytes, the smoke and layout suites by 4222 and 4784, because all 69 `.obj` in
+the two trees differ (measured at `8e49944` vs `a942cd0`; same tree, objects untouched, relink =
+4 bytes). Cross-tree comparison is therefore about verdicts, not hashes; `AGENTS.md` now says so.
+The citation census reproduced at its ref (31/73/19/29/2/1, `UNPINNED miss ... : 0`) with the
+current tooling in `out/wt-44/out/`, and its probe log reddens three planted errors with hashed
+restores. But this tree's `out/cite-pin.txt` (17 entries) is not just shorter than the working set
+(19): over the same docs it reports `miss: 0` where the current set reports `miss: 1` --
+line 114 of this file cites PluginProcessor.h lines 333-338 for a declaration that is at line 519 in
+`9c872f7`. `8e49944` repaired that pointer to 602-612 on the lane; master carries the base's number,
+so item 22 has a concrete first job: the merged tree is audited with the current six-file set and
+this citation is re-derived, not inherited from either side.
+
+One witness was spent to get the hash rule, and it has to be recorded here or the next reader finds
+a disagreement in my own scratch: `out/wt-990e4c2`'s smoke exe is now a **relink** made at 19:10 with
+the sources untouched (`7ef0e28a3fb36c80` -> `3aa8c869f169eb8c`, same 8,693,248 bytes, 4 of them
+different). The `d8bbeb8` receipt at `out/verify-53.console.txt` names `7EF0E28A3FB3`, and that is
+still the binary whose verdicts it reports -- the relink differs from it only in the two clocks. Both
+binaries are kept at `out/planbuild/relink-{A,B}.exe`; the durable statement is the one in
+`AGENTS.md`, not these files, since `out/` is gitignored.

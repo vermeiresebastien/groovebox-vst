@@ -40,6 +40,22 @@ It is fully gitignored and nothing in it is authored in place.
   a mismatch confined to those four bytes is the link time, and **anything bigger means the sources
   genuinely differ, which is the answer you were looking for.** Compare per file within one build
   (the rule above, the gate); across builds, strip the stamps first, then believe the diff.
+- **Those four bytes are a relink, not a rebuild -- and a rebuild is 4,222.** The bullet above was
+  measured by relinking one tree's own objects, and it holds exactly there: delete the smoke exe,
+  relink with no source touched (the build log prints no compile line), and the two exes differ in
+  4 of 8,693,248 bytes at `0x128` and `0x6fe4b4` -- the same two clocks at JUCE-linked size. Two
+  *cold* builds in two different directories of byte-identical sources do not: `8e49944` against
+  `a942cd0`, whose only difference is `NEXT-STEPS.md`, gives smoke **4,222** differing bytes
+  (.data 2,551, .text 1,660, .rdata 8, header 3), layout **4,784**, and only the std-only planner
+  its documented 4. The section table itself moves -- `.data` VirtualSize differs by 16 bytes on both
+  suites -- so this is not content that forgot a stamp. The cause is upstream of the link: **all 69
+  `.obj` files in the two build trees differ** (`SequencerEngine.obj`: 5,147 of 233,603 bytes). It is
+  *not* the embedded build path -- that appears once per object, explains 6 of those 5,147 bytes, and
+  appears zero times in either exe, in either encoding. Mechanism not identified; the fact is enough.
+  So the sentence "anything bigger means the sources genuinely differ" is valid **within one build**
+  -- `launch/` against its artefact tree, which is what the gate hashes -- and invalid **across two
+  trees**, where it would testify that a docs-only commit changed the DSP. Across trees compare
+  verdicts (check counts, the `[28]` fingerprint); within one, compare hashes.
 - The bundle is **removed before being rewritten** ([CMakeLists.txt:152-163](CMakeLists.txt))
   so a file that no longer belongs to the build cannot survive in it.
 - `launch` is a **target, not a POST_BUILD step**, on purpose: a host with the plugin
@@ -543,14 +559,26 @@ gate. The two are not interchangeable and neither alone is the whole check; run 
 - **Verify a SHA another lane names in a detached worktree, and assert the ref, not just the SHA.**
   `out/planbuild/verify-sha.ps1 -Sha <sha> -Tag <tag> -Since <prev>` checks the tree out detached,
   builds each suite **per target**, refuses any exe older than its own inputs, then runs the suites
-  and `ctest` -- in that order, because CTest does not build. It is **suites-only**: `grep -n launch`
-  returns zero hits in its 131 lines, so it says nothing about the plugin binaries. The
+  and `ctest` -- in that order, because CTest does not build. It is **suites-only** -- see the next
+  bullet for the grep that proves it and for why the one I used here in `ccfdfdd` went false the same
+  afternoon. The
   `launch/`-against-artefact-tree re-hash is the *tree-side* gate's step, `out/planbuild/gate-merged.ps1`
   -- the sentence that used to claim otherwise here was written in `aa22b44` and is the reason for the
   bullet below. It prints `NAMED BY:` deliberately: a worktree made with `--detach` leaves the commit
   named by no branch, one `git worktree prune` from unverifiable, which is how a first commit landed on
   a detached HEAD while the branch sat where it was. The script lives in gitignored `out/` -- item **6.7**
   is the same hazard for the citation tooling -- so this describes a working tree, not a clone.
+- **A grep discriminator on a word the prose also uses is not a gate -- and mine proved it the same
+  afternoon.** The bullet above said "`grep -n launch` returns zero hits in its 131 lines"; I then
+  added a `NOT CONFIGURED` refusal and a run banner, and the script went to 168 lines with **one**
+  `launch` hit -- line 67, the banner printing "no plugin target built, launch/ untouched". The claim
+  stayed true and the evidence for it went false, which is the worse combination: the next reader who
+  checks the grep concludes the *sentence* is the lie. Discriminate on what only a build step can
+  contain, measured at `9c872f7`+ and re-checked today: `--target launch` **0**, `Groovebox.exe` **0**,
+  `vst3` **0** hits in `out/planbuild/verify-sha.ps1` -- a banner cannot produce any of those three.
+  Same rule as the "must not print X" gate that an exception report satisfies by quoting X: state a
+  negative about a file in terms of the syntax only an action would write, never the vocabulary of the
+  disclaimer.
 - **A guard covers only what it measures, and a verification worktree is reused, not fresh.** The
   detached gate freshness-checks the three *test* exes it builds; the plugin artefacts sitting in the
   same `build/` tree belong to whatever commit was checked out when they were last linked, and the
@@ -587,6 +615,26 @@ reproducible from `git checkout`.
   the run counts them so this file does not have to retype a number that moves every time a paragraph
   is written: a script that invented a match there would be exactly the unfalsifiable check this file
   warns about.
+- **An exemption list that is merely *older* can silence a real finding, not only invent one.** The
+  hazard this section records is the loud direction: absent pins re-report exempt citations as
+  `UNPINNED miss` (measured 22 on a correct tree). The quiet direction is worse because the gate
+  still prints 0. Measured with the same docs and the two `cite-pin.txt` files that exist right now --
+  main `out/` carries 17 range entries, the working set in `out/wt-44/out/` carries 19 -- run over
+  **this** tree's docs: stale pins give `checked 20, judged 60, pinned 31, miss 0`, current pins give
+  `checked 21, judged 58, pinned 31, miss 1`, and the one extra check is a genuine defect --
+  NEXT-STEPS.md line 114 cites PluginProcessor.h lines 333-338 for the `parameterChanged` sentence
+  while the declaration sits at `PluginProcessor.h:519` in `9c872f7`, so that pointer is wrong by 186
+  lines. What the pin file changes is its *classification*: under the older set the same citation
+  prints `JUDGE ... no symbol named in the clause` and contributes nothing to the gate, under the
+  current one it prints `MISS` -- the windows the audit slices a paragraph by come from the pin list,
+  so an old list edits the reader's question, not just its exemptions. Proven by 2x2 over a detached
+  `9c872f7` worktree: both doc states x both pin sets, and only the pin axis moves the verdict.
+  The same citation in lane-44's
+  tree is held at PluginProcessor.h lines 602-612, correct at `lane-44`: `8e49944` repaired it, and
+  master still carries the number the shared base `5d071b0` carried, so this is my side's stale
+  pointer, not a merge artifact. Two consequences: the merged tree has to be audited with the
+  **current** six-file set (item **22**), and `miss: 0` is only evidence when the pin file's own
+  provenance is printed beside it -- an exemption list needs a ref, exactly like a hash.
 - **A rewrite has to be keyed, not incremental, or it shifts twice.** The target number is computed
   from the base's own citation and applied to the line matched by its text with every digit masked out.
   The first version added the delta it found instead, got run twice in one sitting, and moved 34
