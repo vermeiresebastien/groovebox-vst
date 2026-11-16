@@ -23,7 +23,13 @@ It is fully gitignored and nothing in it is authored in place.
   `moduleinfo.json` and the payload `README.txt` (`C98EFC6C...`, hash-matched against
   `installer/README.txt` rather than against a copy of itself). It replaces the `b603107` export
   (`Groovebox.exe A3948E47...`, bundle `CF3F8318...`), which was the installed build until then
-  and stays true as a record of it.
+  and stays true as a record of it -- and whose only surviving bytes are now at
+  `D:\Projects\tools\groovebox-b603107-build-2026-11-16` with a `FROM.txt`, both prefixes re-checked
+  after the copy. They were found sitting in a reused verification worktree, which is where the next
+  reader would have met them as if they belonged to it.
+  `moduleinfo.json` is **not** build identity: one 1,404-byte file, `E7C65365...`, came out of four
+  different builds (04:06, 12:40, 16:55 and the installed `3c3f059`), because it carries the version
+  metadata rather than the code -- so it proves the payload is complete, never which build shipped.
 - **A rebuild is not the install, and the difference is four bytes on identical sources.** Measured
   at the cheapest target in the tree (the std-only planner suite, ~1 s): `touch` one test file --
   content unchanged -- relink, and the two exes differ in exactly 4 of 198,144 bytes, at `0x108`
