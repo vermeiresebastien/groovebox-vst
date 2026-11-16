@@ -10019,6 +10019,578 @@ int main()
 
 
     //======================================================================
+    std::printf ("\n[34] a lane can be auditioned from the panel\n");
+    {
+        /**
+            The claim this section is there to hold: what a click starts *is* what a key
+            starts, sample for sample.
+
+            5.3 moved the audition off the message thread and into the render walk, which
+            is the only place the fade-in, the anti-alias band picked at note-on, the choke
+            group, the voice stealing, the lane's own level and the trim are all already
+            applied to a note. A preview reaching them through a second door would be a
+            second sound engine — and the second engine is what the old direct call was: it
+            started the voice from whatever thread the UI happened to be on, beside samples
+            the render was already writing.
+
+            So the arms ask whether the two doors are one door. The same samples for the
+            same struck level. A sound in the block it was asked for, not the next. A ring
+            that is bounded and says so instead of waiting. A lane that cannot sound
+            starting nothing. A pattern already playing not being retimed by a click. And a
+            preview in a choke group cutting it the way a note cuts it.
+        */
+        constexpr int auditionLane = 0;
+        constexpr int otherLane = 1;
+        const int auditionNote = Layout::firstMidiNote + auditionLane;
+
+        /**
+            One audition, either by click or by key, from a machine nobody has rendered yet.
+
+            Two fresh processors rather than one rendered twice, for the reason [30]
+            records: the trim moves through a 20 ms smoother, so a second pass on the same
+            machine starts with the smoother already at target while the first does not, and
+            the difference that comes back is the fixture climbing rather than the seam.
+        */
+        auto auditionedRender = [&] (GrooveboxProcessor& p, bool byKey, float velocity,
+                                     int totalSamples, int queueAtBlock = 0)
+        {
+            RenderResult result;
+            result.left.reserve ((size_t) totalSamples);
+            result.right.reserve ((size_t) totalSamples);
+
+            juce::AudioBuffer<float> buffer (2, blockSize);
+            int block = 0;
+
+            for (int rendered = 0; rendered < totalSamples; rendered += blockSize, ++block)
+            {
+                const auto thisBlock = juce::jmin (blockSize, totalSamples - rendered);
+
+                buffer.setSize (2, thisBlock, false, true, true);
+                buffer.clear();
+
+                juce::MidiBuffer midi;
+
+                if (block == queueAtBlock)
+                {
+                    if (byKey)
+                        midi.addEvent (juce::MidiMessage::noteOn (1, auditionNote, velocity), 0);
+                    else
+                        p.previewChannel (auditionLane, velocity);
+                }
+
+                p.processBlock (buffer, midi);
+
+                for (int i = 0; i < thisBlock; ++i)
+                {
+                    result.left.push_back (buffer.getSample (0, i));
+                    result.right.push_back (buffer.getSample (1, i));
+                }
+            }
+
+            return result;
+        };
+
+        /** A lane that can be auditioned: it holds a sample and nothing else is armed. */
+        auto auditionReady = [] (GrooveboxProcessor& p, const juce::File& sample, int lane)
+        {
+            juce::String error;
+            p.loadSampleIntoChannel (lane, sample, error);
+            clearAllSteps (p);
+            p.setPlaying (false);
+            p.setMutate (0.0f);
+            p.setHumanize (0.0f);
+            p.setTouch (0.0f);
+            return error.isEmpty();
+        };
+
+        //==================================================================
+        // a. the click and the key are the same samples
+        //==================================================================
+        std::printf ("    a. an audition is the note it becomes\n");
+        {
+            const auto click = makeClickWav ("audition-identity", 4000, sampleRate);
+
+            GrooveboxProcessor byClick;
+            byClick.prepareToPlay (sampleRate, blockSize);
+            const bool loaded = auditionReady (byClick, click, auditionLane);
+
+            GrooveboxProcessor byKey;
+            byKey.prepareToPlay (sampleRate, blockSize);
+            auditionReady (byKey, click, auditionLane);
+
+            const auto clicked = auditionedRender (byClick, false, 1.0f, 4096);
+            const auto keyed = auditionedRender (byKey, true, 1.0f, 4096);
+
+            // The precondition, printed either way: an identity between two renders that
+            // are both silent is not an identity, it is a pair of zeros. [30]'s rule that a
+            // gate's evidence has to appear on the green run too.
+            const auto head = peakOf (clicked.left);
+
+            check (loaded && head > 0.05f,
+                   "an auditioned lane actually makes a sound, which is the precondition "
+                   "every comparison below is measured against",
+                   "peak " + juce::String (head, 6) + " from a click auditioned at full "
+                   "velocity" + (loaded ? juce::String() : " (the sample refused to load)"));
+
+            const auto sameLeft = firstDifference (clicked.left, keyed.left, 0, 4096);
+            const auto sameRight = firstDifference (clicked.right, keyed.right, 0, 4096);
+
+            check (sameLeft < 0 && sameRight < 0,
+                   "a click and a key at the same struck level are the same samples on both "
+                   "channels, so the audition has no second sound engine behind it",
+                   sameLeft < 0 && sameRight < 0
+                       ? "identical for 4096 samples, peak " + juce::String (head, 6)
+                       : "first difference at sample " + juce::String (sameLeft < 0 ? sameRight : sameLeft));
+
+            // What the queue costs: a level off the 7-bit lattice becomes the nearest
+            // lattice value, which is the same thing a note-on does to the same number, so
+            // the quantisation is not a price the click pays alone. Two more unused
+            // processors for the same reason as the first pair: an arm that has already
+            // rendered once starts with a smoother settled and a voice tail behind it, and
+            // both of those belong to the fixture rather than to the seam.
+            GrooveboxProcessor coarseP;
+            coarseP.prepareToPlay (sampleRate, blockSize);
+            auditionReady (coarseP, click, auditionLane);
+
+            GrooveboxProcessor latticeP;
+            latticeP.prepareToPlay (sampleRate, blockSize);
+            auditionReady (latticeP, click, auditionLane);
+
+            const auto coarse = auditionedRender (coarseP, false, 0.3f, 4096);
+            const auto lattice = auditionedRender (latticeP, true, 38.0f / 127.0f, 4096);
+            const auto coarseDiff = firstDifference (coarse.left, lattice.left, 0, 4096);
+
+            check (coarseDiff < 0,
+                   "and a struck level that no note-on could carry arrives as the nearest one "
+                   "that can, which is what lets the two be compared bit for bit at all",
+                   coarseDiff < 0 ? "0.3 auditioned is the 38/127 note, identical"
+                                  : "differs at sample " + juce::String (coarseDiff));
+
+            // And the same claim from the other side of a tie. 0.3 x 127 is 38.1, so a
+            // quantiser that truncated, ceiled or simply copied the number it was handed
+            // would still land on 38 here -- this pair is the one with a shape to it. Half
+            // velocity is 63.5 exactly, which is the only ordinary value where rounding up
+            // and cutting down disagree, and the disagreeing answer is not this file's
+            // opinion: a real note-on at 0.5 stores 64 because `MidiMessage::noteOn` rounds
+            // the same product, so the queue is held to the keyboard's own answer rather
+            // than to a number typed next to it. Out of `roundToInt` the arm goes red;
+            // towards `ceil` the 0.3 arm above goes red. Neither one alone sees both.
+            GrooveboxProcessor tieP;
+            tieP.prepareToPlay (sampleRate, blockSize);
+            auditionReady (tieP, click, auditionLane);
+
+            GrooveboxProcessor tieNoteP;
+            tieNoteP.prepareToPlay (sampleRate, blockSize);
+            auditionReady (tieNoteP, click, auditionLane);
+
+            const auto tie = auditionedRender (tieP, false, 0.5f, 4096);
+            const auto tieNote = auditionedRender (tieNoteP, true, 64.0f / 127.0f, 4096);
+            const auto tieDiff = firstDifference (tie.left, tieNote.left, 0, 4096);
+
+            check (tieDiff < 0,
+                   "and half velocity arrives as the 64/127 a note-on stores rather than the "
+                   "63/127 a truncating quantiser would cut, which is the side of the tie the "
+                   "0.3 pair above cannot see",
+                   tieDiff < 0 ? "0.5 auditioned is the 64/127 note, identical"
+                               : "differs at sample " + juce::String (tieDiff));
+        }
+
+        //==================================================================
+        // b. it sounds in the block it was asked for
+        //==================================================================
+        std::printf ("    b. the request is drained by the block that receives it\n");
+        {
+            const auto click = makeClickWav ("audition-block", 4000, sampleRate);
+
+            GrooveboxProcessor p;
+            p.prepareToPlay (sampleRate, blockSize);
+            auditionReady (p, click, auditionLane);
+
+            // Asked for at the top of block three: an audition drained in the block that
+            // received it starts at sample 768, and one that waits a block starts at 1024.
+            constexpr int queueBlock = 3;
+            const auto askedLate = auditionedRender (p, false, 1.0f, 2048, queueBlock);
+            const auto onset = onsetAfter (askedLate.left, 0);
+
+            // The 32 samples of slack are the fade-in every voice gets, which is the only
+            // thing that can move a start off the block boundary here. The block is 256
+            // samples wide, so an arm that waits for the next drain lands two hundred and
+            // twenty-four samples outside this window rather than just inside it.
+            check (onset >= queueBlock * blockSize && onset < (queueBlock + 1) * blockSize,
+                   "the hit starts inside the block the request arrived in, not the one after it",
+                   "onset at " + juce::String (onset) + ", block " + juce::String (queueBlock)
+                       + " spans " + juce::String (queueBlock * blockSize) + " to "
+                       + juce::String ((queueBlock + 1) * blockSize - 1));
+
+            check (askedLate.peakBetween (0, queueBlock * blockSize) == 0.0f,
+                   "and nothing sounds before the ask, so what drained is the request that was "
+                   "made and not one the machine was already holding",
+                   "peak up to the ask "
+                       + juce::String (askedLate.peakBetween (0, queueBlock * blockSize), 6));
+        }
+
+        //==================================================================
+        // c. the ring is bounded, and says so instead of waiting
+        //==================================================================
+        std::printf ("    c. a full ring drops the audition rather than the caller\n");
+        {
+            const auto click = makeClickWav ("audition-ring", 4000, sampleRate);
+
+            GrooveboxProcessor p;
+            p.prepareToPlay (sampleRate, blockSize);
+            auditionReady (p, click, auditionLane);
+
+            // Asked here, on an empty ring, and that placement is the whole check: the
+            // first version of this arm put it under the ceiling loop below, where the
+            // answer is `false` because there is no room — so a build with the range guard
+            // deleted passed it, and the mutation probe came back green. On an open ring
+            // the only way to be refused is to be refused.
+            check (! p.previewChannel (-1, 1.0f) && ! p.previewChannel (Layout::numChannels, 1.0f),
+                   "a lane outside the twelve is refused before it can be queued, so the drain "
+                   "never has an index to trust",
+                   "an out-of-range lane was accepted");
+
+            int accepted = 0;
+
+            for (int i = 0; i < SequencerState::maxPreviewRequests * 3 / 2; ++i)
+                if (p.previewChannel (auditionLane, 1.0f))
+                    ++accepted;
+
+            const auto offered = SequencerState::maxPreviewRequests * 3 / 2;
+
+            check (accepted == SequencerState::maxPreviewRequests,
+                   "exactly the ceiling is taken with nothing rendered in between, so the "
+                   "producer is bounded by the ring and not by the caller's patience",
+                   juce::String (accepted) + " of " + juce::String (offered) + " accepted, ceiling "
+                       + juce::String (SequencerState::maxPreviewRequests));
+
+            // One block drains the lot, and the room is free again — which is what makes
+            // this a ring and not a counter that runs out.
+            render (p, blockSize, blockSize, sampleRate);
+
+            check (p.previewChannel (auditionLane, 1.0f),
+                   "and after one block the ring has room again, so the ceiling is a queue and "
+                   "not a lifetime budget",
+                   "a request still refused after the drain");
+
+            // What the drain reached: twelve lanes asked for one at a time have to start
+            // twelve voices, which is the count the queue alone cannot fake by dropping
+            // everything on the floor.
+            GrooveboxProcessor all;
+            all.prepareToPlay (sampleRate, blockSize);
+
+            for (int lane = 0; lane < Layout::numChannels; ++lane)
+                auditionReady (all, click, lane);
+
+            for (int lane = 0; lane < Layout::numChannels; ++lane)
+                all.previewChannel (lane, 1.0f);
+
+            render (all, blockSize, blockSize, sampleRate);
+
+            check (all.debugActiveVoices() == Layout::numChannels,
+                   "twelve requests on twelve lanes become twelve voices in the block that "
+                   "drains them, one per lane",
+                   juce::String (all.debugActiveVoices()) + " voices sounding of "
+                       + juce::String (Layout::numChannels));
+
+            // ...and sixteen on one lane have to leave the machine in the state sixteen
+            // notes on that lane leave it in. That is the honest shape of the claim: the
+            // queue is not allowed a de-dupe the keyboard does not have, and it is not
+            // allowed to invent voices the keyboard would refuse. What that state is --
+            // one voice, or sixteen stacked on one lane -- belongs to the voice allocator,
+            // and this arm deliberately does not say, because a number typed here would be
+            // a second engine's behaviour being asserted as the click's.
+            GrooveboxProcessor one;
+            one.prepareToPlay (sampleRate, blockSize);
+            auditionReady (one, click, auditionLane);
+
+            for (int i = 0; i < SequencerState::maxPreviewRequests; ++i)
+                one.previewChannel (auditionLane, 1.0f);
+
+            render (one, blockSize, blockSize, sampleRate);
+
+            GrooveboxProcessor keys;
+            keys.prepareToPlay (sampleRate, blockSize);
+            auditionReady (keys, click, auditionLane);
+
+            {
+                juce::AudioBuffer<float> buffer (2, blockSize);
+                juce::MidiBuffer midi;
+
+                buffer.clear();
+
+                for (int i = 0; i < SequencerState::maxPreviewRequests; ++i)
+                    midi.addEvent (juce::MidiMessage::noteOn (1, auditionNote, 1.0f), 0);
+
+                keys.processBlock (buffer, midi);
+            }
+
+            check (one.debugActiveVoices() > 0 && one.debugActiveVoices() == keys.debugActiveVoices(),
+                   "sixteen asks on one lane leave exactly the voices sixteen notes on that "
+                   "lane leave, so the queue neither dedupes nor invents",
+                   juce::String (one.debugActiveVoices()) + " clicked against "
+                       + juce::String (keys.debugActiveVoices()) + " keyed");
+        }
+
+        //==================================================================
+        // d. a lane that cannot sound starts nothing
+        //==================================================================
+        std::printf ("    d. mute and emptiness are obeyed, not bypassed\n");
+        {
+            const auto click = makeClickWav ("audition-muted", 4000, sampleRate);
+
+            GrooveboxProcessor muted;
+            muted.prepareToPlay (sampleRate, blockSize);
+            auditionReady (muted, click, auditionLane);
+            muted.setChannelMuted (auditionLane, true);
+
+            const auto mutedPeak = peakOf (auditionedRender (muted, false, 1.0f, 1024).left);
+
+            check (mutedPeak == 0.0f,
+                   "a muted lane gives a click nothing: the audition goes through the same "
+                   "gate a note goes through rather than around it",
+                   "peak " + juce::String (mutedPeak, 6));
+
+            GrooveboxProcessor emptyLane;
+            emptyLane.prepareToPlay (sampleRate, blockSize);
+            clearAllSteps (emptyLane);
+            emptyLane.setPlaying (false);
+
+            // The request is still taken — the lane decides, not the queue — so this is a
+            // check that the silence comes from having nothing to play, not from a refusal.
+            const bool asked = emptyLane.previewChannel (auditionLane, 1.0f);
+            const auto emptyPeak = peakOf (render (emptyLane, 1024, blockSize, sampleRate).left);
+
+            check (asked && emptyPeak == 0.0f,
+                   "and an empty lane stays silent to the last sample rather than playing a "
+                   "half-decoded buffer",
+                   juce::String (asked ? "queued, " : "refused, ") + "peak " + juce::String (emptyPeak, 6));
+        }
+
+        //==================================================================
+        // e. a click does not retime a pattern that is playing
+        //==================================================================
+        std::printf ("    e. an audition does not move the grid\n");
+        {
+            // Short clicks on both lanes: a bar is rendered twice here and a four-thousand
+            // sample source would still be ringing when the second pass began, which the
+            // onset scan would read as a hit at sample nought.
+            const auto click = makeClickWav ("audition-grid", 200, sampleRate);
+
+            GrooveboxProcessor p;
+            p.prepareToPlay (sampleRate, blockSize);
+            auditionReady (p, click, otherLane);
+            auditionReady (p, click, auditionLane);
+
+            for (int step = 0; step < Layout::numSteps; step += 4)
+            {
+                p.setStep (otherLane, step, true);
+                p.setStepVelocity (otherLane, step, 1.0f);
+                p.setStepChance (otherLane, step, 1.0f);
+            }
+
+            /** Onsets in order, each searched for only after the last one has died away. */
+            auto scan = [] (const std::vector<float>& data, int ringOut)
+            {
+                std::vector<int> found;
+                int at = 0;
+
+                while (true)
+                {
+                    const auto next = onsetAfter (data, at);
+
+                    if (next < 0)
+                        break;
+
+                    found.push_back (next);
+                    at = next + ringOut;
+                }
+
+                return found;
+            };
+
+            // Fifteen and a half steps: the bar has to stop before step sixteen fires, or
+            // the next bar's step nought joins the onset list and the ruler counts five.
+            // That is what the first run of this arm caught, and it is a fixture bug, not
+            // an engine one -- which is why the count is stated as a precondition.
+            const auto bar = (int) (exactStepSamples * (Layout::numSteps - 0.5));
+
+            auto playBarClicked = [&] (int queueAt)
+            {
+                rearm (p);
+                p.setPlaying (true);
+
+                RenderResult result;
+                juce::AudioBuffer<float> buffer (2, blockSize);
+                int block = 0;
+
+                for (int rendered = 0; rendered < bar; rendered += blockSize, ++block)
+                {
+                    const auto thisBlock = juce::jmin (blockSize, bar - rendered);
+
+                    buffer.setSize (2, thisBlock, false, true, true);
+                    buffer.clear();
+
+                    juce::MidiBuffer midi;
+
+                    if (block == queueAt)
+                        p.previewChannel (auditionLane, 1.0f);
+
+                    p.processBlock (buffer, midi);
+
+                    for (int i = 0; i < thisBlock; ++i)
+                        result.left.push_back (buffer.getSample (0, i));
+                }
+
+                p.setPlaying (false);
+                return result;
+            };
+
+            const auto plain = scan (playBarClicked (-1).left, 120);
+            const auto clicked = scan (playBarClicked (5).left, 120);
+
+            // The ruler first, and it is a precondition rather than a finding: four armed
+            // steps at quarter notes have to give four onsets, or there is nothing for the
+            // next two checks to say stayed where it was.
+            check ((int) plain.size() == 4,
+                   "four steps armed at quarter notes give four onsets with nothing clicked, "
+                   "which is the ruler this arm measures against",
+                   juce::String ((int) plain.size()) + " onsets in an unclicked bar");
+
+            // The one insertion this arm expects is at index one: the ask lands at the top
+            // of block five, and the grid onsets either side of it are step nought at sample
+            // one and step four at twenty-two thousand. So compare by dropping that element
+            // and requiring the rest to be the unclicked bar's list, item for item -- which
+            // says both halves at once, that nothing moved and that only one thing was added.
+            //
+            // The drop is `i < insertAt`, not `i <=`: `insertAt` indexes the *clicked* list,
+            // so it names the element that has no counterpart in the plain one. Asking
+            // whether plain[insertAt] equals clicked[insertAt] compares the first grid onset
+            // after the hole against the audition itself, which is a check that cannot pass
+            // when the thing it gates has worked -- it went red on a correct build, and the
+            // failure line was the proof of the insertion rather than of a moved onset.
+            constexpr int insertAt = 1;
+
+            bool moved = (int) clicked.size() != (int) plain.size() + 1;
+
+            for (size_t i = 0; i < plain.size() && ! moved; ++i)
+            {
+                const size_t from = i < (size_t) insertAt ? i : i + 1;
+
+                if (from >= clicked.size() || clicked[from] != plain[i])
+                    moved = true;
+            }
+
+            auto listed = [] (const std::vector<int>& values)
+            {
+                juce::String text;
+
+                for (auto value : values)
+                    text << value << " ";
+
+                return text;
+            };
+
+            check (! moved,
+                   "and every pattern onset is on the same sample it was on before the click, "
+                   "so an audition is a note laid on top of the grid rather than a second clock",
+                   moved ? "grid " + listed (plain) + "| clicked " + listed (clicked)
+                         : "grid onsets " + listed (plain) + "all unmoved around sample "
+                             + juce::String (clicked[(size_t) insertAt]));
+
+            check (! clicked.empty() && clicked[(size_t) insertAt] / blockSize == 5,
+                   "and the extra hit is inside the block that was asked for it, in the middle "
+                   "of a bar that was already running",
+                   "onset " + (clicked.empty() ? juce::String ("none")
+                       : juce::String (clicked[(size_t) insertAt]) + " sits in block "
+                           + juce::String (clicked[(size_t) insertAt] / blockSize)
+                             + ", asked for in block 5"));
+        }
+
+        //==================================================================
+        // f. a preview in a choke group cuts it like a note
+        //==================================================================
+        std::printf ("    f. an audition chokes the way a note chokes\n");
+        {
+            // A tone for the lane being cut, because the question is whether something is
+            // still sounding eight blocks in. A click has died by then in both arms, and a
+            // ratio of two silences is a check that cannot go red.
+            const auto heldSource = makeToneWav ("audition-choke-held", 200.0, 4000, sampleRate);
+            const auto cutSource = makeClickWav ("audition-choke-cut", 200, sampleRate);
+
+            GrooveboxProcessor held;
+            held.prepareToPlay (sampleRate, blockSize);
+            auditionReady (held, heldSource, otherLane);
+            auditionReady (held, cutSource, auditionLane);
+
+            GrooveboxProcessor choked;
+            choked.prepareToPlay (sampleRate, blockSize);
+            auditionReady (choked, heldSource, otherLane);
+            auditionReady (choked, cutSource, auditionLane);
+
+            for (auto* p : { &held, &choked })
+            {
+                p->setChannelChokeGroup (auditionLane, 1);
+                p->setChannelChokeGroup (otherLane, 1);
+            }
+
+            /** Lane one auditioned in block nought; lane zero joins in block one when choking. */
+            auto tailPeak = [&] (GrooveboxProcessor& p, bool choke)
+            {
+                RenderResult result;
+                juce::AudioBuffer<float> buffer (2, blockSize);
+                int block = 0;
+
+                for (int rendered = 0; rendered < 4096; rendered += blockSize, ++block)
+                {
+                    const auto thisBlock = juce::jmin (blockSize, 4096 - rendered);
+
+                    buffer.setSize (2, thisBlock, false, true, true);
+                    buffer.clear();
+
+                    juce::MidiBuffer midi;
+
+                    if (block == 0)
+                        p.previewChannel (otherLane, 1.0f);
+
+                    if (block == 1 && choke)
+                        p.previewChannel (auditionLane, 1.0f);
+
+                    p.processBlock (buffer, midi);
+
+                    for (int i = 0; i < thisBlock; ++i)
+                        result.left.push_back (buffer.getSample (0, i));
+                }
+
+                // The choke fade is Layout::chokeFadeSeconds — twenty milliseconds — and the
+                // cut lands at sample 256, so by 2048 the ramp is more than four times its
+                // own length behind it. The cutting lane's own voice is a two hundred sample
+                // click, gone by 456: whatever is loud in this window is the held lane.
+                return result.peakBetween (2048, 2560);
+            };
+
+            const auto heldPeak = tailPeak (held, false);
+            const auto chokedPeak = tailPeak (choked, true);
+
+            check (heldPeak > 0.05f,
+                   "the lane that is meant to be cut is still loud eight blocks in, which is "
+                   "the precondition the ratio below needs to mean anything",
+                   "held tail peak " + juce::String (heldPeak, 6));
+
+            check (chokedPeak < heldPeak * 0.25f,
+                   "a click on the other member of the group takes the ramp out, so auditioning "
+                   "an open hat stops the one that was already ringing",
+                   "tail peak " + juce::String (chokedPeak, 6) + " against "
+                       + juce::String (heldPeak, 6) + " held");
+
+            check (chokedPeak < 0.005f,
+                   "and it goes to the floor rather than to a residual that only looks like a "
+                   "cut, which is the difference between a choke and a quieter hit",
+                   "choked tail peak " + juce::String (chokedPeak, 6));
+        }
+    }
+
+    //======================================================================
     std::printf ("\n%s  %d checks, %d failures\n",
                  failures == 0 ? "PASSED" : "FAILED", checks, failures);
 

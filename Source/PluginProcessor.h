@@ -395,8 +395,15 @@ public:
     /** Name of that note, e.g. "C1". */
     static juce::String getMidiNoteNameForChannel (int channel);
 
-    /** Plays a channel as if a note had arrived, for previewing from the editor. */
-    void previewChannel (int channel, float velocity = 1.0f);
+    /**
+        Queues an audition of one channel for the next audio block.
+
+        Safe from the message thread — it parks a request and returns, and the render
+        picks it up as a note event, so what you hear is the lane as a played note, at
+        the trim and level the lane has. False when the request ring is full, which is
+        the audition being dropped rather than the caller being waited on.
+    */
+    bool previewChannel (int channel, float velocity = 1.0f) noexcept;
 
     /** Voice state, for diagnostics and tests. */
     SequencerEngine::VoiceDebug debugVoice (int index) const { return engine.getVoiceDebug (index); }

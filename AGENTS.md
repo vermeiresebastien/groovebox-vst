@@ -112,11 +112,13 @@ It is fully gitignored and nothing in it is authored in place.
   gain would pass the second and fail the first.
 - Anything that reads like a spec in [README.md](README.md) or
   [installer/README.txt](installer/README.txt) must be code-verified before shipping.
-  Three false claims were caught this way: that the sound button's menu switches between
-  loaded samples (it only opens a `FileChooser`; `SampleStore::getSampleIds()` has no UI
-  caller), that there is no MIDI note input (there is, C1-B1 = notes 36-47,
-  `Layout::firstMidiNote` in [Source/Common.h:58](Source/Common.h)), and that Live scans
-  `Documents\VST3` (it does not -- see Host folders below).
+  Four false claims were caught this way, three of them about the same button: that the sound
+  button's menu switches between loaded samples (it only opens a `FileChooser`;
+  `SampleStore::getSampleIds()` has no UI caller), that the same button has a *preview* that is
+  "a diagnostic" for the humanize law (it has never played a sound -- the audition is the lane's
+  **name**, since 5.3, and `previewChannel` has exactly one UI caller), that there is no MIDI note
+  input (there is, C1-B1 = notes 36-47, `Layout::firstMidiNote` in [Source/Common.h:58](Source/Common.h)),
+  and that Live scans `Documents\VST3` (it does not -- see Host folders below).
 - **A fit claim states both axes and names the code that decides each.** 4.3b shipped that the
   wrap "lets it go down to **1218 px** — a 1366 px laptop" and that the "editor floor
   **1218×844**, which does fit 1366×768" -- in the same paragraph that then admitted the height
@@ -165,7 +167,7 @@ no generated header ([CMakeLists.txt:232-335](CMakeLists.txt)), which is what ke
 second. All four entries are `add_test` cases carrying a `PASS_REGULAR_EXPRESSION` that requires a
 `, 0 ` problem count, so a run that prints nothing and a run that prints a problem both fail the
 tracked path even at process exit 0, and `-V` is the documented form because the quiet one prints no
-counts. Last green run: 465 smoke checks, 651 layout checks, 85 planner checks, 0 problems, guard OK.
+counts. Last green run: 484 smoke checks, 675 layout checks, 85 planner checks, 0 problems, guard OK.
 
 **CTest does not build.** Measured by the lane that wired it (`ecfe76c`): with `GenrePatterns.h:101`
 broken and no rebuild, `ctest` reported 4/4 passed while the sources no longer matched the binaries.
@@ -542,6 +544,57 @@ gate. The two are not interchangeable and neither alone is the whole check; run 
   no branch, one `git worktree prune` from unverifiable, which is how a first commit landed on a
   detached HEAD while the branch sat where it was. The script lives in gitignored `out/` -- item **6.7**
   is the same hazard for the citation tooling -- so this describes a working tree, not a clone.
+- **A quantisation gate is asked on both sides of a tie, and the reference number comes from
+  the keyboard rather than from this file.** [34] claims an audition *is* the note it sends, which
+  makes it two renders to compare rather than a level to band. The first version asked only 0.3:
+  `0.3 x 127` is 38.1, so a quantiser that truncated, copied or rounded all agreed on 38 and the
+  check could not fail for the reason it was written. Half velocity is 63.5, the one ordinary value
+  where floor and round disagree, and the answer it must land on is 64 because
+  `MidiMessage::noteOn` rounds the same product -- so the claim is two checks, and arms e3 (floor)
+  and e4 (ceil) of `out/mut53.py` kill one each and nothing else in 484.
+- **A queue is gated against the door it shares, not against its own numbers.** Where [34] typed a
+  number about the seam it was wrong twice. "Sixteen asks on one lane leave one voice" -- they leave
+  sixteen, there is no per-lane de-dupe, and what the allocator does with sixteen hits on a lane is
+  the allocator's behaviour, already gated by the keyed arm, so the rewrite asserts the two paths
+  *agree* and names no count. And a splice loop written `i <= insertAt` compared the inserted onset
+  against the grid list it had just displaced: a check that cannot pass when the feature works, which
+  the red run reported as "5 onsets in an unclicked bar" beside a bar that had four and one insertion.
+- **Two controls in one rectangle means one defect can light up a different feature's suite.**
+  Hoisting the audition above the bank branch (arm l5) was expected to cost the audition section two
+  checks. It cost fifteen: twelve of them the 4.4 bank click gates, because the bank's marks live
+  *inside* the name column and every bank click in that section also sits in the audition region. The
+  wide kill set is the evidence that the ordering rule is load-bearing rather than decorative -- and
+  `StepGridComponent::auditionLaneAt` still answers for those pixels by design, which `LayoutTest` now
+  states as a check of its own instead of leaving to a comment.
+- **A negative control that does not compile is not a control.** Three of `out/mut53.py`'s seventeen arms
+  first came back `BUILD FAILED`: a marker written as a trailing `//` inside a statement ate the `);`
+  that followed it, so e2, e3 and e4 mutated the file without ever building. Use block comments for
+  anything mid-expression. Then read each arm's *failure count* rather than its exit status: the driver
+  asked for `^FAIL` in a suite that prints `  FAIL`, which matched nothing but the summary line
+  `FAILED  484 checks, 12 failures` and reported the largest kill in the file as a one-problem arm.
+- **Ask a refusal gate while the door is open.** [34]'s out-of-range check sat directly under the
+  ceiling-fill loop, which by then has filled the ring, so `previewChannel (-1)` answered `false` for
+  a reason that had nothing to do with the range guard -- and arm e6, range check deleted, came back
+  **green**. Moved above the loop, where the only way to be refused is to be refused, the same arm
+  reddens two lines: the refusal, and the ceiling itself, because with the guard gone the junk
+  requests eat slots and 24 offers yield 14. That second line is the tell that a precondition and a
+  queue sharing one boolean are one mechanism. The general form: every `check (! foo ())` needs the
+  state in which `foo` has exactly one reason left to say no, and a green refusal arm is a question
+  about where the check sits in the file before it is a question about the guard.
+- **A gate whose pass condition is silence needs an arm that makes noise elsewhere.** Nothing draining
+  the audition ring (e1) reddens 12 checks, but it cannot touch the ones that assert a lane the user
+  did not click stays quiet or that only one voice starts -- a dead queue is silent, which is what those
+  say. What discharges them is a *misroute*: e5 sends the request to the neighbour and takes 9, e7 bypasses
+  the shared mute gate and takes 6. Same reason the check reads `debugVoice (i).channel` rather than a
+  count: a wrong channel number is a failure line, an ambiguous silence is not. A shutdown arm proves
+  the feature is load-bearing; only a misroute arm proves the gate can tell *which* thing went wrong.
+- **A hit area is gated from both edges, never one.** An oversized label rect still contains every point
+  the correct one does, so the inside probes stay green on `.expanded (1)` (l3, 4 kills, the border arms
+  only); a shrunken one still excludes every point it should, so the outside probes stay green on
+  `.reduced (1)` (l9, 2 kills, the mirror). The two arms together are what bound the rectangle, and a
+  border probe written on one side only measures the side it is not asking about. At the floor the label
+  column is 108 px wide, so a 1 px leak is under one per cent of the control and no "reasonable" rounding
+  test would have caught it by accident.
 
 ## Doc citations: a line number is a claim about one tree
 

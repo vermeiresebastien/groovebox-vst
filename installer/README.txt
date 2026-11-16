@@ -188,6 +188,18 @@ setting the hit's level. Notes play whether or not the transport is running, so
 you can play the kit over a stopped pattern. Notes outside that range are
 ignored, and a muted channel ignores its note.
 
+Clicking a row's name does the same thing as playing its note: the lane sounds
+once, at full velocity, with the transport stopped and nothing drawn in the grid.
+It is the same route in rather than a second engine -- the click queues a request
+and the audio thread takes it at the head of its next pass -- so the hit lands on
+a block boundary, chokes and steals like any other, and is not humanized, because
+a take belongs to a bar and a step rather than to a question about a sound. A
+muted lane stays quiet and an empty one starts nothing. Sixteen clicks between two
+blocks are honoured and the seventeenth is dropped rather than waited on. A click
+on a step still edits the step, and a click on one of the bank controls sharing
+that column -- the four slot dots, the copy mark or the rotate chip -- moves the
+bank instead: those answer first.
+
 
 Four patterns per channel
 -------------------------

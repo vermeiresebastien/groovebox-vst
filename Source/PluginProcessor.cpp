@@ -1745,9 +1745,12 @@ void GrooveboxProcessor::setStateInformation (const void* data, int sizeInBytes)
     applyMetadata (apvts.state);
 }
 
-void GrooveboxProcessor::previewChannel (int channel, float velocity)
+bool GrooveboxProcessor::previewChannel (int channel, float velocity) noexcept
 {
-    engine.triggerChannel (channel, velocity);
+    // Queued, not played: the voice has to start inside the render walk, which is the
+    // only place that knows what it is doing to the samples either side of it. See
+    // `SequencerEngine::requestPreview`.
+    return engine.requestPreview (channel, velocity);
 }
 
 juce::String GrooveboxProcessor::getMidiNoteNameForChannel (int channel)

@@ -423,6 +423,31 @@ struct SequencerState
     std::array<std::atomic<float>, (size_t) Layout::numChannels> sustain {};
     std::array<std::atomic<float>, (size_t) Layout::numChannels> release {};
 
+    /**
+        Audition requests, handed from the message thread to the audio one.
+
+        Clicking a lane's name asks to hear it. The click happens on the message
+        thread and a voice may only start inside the render walk — that walk is what
+        splits the block at every start point so a hit lands click-free, at the right
+        sample, and steals and chokes like any other hit — so a request is parked here
+        and picked up by the next block as a note event. The one way in before this was
+        a method that called the engine's voice start straight from the editor, which
+        began the hit on whatever thread the UI happened to be on and raced the render;
+        it is gone, and `SequencerEngine::requestPreview` is the only way to audition.
+
+        A ring, not a flag: `produced` is only ever advanced by the caller and
+        `consumed` only ever by the render, so each slot has one writer and one reader
+        and the pair needs no lock. Full means dropped, never waited on — an audition
+        is a diagnostic, and a UI thread blocking on an audio thread is the worse bug
+        by a wide margin. Sixteen is more than a hand can click between two blocks at
+        any block size this plugin will ever see.
+    */
+    static constexpr int maxPreviewRequests = 16;
+
+    std::array<std::atomic<std::uint32_t>, (size_t) maxPreviewRequests> previewSlots {};
+    std::atomic<std::uint32_t> previewProduced { 0 };
+    std::atomic<std::uint32_t> previewConsumed { 0 };
+
     SequencerState()
     {
         for (int i = 0; i < Layout::numChannels; ++i)
@@ -497,10 +522,22 @@ public:
     /** Note that triggers a channel, or -1 when the channel is out of range. */
     static int midiNoteForChannel (int channel) noexcept;
 
-    /** Plays one channel directly, with `velocity` in 0..1, as a played note does.
-        Used by `GrooveboxProcessor::previewChannel`, and by tests that do not want
-        to build a MIDI buffer. */
-    void triggerChannel (int channel, float velocity);
+    /**
+        Asks the audio thread to start one hit on `channel` with `velocity` in 0..1.
+
+        The audition path, and safe to call from the message thread: it parks a
+        request in `SequencerState` and returns, and the next block collects it as a
+        note event, so a preview goes through `trigger` with `fromMidi` true exactly as
+        a keyboard note does — same choke, same voice stealing, same level law, and no
+        humanize delay, which belongs to the grid alone. Nothing here starts a voice.
+
+        False when the lane is not one of the twelve, or when the ring is full, which
+        is the request being dropped: see the note on `SequencerState::previewSlots`.
+        The range check is the only thing protecting the drain, because a packed request
+        carries a raw channel index and `drainPreviewRequests` writes it straight into a
+        note event without looking at it again.
+    */
+    bool requestPreview (int channel, float velocity = 1.0f) noexcept;
 
     /** Voices currently sounding; used by the editor for channel activity. */
     int getActiveVoiceCount() const noexcept { return activeVoices; }
@@ -875,6 +912,16 @@ private:
     /** Picks the note events out of this block's MIDI input, in arrival order. */
     int collectNoteEvents (const juce::MidiBuffer& midi, int numSamples);
 
+    /**
+        Moves every queued audition request into this block's note events.
+
+        Returns the count taken, which is how many leading slots of `noteEvents` they
+        hold. This is the reader half of the ring declared in `SequencerState`: audio
+        thread only, and it neither allocates nor locks nor reads the clock, so a
+        request costs the same as the note it becomes.
+    */
+    int drainPreviewRequests();
+
     /** The sample the next unapplied event starts on, or `numSamples` if none are left. */
     int nextNoteEventOffset (int numSamples) const;
 
@@ -1071,8 +1118,9 @@ private:
 
         Collected before the block is rendered, because the render walk has to know
         where they all are before it can split the block at them. Audio-thread
-        state only: it is filled from the MIDI buffer the processor hands over and
-        emptied again on the next call, so nothing here is ever shared.
+        state only: it is filled from the MIDI buffer the processor hands over, and
+        from whatever audition requests were queued when the block began, and emptied
+        again on the next call, so nothing here is ever shared.
     */
     struct NoteEvent
     {

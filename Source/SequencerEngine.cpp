@@ -634,17 +634,75 @@ int SequencerEngine::midiNoteForChannel (int channel) noexcept
              : -1;
 }
 
-void SequencerEngine::triggerChannel (int channel, float velocity)
+bool SequencerEngine::requestPreview (int channel, float velocity) noexcept
 {
     if (! juce::isPositiveAndBelow (channel, Layout::numChannels))
-        return;
+        return false;
 
-    trigger (channel, velocity, true);
+    // Only this thread advances `previewProduced`, so its own value can be read
+    // relaxed; `previewConsumed` is the audio thread's, and it is the acquire that
+    // says the slots we are about to overwrite have really been let go of.
+    const auto produced = state.previewProduced.load (std::memory_order_relaxed);
+
+    if (produced - state.previewConsumed.load (std::memory_order_acquire)
+            >= (std::uint32_t) SequencerState::maxPreviewRequests)
+        return false;   // full: drop the audition rather than wait on the render
+
+    // Seven bits, because that is what a note event carries into `trigger` when it
+    // comes from a keyboard: JUCE hands back `getFloatVelocity()` as the 0..127 byte
+    // divided by 127, so quantising here costs a preview nothing a MIDI note does not
+    // already pay, and it is what lets the two be compared sample for sample. A level
+    // off that lattice is not reachable by a note-on at all.
+    const auto struck = (std::uint32_t) juce::roundToInt (juce::jlimit (0.0f, 1.0f, velocity) * 127.0f);
+
+    state.previewSlots[(size_t) (produced % (std::uint32_t) SequencerState::maxPreviewRequests)]
+        .store ((struck << 8) | (std::uint32_t) channel, std::memory_order_relaxed);
+
+    state.previewProduced.store (produced + 1, std::memory_order_release);
+
+    return true;
+}
+
+int SequencerEngine::drainPreviewRequests()
+{
+    auto consumed = state.previewConsumed.load (std::memory_order_relaxed);
+    const auto produced = state.previewProduced.load (std::memory_order_acquire);
+
+    // Only this thread advances `previewConsumed`, and the producer side cannot move a
+    // slot that has already been read, so the loop takes everything outstanding in one
+    // pass. Sixteen against a ceiling of 64 says a drain can never crowd out the MIDI
+    // events it shares `noteEvents` with, which is the reason the count below is not
+    // asked for as a budget of its own.
+    int taken = 0;
+
+    while (consumed != produced && taken < maxNoteEvents)
+    {
+        const auto packed = state.previewSlots[(size_t) (consumed % (std::uint32_t) SequencerState::maxPreviewRequests)]
+                                .load (std::memory_order_relaxed);
+
+        noteEvents[(size_t) taken++] = { 0,
+                                         (int) (packed & 0xffu),
+                                         (float) (packed >> 8) / 127.0f,
+                                         true };
+        ++consumed;
+    }
+
+    state.previewConsumed.store (consumed, std::memory_order_release);
+
+    return taken;
 }
 
 int SequencerEngine::collectNoteEvents (const juce::MidiBuffer& midi, int numSamples)
 {
-    int numEvents = 0;
+    // Audition requests lead the array. They are every one due on sample 0 of this
+    // block, and `applyNoteEventsAt` starts whatever is at or before an offset in array
+    // order, so putting them first is what makes a click and a key on the same sample
+    // resolve the same way on every run: `std::sort` is not stable, so a tie inside the
+    // MIDI pass is already a tie decided by the sort, and letting the previews join it
+    // would make it a tie decided by the sort too.
+    const int numPreviews = drainPreviewRequests();
+
+    int numEvents = numPreviews;
 
     for (const auto metadata : midi)
     {
@@ -669,9 +727,10 @@ int SequencerEngine::collectNoteEvents (const juce::MidiBuffer& midi, int numSam
 
     // Sorted by arrival sample so the render walk can treat them as split points.
     // `std::sort` rather than `std::stable_sort`: the latter asks the allocator for
-    // scratch space on every call, and this runs on the audio thread.
-    if (numEvents > 1)
-        std::sort (noteEvents.begin(), noteEvents.begin() + numEvents,
+    // scratch space on every call, and this runs on the audio thread. The previews stay
+    // outside the sorted range, for the reason above.
+    if (numEvents - numPreviews > 1)
+        std::sort (noteEvents.begin() + numPreviews, noteEvents.begin() + numEvents,
                    [] (const NoteEvent& a, const NoteEvent& b) { return a.sampleOffset < b.sampleOffset; });
 
     return numEvents;
