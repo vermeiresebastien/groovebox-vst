@@ -104,7 +104,7 @@ It is fully gitignored and nothing in it is authored in place.
   `Layout::firstMidiNote` in [Source/Common.h:28](Source/Common.h)), and that Live scans
   `Documents\VST3` (it does not -- see Host folders below).
 - **A fit claim states both axes and names the code that decides each.** 4.3b shipped that the
-  wrap "lets it go down to **1218 px** — a 1366 px laptop" (README.md:374) and that the
+  wrap "lets it go down to **1218 px** — a 1366 px laptop" (README.md:381) and that the
   "editor floor **1218×844**, which does fit 1366×768" (NEXT-STEPS.md:348) -- in the same
   paragraph that then admitted the height half was not paid for. The width is true (1218 <=
   1366); the height is not, because [Source/PluginEditor.cpp:101](Source/PluginEditor.cpp)
@@ -113,6 +113,17 @@ It is fully gitignored and nothing in it is authored in place.
   `Tests/LayoutTest.cpp:607` prints that floor already, so this was one subtraction away rather
   than a measurement away: a claim that survives checking only one axis is the dangerous shape.
   Both sentences were corrected by the shipping lane in `71c04fd`.
+- **A verified number is not a verified claim.** The Touch A/B quoted `peak 1.438488 -> 1.485904`
+  straight out of the run log, so every digit was true -- and both numbers are past 0 dBFS, because
+  the fixture is four lanes x all sixteen steps at chance 1.0 on the whole velocity ladder
+  (`Tests/SmokeTest.cpp:7861-7867`), a load the genre table never asks for (densest row 10 of 16,
+  average 3.4). So the copy reported a rise in *clipping* as if it were the cost of a control, while
+  the headroom section two pages earlier says the latch fires at 0 dBFS and there is no limiter.
+  When shipped copy quotes a measured level it states the fixture that produced it, whether that
+  fixture is a playing state, and which trim was in place -- and the same test arm's relative ceiling
+  (`<= shut * 1.25`, `Tests/SmokeTest.cpp:8012`) is an anti-renormalisation gate, not a headroom gate,
+  which is worth saying in its comment because nothing else in the suite bounds the summed peak.
+  Corrected by the shipping lane in `fbf973c`.
 
 ## Tests: three console apps plus a source guard, gated by CTest
 
