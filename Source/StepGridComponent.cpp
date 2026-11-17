@@ -159,6 +159,19 @@ juce::Rectangle<int> StepGridComponent::getLabelBounds (int channel) const
     return { labelX, row.getY(), labelWidth, row.getHeight() };
 }
 
+int StepGridComponent::auditionLaneAt (juce::Point<int> position) const
+{
+    // The row picks the lane, which is the same rule the file drop uses, so a click in
+    // the gap between two rows, under the last one, or left of the column is not a lane
+    // and must not start a voice. `channelAtY` already draws those boundaries.
+    const auto channel = channelAtY (position.y);
+
+    if (channel < 0)
+        return -1;
+
+    return getLabelBounds (channel).contains (position) ? channel : -1;
+}
+
 juce::Rectangle<int> StepGridComponent::getFullRowBounds (int channel) const
 {
     const auto row = getRowBounds (channel);
@@ -891,7 +904,16 @@ void StepGridComponent::mouseDown (const juce::MouseEvent& e)
     const auto cell = cellAt (e.getPosition());
 
     if (cell.channel < 0)               // label column or outside the grid
+    {
+        // The label column edits nothing, so it auditions: this is the moment a person
+        // wants a sound, straight after putting one in the lane. Queued, not played —
+        // see `SequencerEngine::requestPreview`, which is why a click from here starts
+        // the hit on the audio thread and nowhere else.
+        if (const auto lane = auditionLaneAt (e.getPosition()); lane >= 0)
+            processor.previewChannel (lane);
+
         return;
+    }
 
     if (overlay != Overlay::none)
     {

@@ -168,11 +168,13 @@ It is fully gitignored and nothing in it is authored in place.
   gain would pass the second and fail the first.
 - Anything that reads like a spec in [README.md](README.md) or
   [installer/README.txt](installer/README.txt) must be code-verified before shipping.
-  Three false claims were caught this way: that the sound button's menu switches between
-  loaded samples (it only opens a `FileChooser`; `SampleStore::getSampleIds()` has no UI
-  caller), that there is no MIDI note input (there is, C1-B1 = notes 36-47,
-  `Layout::firstMidiNote` in [Source/Common.h:58](Source/Common.h)), and that Live scans
-  `Documents\VST3` (it does not -- see Host folders below).
+  Four false claims were caught this way, two of them about the same button: that the sound
+  button's menu switches between loaded samples (it only opens a `FileChooser`;
+  `SampleStore::getSampleIds()` has no UI caller), that the same button has a *preview* that is
+  "a diagnostic" for the humanize law (it has never played a sound -- the audition is the lane's
+  **name**, since 5.3, and `previewChannel` has exactly one UI caller), that there is no MIDI note
+  input (there is, C1-B1 = notes 36-47, `Layout::firstMidiNote` in [Source/Common.h:58](Source/Common.h)),
+  and that Live scans `Documents\VST3` (it does not -- see Host folders below).
 - **A fit claim states both axes and names the code that decides each.** 4.3b shipped that the
   wrap "lets it go down to **1218 px** — a 1366 px laptop" and that the "editor floor
   **1218×844**, which does fit 1366×768" -- in the same paragraph that then admitted the height
@@ -197,13 +199,13 @@ It is fully gitignored and nothing in it is authored in place.
 - **A verified number is not a verified claim.** The Touch A/B quoted `peak 1.438488 -> 1.485904`
   straight out of the run log, so every digit was true -- and both numbers are past 0 dBFS, because
   the fixture is four lanes x all sixteen steps at chance 1.0 on the whole velocity ladder
-  (`Tests/SmokeTest.cpp:8006-8012`), a load the genre table never asks for (densest row 10 of 16,
+  (`Tests/SmokeTest.cpp:8021-8027`), a load the genre table never asks for (densest row 10 of 16,
   average 3.4). So the copy reported a rise in *clipping* as if it were the cost of a control, while
   the headroom section two pages earlier says the latch fires at 0 dBFS and there is no limiter.
   When shipped copy quotes a measured level it states the fixture that produced it, whether that
   fixture is a playing state, and which trim was in place -- and the same test arm's relative ceiling
-  (`<= shut * 1.25`, `Tests/SmokeTest.cpp:8157`) is an anti-renormalisation gate, not a headroom gate,
-  which is worth saying in its comment because nothing else in the suite bounds the summed peak.
+  (`<= shut * 1.25`, `Tests/SmokeTest.cpp:8172`) is an anti-renormalisation gate, not a headroom gate,
+  which its comment now says, because nothing else in that arm bounds the summed take's level.
   Corrected by the shipping lane in `fbf973c`.
 
 ## Tests: three console apps plus a source guard, gated by CTest
@@ -221,7 +223,7 @@ no generated header ([CMakeLists.txt:232-335](CMakeLists.txt)), which is what ke
 second. All four entries are `add_test` cases carrying a `PASS_REGULAR_EXPRESSION` that requires a
 `, 0 ` problem count, so a run that prints nothing and a run that prints a problem both fail the
 tracked path even at process exit 0, and `-V` is the documented form because the quiet one prints no
-counts. Last green run: 465 smoke checks, 651 layout checks, 85 planner checks, 0 problems, guard OK.
+counts. Last green run: 546 smoke checks, 675 layout checks, 85 planner checks, 0 problems, guard OK.
 
 **CTest does not build.** Measured by the lane that wired it (`ecfe76c`): with `GenrePatterns.h:101`
 broken and no rebuild, `ctest` reported 4/4 passed while the sources no longer matched the binaries.
@@ -482,7 +484,7 @@ gate. The two are not interchangeable and neither alone is the whole check; run 
   does not fit and compact only below 219 where its own 228 does not fit either -- the compact
   arm had never worked at any strip height. Note what that does *not* look like: the branch was
   not unreachable, it was reached and then overflowed, so a check for "is the tight branch ever
-  exercised" passes on it. `Layout::stripPlan` (`Source/Common.h:490`) is one budget that picks a
+  exercised" passes on it. `Layout::stripPlan` (`Source/Common.h:511`) is one budget that picks a
   stage at exactly that stage's cost -- 268 / 246 / 210 / 166, hard floor 123 -- and the gate
   asserts cost <= room for every room the editor can reach, one px under each boundary, and that
   the floor is where the absorber runs out rather than a rounded guess (`LayoutTest.cpp:653`,
@@ -625,6 +627,112 @@ gate. The two are not interchangeable and neither alone is the whole check; run 
   newest compiled input -- and refuses when a side is older than its own sources.
   `out/planbuild/ab-hash-53.py` does exactly that and exits 3 on a stale side; the cross-build
   four-byte rule then has to be tested on a pair that actually exists, which costs one plugin build.
+- **A quantisation gate is asked on both sides of a tie, and the reference number comes from
+  the keyboard rather than from this file.** [34] claims an audition *is* the note it sends, which
+  makes it two renders to compare rather than a level to band. The first version asked only 0.3:
+  `0.3 x 127` is 38.1, so a quantiser that truncated, copied or rounded all agreed on 38 and the
+  check could not fail for the reason it was written. Half velocity is 63.5, the one ordinary value
+  where floor and round disagree, and the answer it must land on is 64 because
+  `MidiMessage::noteOn` rounds the same product -- so the claim is two checks, and arms e3 (floor)
+  and e4 (ceil) of `out/mut53.py` kill one each and nothing else in 484.
+- **A queue is gated against the door it shares, not against its own numbers.** Where [34] typed a
+  number about the seam it was wrong twice. "Sixteen asks on one lane leave one voice" -- they leave
+  sixteen, there is no per-lane de-dupe, and what the allocator does with sixteen hits on a lane is
+  the allocator's behaviour, already gated by the keyed arm, so the rewrite asserts the two paths
+  *agree* and names no count. And a splice loop written `i <= insertAt` compared the inserted onset
+  against the grid list it had just displaced: a check that cannot pass when the feature works, which
+  the red run reported as "5 onsets in an unclicked bar" beside a bar that had four and one insertion.
+- **Two controls in one rectangle means one defect can light up a different feature's suite.**
+  Hoisting the audition above the bank branch (arm l5) was expected to cost the audition section two
+  checks. It cost fifteen: twelve of them the 4.4 bank click gates, because the bank's marks live
+  *inside* the name column and every bank click in that section also sits in the audition region. The
+  wide kill set is the evidence that the ordering rule is load-bearing rather than decorative -- and
+  `StepGridComponent::auditionLaneAt` still answers for those pixels by design, which `LayoutTest` now
+  states as a check of its own instead of leaving to a comment.
+- **A negative control that does not compile is not a control.** Three of `out/mut53.py`'s seventeen arms
+  first came back `BUILD FAILED`: a marker written as a trailing `//` inside a statement ate the `);`
+  that followed it, so e2, e3 and e4 mutated the file without ever building. Use block comments for
+  anything mid-expression. Then read each arm's *failure count* rather than its exit status: the driver
+  asked for `^FAIL` in a suite that prints `  FAIL`, which matched nothing but the summary line
+  `FAILED  484 checks, 12 failures` and reported the largest kill in the file as a one-problem arm.
+- **Ask a refusal gate while the door is open.** [34]'s out-of-range check sat directly under the
+  ceiling-fill loop, which by then has filled the ring, so `previewChannel (-1)` answered `false` for
+  a reason that had nothing to do with the range guard -- and arm e6, range check deleted, came back
+  **green**. Moved above the loop, where the only way to be refused is to be refused, the same arm
+  reddens two lines: the refusal, and the ceiling itself, because with the guard gone the junk
+  requests eat slots and 24 offers yield 14. That second line is the tell that a precondition and a
+  queue sharing one boolean are one mechanism. The general form: every `check (! foo ())` needs the
+  state in which `foo` has exactly one reason left to say no, and a green refusal arm is a question
+  about where the check sits in the file before it is a question about the guard.
+- **A gate whose pass condition is silence needs an arm that makes noise elsewhere.** Nothing draining
+  the audition ring (e1) reddens 12 checks, but it cannot touch the ones that assert a lane the user
+  did not click stays quiet or that only one voice starts -- a dead queue is silent, which is what those
+  say. What discharges them is a *misroute*: e5 sends the request to the neighbour and takes 9, e7 bypasses
+  the shared mute gate and takes 6. Same reason the check reads `debugVoice (i).channel` rather than a
+  count: a wrong channel number is a failure line, an ambiguous silence is not. A shutdown arm proves
+  the feature is load-bearing; only a misroute arm proves the gate can tell *which* thing went wrong.
+- **A hit area is gated from both edges, never one.** An oversized label rect still contains every point
+  the correct one does, so the inside probes stay green on `.expanded (1)` (l3, 4 kills, the border arms
+  only); a shrunken one still excludes every point it should, so the outside probes stay green on
+  `.reduced (1)` (l9, 2 kills, the mirror). The two arms together are what bound the rectangle, and a
+  border probe written on one side only measures the side it is not asking about. At the floor the label
+  column is 108 px wide, so a 1 px leak is under one per cent of the control and no "reasonable" rounding
+  test would have caught it by accident.
+- **A refusal gate is a pair, and a pair needs a difference.** Arm w1 of `out/mut14.py` moves the
+  pre-scan in `writeSlotRows` (`Source/PluginProcessor.cpp:736`) to after the first row is stored, and came
+  back GREEN: the refused ask was a default `SlotRowWrite`, every cell off, on a grid that already held every
+  cell off at that step -- so the leak wrote the value that was already there and the check read its own
+  fixture. The refusal rows now ask for step 0 ON, at a quarter level and two strikes, and `[35]` prints that
+  disagreement as its own precondition (`Tests/SmokeTest.cpp:10863`). Same shape as the
+  two-lanes-hold-different-numbers rule above, aimed at the quietest kind of control there is: one that passes
+  by comparing a thing with itself. An arm that cannot bite indicts the fixture before it indicts the code.
+- **A clamp that is discharged at every reachable read has no gate at the store, and saying so is the
+  finding.** Arm w8 deletes the strike clamp from that same loop and reddens nothing, because the value is
+  clamped again by `getStepRatchet`, again by `cellSaysAnything` and the codec, and again at
+  `SequencerEngine.cpp:874`, which is the one place the number becomes sound -- and 4.5's
+  `setStepRatchet (3, 7, 999)` check gates *that* one. So the seam's clamp is defence-in-depth that keeps both
+  write doors storing one representation, the check's comment now says the arm exists and what it does not
+  gate, and the arm stays in the set as the one that names which of four copies of a rule the harness can
+  actually see. Reporting a green arm is cheaper than believing it.
+- **A concurrency gate has to prove the two threads overlapped.** `[11]` (`Tests/SmokeTest.cpp:1874`) hammers
+  two hundred sample loads while a render thread spins, and asserts the thread rendered during them. It can
+  assert that and be false: the loads finish on one core before the scheduler starts the thread, three checks
+  print `ok`, and the section measured no race at all. It was found because an unrelated arm (w4) reddened
+  "the audio thread ran throughout [0 blocks]" and the only honest reading was that the section had always
+  been able to say that. Now `[11]` waits, bounded, for the first block before the loads begin. Any gate that
+  says "while" owes a check that both halves were awake at the same time.
+- **An undo count is not a write count, and neither is a notification count.** The first cut of this seam's
+  own comment said the cell-route cost "192 tree writes and 192 undo commands". Measured against a listener
+  and an `UndoManager` (`[35]` part d, `Tests/SmokeTest.cpp:11036-11152`): 768 encodings of the row, **240** tree
+  notifications, and **two** undo actions. `ValueTree::setProperty` does not notify when the value is
+  unchanged, and `UndoManager::perform` coalesces successive `SetPropertyAction`s on one property
+  (`juce_UndoManager.cpp:141`) within the transaction the gesture already opened. So the saving this seam
+  buys is the codec and the host, not the history -- a materially smaller claim than the one the sentence was
+  making, and the kind that only survives review until someone measures it. Print the number in the test, not
+  in the comment.
+
+- **A gate's red line can be about the gate, and its evidence field can be empty on a green run.**
+  The from-nothing check that item **6.7** implies -- `git clone --no-hardlinks file://…`, `checkout
+  --detach <sha>`, configure (it fetches JUCE), the three suites built per target, `ctest` after them --
+  is now written, as `out/verify-clone.ps1`. Its first run printed `FAILED: clone` on a clone that had
+  succeeded: the `Run` helper both *printed* its status and *returned* the code, so the caller held an
+  array whose first element was a sentence, and `if ($rc -ne 0)` compared that array with 0 and got the
+  sentence back -- truthy. Nothing after stage 1 ran, so the verdict described the verifier. Two more of
+  the same shape came out of reading the log instead of the summary: `PASSED (\d+)` matched nothing
+  because both JUCE suites print `PASSED` then TWO spaces, and a field labelled "problem-count lines"
+  looked for a heading no suite prints, so a green run reported an empty evidence line. The rules: a
+  helper returns a value and reports on a different stream (`Write-Host`), and an evidence field is
+  copied out of a real log line, never described from memory -- this one now prints the three verdict
+  lines it gated on. Scope, stated the way the detached gate states it: suites and `ctest` only, no
+  plugin target, `launch/` untouched. And the clone carries no `out/`, so a run that proved the sources
+  could not check one of the 147 numbered pointers it inherits: **6.7** stands, and the runner's own
+  location is the item's complaint demonstrated by the run written to answer it.
+- **A grep-smell count in a doc is a snapshot of a script that other lanes edit.** The detached gate's
+  bullet says `grep -n launch` returns zero hits in its 131 lines, and today it returns one hit in 168:
+  `Write-Output "SCOPE: three test suites + ctest only -- no plugin target built, launch/ untouched."`,
+  which is the *disclaimer*, so the claim it exists to prove is still true and the count that proves it
+  is not. Ask the SCOPE line what it scopes -- a stated invariant checked by a line count dies the first
+  time someone names the thing it disclaims in order to disclaim it.
 
 ## Doc citations: a line number is a claim about one tree
 
@@ -686,14 +794,38 @@ reproducible from `git checkout`.
   The first version added the delta it found instead, got run twice in one sitting, and moved 34
   citations a whole phase too far; the only reason that showed up is that a second dry run still
   wanted to change them. Idempotence is the evidence, so keep it as the gate, not the property.
+- **A citation grammar that truncates digits corrupts pointers; one that refuses them only declines.**
+  The pattern is capped at five digits with a `(?!\d)` lookahead, and until this phase it was capped at
+  four -- which read a `Tests/SmokeTest.cpp` line number above 9,999 as its own first four digits and
+  left the fifth outside the token. In the audit that is a confident `MISS` about a line nobody cited.
+  In the sweep it is worse, because `--apply` rewrites the four digits it captured and leaves the fifth
+  where it was: a correct pointer becomes a wrong one, in the same pass that prints `to correct: 0`.
+  Four scripts read citations and all four had spelled the pattern out again, so the cap now lives once,
+  in `out/cite_pins.py`, beside the reason -- and widening it again when a file passes 99,999 lines is a
+  re-check of every five-digit pointer, not a one-character edit.
 - **A doc section that names its own baseline keeps that baseline's numbers, and a pin must
   *restore* the base's text rather than merely skip.** Skipping left A3 already-shifted: an exception
   that only declines to act cannot undo the action it declines. `out/cite-pin.txt` carries the range
-  and the reason, and the two reasons are different claims -- `pinned` (the section declares its
-  tree, so moving the number falsifies the record) and `unverified` (the audit names a symbol and
-  cannot find it at those lines). 15 entries were the second kind; measured against `460b3bf`
+  and the reason, and three reasons appear there, which are three different claims -- `pinned` (the
+  section declares its tree, so moving the number falsifies the record), `unverified` (the audit names
+  a symbol and cannot find it at those lines) and `repaired` (the base's number was wrong *where it was
+  written*, so restoring it would put the error back -- the sweep holds those lines and prints
+  `repaired pointers held, NOT restored`). 15 entries were the second kind; measured against `460b3bf`
   afterwards, **13 of them were right where they were written** and only went stale, which is the
   honest reason a map cannot fix them. The findings, not the tool's opinion, are tracked item 6.6.
+- **An exception that also stops the symbol test hides the pointer from the only check that can say it
+  is right.** `repaired:` is the one reason that makes a pin a claim about *this* tree rather than about
+  the base, so holding it from the shift is not enough -- an unshifted and unjudged number is a number
+  nobody read. The audit therefore judges held lines as well as reporting them, and to do that it needed
+  a wider clause than anywhere else uses: a repaired pointer sits in prose that names its symbol one or
+  two sentences *above* the citation, so held lines get a paragraph-scoped clause and print as `HELD`
+  with the reason beside them. Both repairs moved from `JUDGE -- no symbol named in the clause` to a
+  located symbol (`parameterChanged` at `Source/PluginProcessor.h:612`, the codec's `v2` header) when the
+  clause widened, and the run's own counts went `ok 28 -> 30`, `JUDGE 75 -> 73`. Narrower and the two
+  hand-verified pointers in `NEXT-STEPS.md` are the two the gate never looks at. The hold is probed, not
+  trusted: `out/probe-cite.py` plants the base's wrong number back into a repaired pointer and requires the
+  audit to call it a `MISS` *and* the sweep to report that line as held rather than restored -- three arms,
+  every one able to go red, and every doc byte-identical on the way out (`out/probe-cite-14a.txt`).
 - **A pin cannot hold prose written this phase, so its sentence has to name its tree.** Pin ranges
   are base coordinates matched by masked text, and a line that does not exist at the base cannot be
   masked into one -- so the audit takes a third kind of exception from the prose itself: a commit id
@@ -732,12 +864,35 @@ reproducible from `git checkout`.
   and two of them changed the sentence beside them: `getUndoManager` has a caller now
   (`PluginEditor.cpp:182`), so "has no callers" is false at any line number, and since 4.3b velocity
   is gain *and* tone, so "gain only" is prose that needs rewriting rather than renumbering.
+- **A red pointer has three causes, and only one of them is a shift.** `out/repoint14a.py` refuses to
+  write a number until it has said which: *drift* (the base's pointer was right and the phase moved the
+  file -- the sweep's job, arithmetic, and the only class a map can fix); *already current* (a HEAD-keyed
+  head-check proposes the same delta the sweep just applied, so its "answer" is the shift twice -- the
+  two `Tests/SmokeTest.cpp` rows and the `PluginProcessor.cpp` one in this lane's 14a handover were
+  refused for exactly that); and *repaired-and-pinned* (the number is wrong at every baseline and the pin
+  holds it against the sweep, which is why its needle in that script is the base's 333-338 rather than a
+  shifted form: the hold runs *before* the shift, so the swept text never existed). The second class looks
+  like a bug in the sweep and the third looks like a bug in the pin list. Both are the tool working; the
+  thing that fails is a fix applied without asking which class the red is in.
 - **These files are CRLF on disk, and `grep -c $'\r'` cannot tell you.** `git ls-files --eol` says
   `i/lf w/crlf` for all four docs; the count returns 0 with exit 1 on a genuinely CRLF file, so it
   is not a check of anything. Any script that rewrites them opens with `newline=""` on both sides --
   a translated read-back rewrites every line of the file, not the lines it was asked to touch, and
   the diff then says 1549/1549 instead of what moved. And since `out/` is gitignored, a finding that
   lives only in a script's output does not exist: it goes into `NEXT-STEPS.md` as a numbered item.
+- **A scripted edit takes its bytes before it opens the file for writing, and a planted-error probe runs
+  against a copy.** This phase a probe of the citation gates restored its mutations with
+  `open (p, "wb").write (open (p, "rb").read().replace(...))` -- and `"wb"` truncates before the read
+  inside it runs, so both sides of the assignment were empty: `AGENTS.md` and `NEXT-STEPS.md` went to zero
+  bytes, and nothing complained until the next `git status`. The recovery was `HEAD` plus the four `out/`
+  scripts that had written the prose in the first place, and it is proven rather than asserted -- replayed
+  through the same scripts, `git diff --numstat` came back to the same 36/4 and 144/26 the loss destroyed
+  (that is the replay's own diff, not this file's: the bullets below were added after it), and
+  `out/cite-audit.py` printed a byte-identical log to the pre-loss one (`out/audit-14a-e.txt` against
+  `out/audit-14a-f.txt`).
+  Lucky, not safe: the same content in a tree whose docs are newer than their last commit has no second
+  copy at all. Read into a variable, then write; keep the pre-run bytes outside the file the script opens;
+  and have the probe mutate a scratch copy, because its whole job is to be able to break something.
 
 ## Installer conventions (Inno Setup 6 -- house template, with two deliberate divergences)
 

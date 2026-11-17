@@ -167,8 +167,10 @@ re-deals both together, because a new take is a new performance rather than the 
 nudged. Offline render and live playback agree, as they do for everything keyed on the seed.
 
 **A note you play is not humanized.** The offset belongs to the sequencer: a keyboard note
-is already early or late by however you struck it, and the sound button's preview is a
-diagnostic. Only grid hits wait.
+is already early or late by however you struck it, and the lane audition — a click on a
+channel's name — goes in through that same door, so it is not waited on either. The sound
+button next to the name plays nothing at all; it only opens a browser for a sample.
+Only grid hits wait.
 
 **What it costs, and where the delay lives.** At 0 % nothing at all: one comparison, and
 the branch that ran before this feature existed is the branch that runs with it shut. With
@@ -441,6 +443,38 @@ window, beside the drag-a-sample note.
   audible difference, because the one-shot has already let go of itself; raise
   sustain and the note off is what ends the sound.
 - Notes outside the mapped range are ignored, and a muted channel ignores its note.
+
+## Hearing one lane
+
+Click a channel's **name**, at the left of its row, and that lane plays once at full
+velocity — with the transport stopped, with nothing drawn in the grid, and with the other
+eleven lanes silent. It is the fastest way to answer "what is this row", which is the
+question a kit raises the moment you load someone else's.
+
+The name column is the whole hit area, and nothing else is: a click on a step edits the
+step, and a click on one of the bank controls that share the column — the four slot dots, the
+copy mark or the rotate chip — moves the bank instead, because those answer first. Where the
+name has no marks — a row too short or a column too narrow for the strip — the click is still
+heard.
+
+What it does is send the lane's own note. The click queues a request on the interface thread
+and the audio thread takes it at the head of its next pass, so the hit starts on a block
+boundary and is split, stolen and choked exactly like a grid hit or a key. That is the
+difference between an audition and a second sound engine: there is one engine, one path into
+it, and what you hear when you click is what the lane will do when it plays.
+
+- **Full velocity, and seven bits of it.** The request carries the level the way a note-on
+  does, so an audition is the lane at its loudest, and the number it lands on is on the same
+  lattice a keyboard can hit.
+- **No take, no roll, no humanize.** Those are properties of the grid at a bar and a step.
+  An audition belongs to neither, so it is the plain sound — which also makes it the honest
+  way to hear what an envelope or a pitch drop is doing.
+- **Mute is obeyed, not bypassed.** A muted lane stays quiet, and an empty one starts
+  nothing: the request goes through the same gate a note goes through.
+- **Sixteen are queued, the seventeenth is dropped.** More than a hand can click between two
+  blocks, and a user interface that waits on the audio thread would be the worse bug.
+- **It chokes.** Audition a closed hat and the one that was already ringing is taken out on
+  the same 20 ms ramp a note would use.
 
 ## Mix, headroom and the meter
 

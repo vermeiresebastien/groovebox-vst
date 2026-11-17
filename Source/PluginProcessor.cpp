@@ -494,10 +494,7 @@ void GrooveboxProcessor::setStepChance (int channel, int step, float chance)
         Snapping here is what makes the number on screen the number in the file, rather
         than the nearest thing to it that survives a save.
     */
-    const auto rung = (float) juce::jlimit (0, Layout::chanceLevels,
-                                            juce::roundToInt (juce::jlimit (0.0f, 1.0f, chance)
-                                                              * (float) Layout::chanceLevels))
-                      / (float) Layout::chanceLevels;
+    const auto rung = Layout::chanceRungFor (chance);
 
     const auto slot = selectedSlotOf (channel);
 
@@ -734,6 +731,69 @@ int GrooveboxProcessor::duplicateChannelRowToNextSlot (int channel)
     }
 
     return -1;
+}
+
+bool GrooveboxProcessor::writeSlotRows (int slot, const int* lanes, const SlotRowWrite* rows, int numLanes)
+{
+    /**
+        Every reason to refuse is about the shape of the ask, and they are all checked before
+        one cell moves. That ordering is the gate: a caller that hands over a list with the
+        twelfth lane bad gets nothing written, rather than eleven lanes written and a `false`
+        — which is the same reason `setChannelSlot` clamps on the way out instead of trusting
+        on the way in, and the reason a refusal here has to leave the session byte-identical.
+        Nothing below can say no, so a `false` is always the caller's index and never a fact
+        about what the machine was already holding.
+    */
+    if (! juce::isPositiveAndBelow (slot, Layout::numPatternSlots))
+        return false;
+
+    if (lanes == nullptr || rows == nullptr || numLanes <= 0 || numLanes > Layout::numChannels)
+        return false;
+
+    for (auto i = 0; i < numLanes; ++i)
+        if (! juce::isPositiveAndBelow (lanes[i], Layout::numChannels))
+            return false;
+
+    auto& cells = sequencerState.slots[(size_t) slot];
+
+    for (auto i = 0; i < numLanes; ++i)
+    {
+        const auto channel = lanes[i];
+
+        auto& pattern = cells.pattern[(size_t) channel];
+        auto& velocity = cells.velocity[(size_t) channel];
+        auto& chance = cells.chance[(size_t) channel];
+        auto& ratchet = cells.ratchet[(size_t) channel];
+
+        for (int step = 0; step < Layout::numSteps; ++step)
+        {
+            // The three numbers go in before the flag, because the flag is what makes a cell
+            // audible. A write onto the slot a lane is already playing therefore cannot leave a
+            // step firing at the level the *old* row had: `trigger` reads the flag, and by the
+            // time a newly-lit flag is visible its neighbours already say what this row meant.
+            // The reverse order is the one an onset can catch half-done.
+            velocity[(size_t) step].store (juce::jlimit (0.0f, 1.0f, rows[i].level[(size_t) step]));
+            chance[(size_t) step].store (Layout::chanceRungFor (rows[i].chance[(size_t) step]));
+            ratchet[(size_t) step].store ((int) Layout::ratchetByte (rows[i].strikes[(size_t) step]));
+            pattern[(size_t) step].store (rows[i].on[(size_t) step]);
+        }
+    }
+
+    // Once for the slot, which is the whole point: through the cell seams the same grid is
+    // 768 encodings of this same row, 240 of them moving the record, and all of them inside
+    // the one transaction the gesture opened — where the undo manager coalesces them to two
+    // actions. So what this line saves is the codec and the notifications, not the undo
+    // history. `pushPatternToState` also takes this build's responsibility for the grid,
+    // which is what clears a slot the build had been holding unreadable.
+    pushPatternToState (slot);
+
+    // The dots are a claim about which slots hold something, and a fill can move one without
+    // the user touching the row it painted — the same reason `clearPattern` and the duplicate
+    // say so here rather than leaving the panel to a timer.
+    if (onStateChanged != nullptr)
+        onStateChanged();
+
+    return true;
 }
 
 //==============================================================================
@@ -1405,7 +1465,7 @@ void GrooveboxProcessor::applySlotFromState (int slot)
                 // grid of nonsense.
                 if (stride > 2)
                     cells.chance[(size_t) channel][(size_t) step]
-                        .store ((float) raw[atByte + 2] / (float) Layout::chanceLevels);
+                        .store (Layout::chanceFromByte (raw[atByte + 2]));
 
                 // And the same for a v3 record's fourth byte. Through `ratchetByte` rather
                 // than straight in, because this is the one path where a number arrives from
@@ -1745,9 +1805,12 @@ void GrooveboxProcessor::setStateInformation (const void* data, int sizeInBytes)
     applyMetadata (apvts.state);
 }
 
-void GrooveboxProcessor::previewChannel (int channel, float velocity)
+bool GrooveboxProcessor::previewChannel (int channel, float velocity) noexcept
 {
-    engine.triggerChannel (channel, velocity);
+    // Queued, not played: the voice has to start inside the render walk, which is the
+    // only place that knows what it is doing to the samples either side of it. See
+    // `SequencerEngine::requestPreview`.
+    return engine.requestPreview (channel, velocity);
 }
 
 juce::String GrooveboxProcessor::getMidiNoteNameForChannel (int channel)

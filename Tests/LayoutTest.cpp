@@ -4506,6 +4506,437 @@ int main()
         emptyBank (other);
     }
 
+    std::printf ("\n-- auditioning a lane from its name --\n");
+    {
+        // The same fixture goes into all twelve lanes, deliberately. Loading only the lane
+        // being clicked makes "no voice" ambiguous between "the click went to another lane"
+        // and "that lane was empty" — which is exactly the difference this section exists to
+        // tell apart. With every lane able to sound, a misrouted audition arrives as a voice
+        // on a channel number rather than as a silence.
+        const auto fixture = makeClickWav ("audition-label", 4000, 44100.0);
+
+        juce::String loadError;
+        int loadFailures = 0;
+
+        expect (fixture.existsAsFile(),
+                "the audition fixture was written, so a silence below means the click missed "
+                "and not that the harness could not make a wav",
+                fixture.getFullPathName());
+
+        for (int channel = 0; channel < Layout::numChannels; ++channel)
+            loadFailures += ! processor.loadSampleIntoChannel (channel, fixture, loadError);
+
+        expect (loadFailures == 0, "every lane holds the same sample, which is what makes a "
+                                   "wrong-lane click show up as another channel rather than as "
+                                   "nothing at all",
+                juce::String (loadFailures) + " of " + juce::String (Layout::numChannels)
+                    + " lanes refused it: " + loadError);
+
+        // Nothing armed: the grid must be silent, or a voice after a click could be the
+        // pattern's rather than the audition's, and the transport is stopped anyway.
+        for (int channel = 0; channel < Layout::numChannels; ++channel)
+            for (int step = 0; step < Layout::numSteps; ++step)
+                processor.setStep (channel, step, false);
+
+        auto labelAt = [stepGrid] (int channel)
+        {
+            return stepGrid->getLabelBounds (channel);
+        };
+
+        auto auditionAt = [stepGrid] (juce::Point<int> p)
+        {
+            return stepGrid->auditionLaneAt (p);
+        };
+
+        auto press = [stepGrid] (juce::Point<int> p)
+        {
+            const auto e = makeEvent (*stepGrid, p.toFloat());
+            stepGrid->mouseDown (e);
+            stepGrid->mouseUp (e);
+        };
+
+        auto renderBlock = [&processor]
+        {
+            juce::AudioBuffer<float> buffer (2, 512);
+            juce::MidiBuffer midi;
+            buffer.clear();
+            processor.processBlock (buffer, midi);
+        };
+
+        // Requests are only taken by a render, and voices only end by one, so an arm that
+        // wants to know whether *its* click started a voice has to leave none from the arm
+        // before it. 4000 source samples at 512 a block is eight; sixty-four is room.
+        auto drainVoices = [&processor, &renderBlock]
+        {
+            for (int blocks = 0; blocks < 64 && processor.debugActiveVoices() > 0; ++blocks)
+                renderBlock();
+        };
+
+        struct Sounding
+        {
+            int count = 0;
+            int channel = -1;
+            juce::String detail;
+        };
+
+        auto sounding = [&processor]
+        {
+            Sounding s;
+
+            for (int i = 0; i < Layout::maxVoices; ++i)
+            {
+                const auto voice = processor.debugVoice (i);
+
+                if (! voice.active)
+                    continue;
+
+                ++s.count;
+                s.channel = voice.channel;
+                s.detail << "ch" << voice.channel << " ";
+            }
+
+            return s;
+        };
+
+        /**
+            The hit region, swept at whatever size the grid currently holds.
+
+            Both halves are needed. "The middle of a name is a lane" is the claim anyone
+            makes; "one pixel right of it is not" is the one that decides whether the
+            audition is the name column or the whole row — and a predicate written as
+            `channelAtY (y) >= 0` satisfies the first for all twelve lanes and fails the
+            second. So each of the four edges is asked from just inside and just outside,
+            against the rectangle the painter draws rather than against a width typed here.
+            JUCE's `contains` is half-open, so `getRight()` and `getBottom()` belong to
+            whatever comes next, and the outside probes are those pixels, not +1.
+        */
+        auto sweepRegion = [&] (const juce::String& atSize)
+        {
+            int empty = 0, wrongCentre = 0, wrongInside = 0, wrongOutside = 0, wrongCell = 0;
+            int probes = 0;
+            juce::String offenders;
+
+            for (int channel = 0; channel < Layout::numChannels; ++channel)
+            {
+                const auto label = labelAt (channel);
+
+                if (label.isEmpty())
+                {
+                    ++empty;
+                    continue;
+                }
+
+                if (auditionAt (label.getCentre()) != channel)
+                {
+                    ++wrongCentre;
+                    offenders << "c" << channel << " centre=>" << auditionAt (label.getCentre()) << " ";
+                }
+
+                const juce::Point<int> inside[] = {
+                    { label.getX() + 1,         label.getCentre().getY() },
+                    { label.getRight() - 1,     label.getCentre().getY() },
+                    { label.getCentre().getX(), label.getY() + 1 },
+                    { label.getCentre().getX(), label.getBottom() - 1 },
+                };
+
+                const juce::Point<int> outside[] = {
+                    { label.getX() - 1,         label.getCentre().getY() },
+                    { label.getRight(),         label.getCentre().getY() },
+                    { label.getCentre().getX(), label.getY() - 1 },
+                    { label.getCentre().getX(), label.getBottom() },
+                };
+
+                for (const auto& p : inside)
+                {
+                    ++probes;
+
+                    if (auditionAt (p) != channel)
+                    {
+                        ++wrongInside;
+                        offenders << "c" << channel << " inside(" << p.x << "," << p.y
+                                  << ")=>" << auditionAt (p) << " ";
+                    }
+                }
+
+                for (const auto& p : outside)
+                {
+                    ++probes;
+
+                    if (auditionAt (p) != -1)
+                    {
+                        ++wrongOutside;
+                        offenders << "c" << channel << " outside(" << p.x << "," << p.y
+                                  << ")=>" << auditionAt (p) << " ";
+                    }
+                }
+
+                // A cell is an edit, not an earful. The first and the last, because a rule
+                // that leaked to the right by one column would be caught at the first, and
+                // one that reached the panel's edge would be caught at the last.
+                for (const auto step : { 0, Layout::numSteps - 1 })
+                {
+                    ++probes;
+
+                    const auto centre = stepGrid->getCellBounds (channel, step).getCentre();
+
+                    if (auditionAt (centre) != -1)
+                    {
+                        ++wrongCell;
+                        offenders << "c" << channel << " cell" << step << "=>"
+                                  << auditionAt (centre) << " ";
+                    }
+                }
+            }
+
+            expect (empty == 0, "every lane has a name rectangle to be clicked at " + atSize,
+                    juce::String (empty) + " lanes drew an empty label, first is "
+                        + asText (labelAt (0)));
+
+            expect (wrongCentre == 0, "the middle of a lane's name is that lane at " + atSize,
+                    offenders.isEmpty() ? juce::String (Layout::numChannels)
+                                            + " lane centres, all their own"
+                                        : offenders);
+
+            expect (wrongInside == 0, "and the whole inside edge of the name answers, at " + atSize,
+                    juce::String (wrongInside) + " of " + juce::String (probes)
+                        + " probes wrong at " + atSize + ": " + offenders);
+
+            expect (wrongOutside == 0,
+                    "one pixel outside each edge of the name answers nothing, at " + atSize
+                    + " -- so the audition is the column the label is drawn in, not the row",
+                    juce::String (wrongOutside) + " of " + juce::String (probes)
+                        + " probes leaked at " + atSize + ": " + offenders);
+
+            expect (wrongCell == 0,
+                    "and no cell in that row auditions, at " + atSize + ", which is the same "
+                    "rule seen from the pixels a click on a step actually lands on",
+                    juce::String (wrongCell) + " cells answered at " + atSize + ": " + offenders);
+        };
+
+        sweepRegion ("the window's own size");
+
+        //---- the same region at the floor the editor publishes --------------------
+        // The narrow end is where the name column is thinnest and a one-pixel leak is most
+        // of the control. Geometry only: the click path runs through the same predicate, so
+        // re-clicking here would re-measure the wiring and not the fit.
+        {
+            const auto* limits = editor->getConstrainer();
+            const auto floorWidth = limits != nullptr ? limits->getMinimumWidth() : 0;
+            const auto floorHeight = limits != nullptr ? limits->getMinimumHeight() : 0;
+
+            editor->setSize (floorWidth, floorHeight);
+            sweepRegion ("the floor of " + juce::String (floorWidth) + " x "
+                             + juce::String (floorHeight) + " px");
+            editor->setSize (preferredWidth, preferredHeight);
+        }
+
+        //---- the click, end to end -------------------------------------------------
+        // A predicate that agrees with the pixels still starts no sound: everything above
+        // could be true of a hit test nothing calls. This is the arm that reaches the engine.
+        // The transport stays stopped, so any voice that appears has one cause.
+        drainVoices();
+        press (labelAt (0).getCentre());
+        renderBlock();
+
+        const auto first = sounding();
+
+        expect (first.count == 1,
+                "a click on a lane's name does start a voice, which is the precondition every "
+                "identity claim below is read against",
+                juce::String (first.count) + " voices (" + first.detail
+                    + ") after one block, sample length 4000 at 44100");
+
+        int wrongCount = 0, wrongLane = 0;
+        juce::String offenders;
+
+        for (int channel = 0; channel < Layout::numChannels; ++channel)
+        {
+            drainVoices();
+            press (labelAt (channel).getCentre());
+            renderBlock();
+
+            const auto s = sounding();
+
+            wrongCount += s.count != 1;
+            wrongLane += s.count == 1 && s.channel != channel;
+
+            if (s.count != 1 || s.channel != channel)
+                offenders << "c" << channel << "=>" << s.count << "v@" << s.detail << " ";
+
+            drainVoices();
+        }
+
+        expect (wrongCount == 0,
+                "and each lane's name leaves exactly one voice running, so no click is dropped "
+                "and none is doubled on its way through the queue",
+                offenders.isEmpty() ? juce::String (Layout::numChannels)
+                                        + " lanes, one voice each" : offenders);
+
+        expect (wrongLane == 0,
+                "and on the lane that was clicked -- the same sample sits in all twelve, so a "
+                "voice on channel 5 for a click on channel 9 is a wrong channel, not a silence",
+                offenders.isEmpty() ? juce::String (Layout::numChannels)
+                                        + " lanes, every voice its own" : offenders);
+
+        //---- a step click edits, and stays out of the ears -------------------------
+        {
+            const int channel = 4;
+            const int step = 3;
+
+            // The one dependency this arm has on every section above it: with an overlay
+            // open a cell click drags a value instead of toggling, and the claim below about
+            // what the click *does* would be measured against a different gesture.
+            const auto plainMode = ! stepGrid->isVelocityMode() && ! stepGrid->isChanceMode()
+                                     && ! stepGrid->isRatchetMode();
+
+            expect (plainMode, "the panel is in plain mode when this arm runs, so a cell click "
+                               "is the toggle it is about to be called",
+                    "velocity=" + juce::String (stepGrid->isVelocityMode() ? 1 : 0)
+                        + " chance=" + juce::String (stepGrid->isChanceMode() ? 1 : 0)
+                        + " roll=" + juce::String (stepGrid->isRatchetMode() ? 1 : 0));
+
+            const auto wasOn = processor.isStepOn (channel, step);
+
+            drainVoices();
+            press (stepGrid->getCellBounds (channel, step).getCentre());
+            renderBlock();
+
+            const auto s = sounding();
+
+            if (plainMode)
+            {
+                expect (processor.isStepOn (channel, step) != wasOn,
+                        "a click on a cell still edits that cell",
+                        "step " + juce::String (step) + " of lane " + juce::String (channel)
+                            + " went " + (wasOn ? "off" : "on") + " and reads "
+                            + (processor.isStepOn (channel, step) ? "on" : "off"));
+
+                expect (s.count == 0,
+                        "and editing a step never costs a voice: the audition is the name "
+                        "column, not the row that was clicked",
+                        juce::String (s.count) + " voices (" + s.detail
+                            + ") after a cell click on a lane holding the same sample");
+            }
+            else
+            {
+                fail ("a cell click could not be judged with an overlay open, so the arm was skipped");
+            }
+
+            processor.setStep (channel, step, wasOn);
+        }
+
+        //---- two controls, one rectangle: the bank answers first -------------------
+        {
+            const int channel = 7;
+            const int lastSlot = Layout::numPatternSlots - 1;
+            const auto wasSlot = processor.getChannelSlot (channel);
+            const auto dot = stepGrid->getSlotDotBounds (channel, lastSlot);
+
+            expect (! dot.isEmpty(),
+                    "the bank mark is laid out inside the name column at this size, so the "
+                    "two controls really do share pixels and one of them has to win",
+                    asText (dot) + " inside " + asText (labelAt (channel)));
+
+            // The overlap, stated rather than assumed: if the audition rectangle were carved
+            // around the strip, the priority below would be a hole in a hit test instead of
+            // an ordering rule, and this section's claim would be a different one.
+            const auto covered = auditionAt (dot.getCentre());
+
+            processor.setChannelSlot (channel, 0);
+
+            drainVoices();
+            press (dot.getCentre());
+            renderBlock();
+
+            const auto s = sounding();
+
+            expect (covered == channel,
+                    "the name column's region does cover the bank mark, so what keeps the bank "
+                    "is the order the click is handled in and not a gap in either rectangle",
+                    "the audition answers " + juce::String (covered) + " at the centre of "
+                        + asText (dot) + " in lane " + juce::String (channel));
+
+            expect (processor.getChannelSlot (channel) == lastSlot,
+                    "and the bank takes that click: the mark moves",
+                    "slot reads " + juce::String (processor.getChannelSlot (channel))
+                        + ", wanted " + juce::String (lastSlot));
+
+            expect (s.count == 0,
+                    "and the audition that shares those pixels stays silent, so a click meant "
+                    "to repoint a lane does not also start the sound it was pointing at",
+                    juce::String (s.count) + " voices (" + s.detail + ") after a bank click");
+
+            processor.setChannelSlot (channel, wasSlot);
+        }
+
+        //---- dead pixels ------------------------------------------------------------
+        {
+            struct Dead
+            {
+                juce::Point<int> point;
+                const char* what;
+            };
+
+            const auto firstName = labelAt (Layout::numChannels - 1);
+            const auto lastName  = labelAt (0);
+            const auto lastCell  = stepGrid->getCellBounds (0, Layout::numSteps - 1);
+
+            const Dead dead[] = {
+                { { 0, 0 },                                                       "the panel's top-left corner" },
+                { { firstName.getX() - 1, firstName.getCentre().getY() },          "left of the name column" },
+                { { firstName.getCentre().getX(), firstName.getY() - 1 },         "above the top row" },
+                { { lastName.getCentre().getX(), lastName.getY() - 1 },           "in the gap between two rows" },
+                { { lastName.getCentre().getX(), lastName.getBottom() },           "below the bottom row" },
+                { { lastName.getCentre().getX(), stepGrid->getHeight() },          "below the panel" },
+                { { lastCell.getRight() + 1, lastName.getCentre().getY() },        "right of the last cell" },
+                { { stepGrid->getWidth(), lastName.getCentre().getY() },           "right of the panel" },
+            };
+
+            int answered = 0, sounded = 0;
+            const int numDead = (int) (sizeof (dead) / sizeof (dead[0]));
+            juce::String where;
+
+            for (const auto& d : dead)
+            {
+                const auto lane = auditionAt (d.point);
+
+                if (lane != -1)
+                {
+                    ++answered;
+                    where << d.what << "=>" << lane << "; ";
+                }
+
+                drainVoices();
+                press (d.point);
+                renderBlock();
+
+                if (sounding().count != 0)
+                {
+                    ++sounded;
+                    where << d.what << " started a voice; ";
+                }
+            }
+
+            expect (answered == 0,
+                    "and the corners, borders and gaps between rows answer no lane at all",
+                    where.isEmpty() ? juce::String (numDead) + " dead points, all refused"
+                                    : where);
+
+            expect (sounded == 0,
+                    "and a click on any of them queues nothing, so the audition cannot be "
+                    "fired by a stray press outside the name column",
+                    where.isEmpty() ? juce::String (numDead) + " dead points, all silent"
+                                    : juce::String (sounded) + " of them sounded");
+        }
+
+        // Leave the lanes as they were found: nothing armed, nothing ringing.
+        for (int channel = 0; channel < Layout::numChannels; ++channel)
+            for (int step = 0; step < Layout::numSteps; ++step)
+                processor.setStep (channel, step, false);
+
+        drainVoices();
+    }
+
     std::printf ("\n%s  %d checks, %d problems\n",
                  problems == 0 ? "PASSED" : "FAILED", checked, problems);
 

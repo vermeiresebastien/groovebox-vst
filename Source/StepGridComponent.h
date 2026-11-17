@@ -147,6 +147,21 @@ public:
     juce::Rectangle<int> getLabelBounds (int channel) const;
 
     /**
+        Which lane a click in the label column auditions, or -1 when it auditions none.
+
+        The label column is the one part of the panel that draws a lane and edits
+        nothing: a click there used to fall through `cellAt` and be dropped. It is the
+        audition now, because hearing a lane is the thing a person wants at the moment
+        they put a sample in it, and it costs no geometry — no new control, so no
+        fader giving up width and no wrap threshold moving under the layout test.
+
+        Public for the same reason `getLabelBounds` is: the claim is about *this*
+        rectangle for *this* lane, and a test that recomputes the column from the
+        insets is a test that aims somewhere the panel never drew.
+    */
+    int auditionLaneAt (juce::Point<int> position) const;
+
+    /**
         Whether the take can drop this step, which is what the corner mark reports.
 
         Public because the mark is a claim about two numbers and a knob, and a pixel

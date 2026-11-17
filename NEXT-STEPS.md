@@ -46,6 +46,11 @@ Two things about this table, both learned while re-checking it for 4.4 (2026-11-
   the sections below inherit it. They were right where they were written; the tree has moved under them. 6.6
   lists the ones that need re-pointing, with the verified current location of each symbol, so the sweep is a
   one-pass job instead of a re-audit.
+- **One of those numbers points at nothing, and not because of drift.** Row 7c's `triggerChannel:251` and B7's
+  `PluginProcessor.cpp:884` name `SequencerEngine::triggerChannel`, which 5.3 deleted rather than repaired: it
+  was the message-thread way into `trigger()`, and the audition now goes through a ring the render drains. A
+  stale line number still lands on the right file; a stale symbol name lands on a search that returns nothing,
+  which is why it gets its own line rather than riding on the bullet above.
 
 ### A3. Audit claims I checked and rejected — do not act on these
 
@@ -90,7 +95,7 @@ Zero coverage today: `setPlayHead` / `PositionInfo` / `AudioPlayHead` appear **n
 
 **B3 — The kit goes silent after enough recalls, and RAM creeps until it does.**
 `applyMetadata` calls `samples.addFile()` for all 12 lanes on **every** `setStateInformation`
-(`PluginProcessor.cpp:994-1009`) with no path dedupe, and the registry is append-only — an id is
+(`PluginProcessor.cpp:1102-1117`) with no path dedupe, and the registry is append-only — an id is
 "never removed, never moved, never reused" (`SampleStore.h:49`) up to `maxSamples = 512`
 (`SampleStore.h:62`), after which `addSample` returns 0 forever (`SampleStore.cpp:123-131`). Live calls
 state-set on set load, preset recall, track duplicate and its own device undo: ~12 ids a pop, so after
@@ -100,27 +105,29 @@ wasted each time. No test catches it — all four round-trip tests build a fresh
 
 **B4 — Undo is cosmetic and self-erasing.**
 Edits push the encoded 395-char pattern string into the tree with the undo manager
-(`PluginProcessor.cpp:864`), and transactions exist, so Ctrl+Z would restore the *string* — but
+(`PluginProcessor.cpp:972`), and transactions exist, so Ctrl+Z would restore the *string* — but
 `GrooveboxProcessor` is only an APVTS listener, never a `ValueTree::Listener` (no such listener exists
 anywhere in `Source/`), so the engine atomics are untouched; the next edit or save re-encodes the live
 atomics over the undone string. Also `getUndoManager()` (`PluginProcessor.h:244`) has **no callers**: there
 is no `KeyPressMapping` / `ApplicationCommandTarget` in the repo, so undo cannot be invoked at all. A
-mis-drag that paints a run across a row (`StepGridComponent.cpp:507-520`) is unrecoverable, and "Clear
+mis-drag that paints a run across a row (`StepGridComponent.cpp:599-612`) is unrecoverable, and "Clear
 pattern" (`TransportBar::handleClearPatternClicked`) / "Clear row" (`ChannelStrip::handleClearRowClicked`) fire with no confirmation.
 
 **B5 — A host-automated parameter allocates on the audio thread, and the header says it cannot.**
 `parameterChanged` parses the id with two `juce::String::substring` calls (`PluginProcessor.cpp:92,97`).
 Its own doc comment states *"It can therefore arrive on the audio thread, so it only ever stores atomics"*
-(`PluginProcessor.h:333-338`) — JUCE notifies listeners synchronously from the parameter write, so a
+(`PluginProcessor.h:602-612`) — JUCE notifies listeners synchronously from the parameter write, so a
 Live automation ramp runs exactly that code inside `processBlock`, allocating twice per parameter per
 block across up to 88 lanes. Low severity, but it is a stated invariant that is false.
 
 Two more, small but real: **B6** `swingGrid` is an int 2–4 that the engine honours
 (`SequencerEngine.cpp:60`) while the UI only ever writes 2 or 4 and, at grid 3, lights **neither** button
-(`TransportBar.cpp:235-237`); **B7** `previewChannel` (`PluginProcessor.cpp:884`) and
-`SampleStore::getSampleIds()` (`SampleStore.h:88`) have **no UI callers** — auditioning and pointing a lane
-at an already-loaded sample are both unreachable, and `previewChannel` calls `triggerChannel` from the
-message thread, so wiring it up naively would race.
+(`TransportBar.cpp:235-237`); **B7** was two halves and 5.3 took one of them —
+`SampleStore::getSampleIds()` (`SampleStore.h:108`) still has **no UI caller**, so pointing a lane at a
+sample already in the session remains unreachable and that half is 5.2's, while `previewChannel` is now
+both called and safe: the grid's label column asks for it (`StepGridComponent.cpp:912`) and the request
+is parked in a ring for the render to drain (`SequencerEngine.cpp:637` producing, `:666` consuming)
+instead of starting a voice from whichever thread the UI happened to be on.
 
 ---
 
@@ -148,7 +155,7 @@ sample-exact clock invariant that test `[12]` protects.
 | **F4** | Sub-step onset keystone → ratchet/rolls | fills without leaving the plugin | 6-8 h | med-high — rewrites the split loop | F3, chaining |
 | **F5** | 4-slot pattern bank + auto-evolve over N bars | the sequencer becomes a song sketch | 6 h | low | — |
 | **U1** | First sound on open: 12 **synthesised** default lanes (no shipped files) | right now the plugin opens silent with an empty grid | 8-12 h | med — level honesty, installer payload | — |
-| **U2** | Kit workflow: multi-file drop fills lanes (`StepGridComponent.cpp`'s `filesDropped` uses `files[0]` and ignores the rest; its silence was fixed earlier, it raises the same error box the browse path does), lane menu from `getSampleIds()`, remembered folder, audition on click (B7) | 12 file dialogs → one gesture | 12-20 h | low | U3 |
+| **U2** | Kit workflow: multi-file drop fills lanes (`StepGridComponent.cpp`'s `filesDropped` uses `files[0]` and ignores the rest; its silence was fixed earlier, it raises the same error box the browse path does), lane menu from `getSampleIds()`, remembered folder, audition on click (B7 — the audition landed as **5.3** on 2026-11-16; the other three are still this row's) | 12 file dialogs → one gesture | 12-20 h | low | U3 |
 | **U3** | Live programs/kits (`getNumPrograms()==1`) = a free preset browser in Live's browser | makes the thing shareable and recallable | 16-24 h, partly blocked by path-only refs | med | — |
 | **U4** | Pattern → MIDI clip export by drag (`juce::MidiFile` already linked; `skulpt/Source/SequenceView.cpp:507` is the precedent) | gets your groove into the arranger | 4-8 h | low | — |
 | **U5** | Editor floor for a 1366×768 laptop, all-12-strip layout test — **done, all three halves**: the row half (2026-11-16, pulled into 4.3b — the bar wraps to two lines below 1774 px, `TransportBar::oneRowWidth`/`wrappedRowWidth`), the strip-height half (2026-11-16, 5.6 — `Layout::stripPlan` prices four stages) and the editor-height half (2026-11-16, 5.6 — `Layout::editorPlan`, and the 5.6 entry below has the numbers and the gates). `LayoutTest.cpp` walked one size and the first strip; it now walks nine sizes × all twelve strips, two of them deliberately below the editor's own minimum, and each one asserts `0 clipped` **and** that it ran the shared rule. The published floor is **1298 × 695 px** — the width is `TransportBar::wrappedRowWidth + 2 * Layout::editorMargin`, the height is `Layout::editorFloorHeight (TransportBar::twoRowHeight, gridFloor)`, and neither is typed. 695 px fits the roughly 730 px a 768 px screen leaves for a window; it still does not fit Live maximised on that screen. The default is **1890×844** — 1832 until 4.5 put a fourth control on the bar, which took 80 px off the row rule and nothing off the grid | done | low | — |
@@ -173,7 +180,7 @@ single sound. It is also the only tier where the current tests are *blind*, so i
 buys the most protection.
 
 **2. Make hits stop clicking and start choking (C1 + C2 + C5).**
-The oldest defect on the list (voice stealing with no fade, `SequencerEngine.cpp:152-160`) is still open,
+The oldest defect on the list (voice stealing with no fade, `SequencerEngine.cpp:197-205`) is still open,
 sample-end cuts click the same way, and choke groups are the one feature the paid competition assumes and
 you do not have. Redrum already solved all three shapes — `DrumEngine.cpp:304-339`, `DrumVoice.cpp:465-492`
 — so this is a port with a known answer, not an invention. Judge it with the level-matched protocol in E3.
@@ -260,7 +267,7 @@ own rule: a test that passes on old code proves nothing.
   (`TransportBar::handleClearPatternClicked`) and "Clear row" (`ChannelStrip::handleClearRowClicked`). ~3-4 h.
 - **2.7** Fix B6: light the correct swing-grid button for grid 3, or make the UI write only 2/4 and stop the
   engine honouring 3 — pick one and make the comment and the code agree. ~1 h.
-- **2.8** Re-check the two claims we rejected (`SequencerEngine.h:373` atomic read; no `PresetManager`) —
+- **2.8** Re-check the two claims we rejected (`SequencerEngine.h:397` atomic read; no `PresetManager`) —
   nothing to do, but confirm in the commit message that they were examined. ~0.2 h.
 - **2.9** Green sweep: both test exes, `--parallel 2` build, `launch/` SHA-256 against the artefact tree.
 
@@ -287,7 +294,7 @@ touches the velocity law. No step here is allowed to be reported as better becau
   test. ~3-4 h. **Do not touch any gain constant to make this sound better — that is the silent-compensation
   line.**
 - **3.4** Kernel edge renormalisation: taps that fall off either end of the source are skipped, costing level
-  over the first/last ~12 samples of a hit — exactly where a transient lives (`SequencerEngine.cpp:514-534`,
+  over the first/last ~12 samples of a hit — exactly where a transient lives (`SequencerEngine.cpp:567-587`,
   the comment admits it). Renormalise by the weights actually used. Hoist `kernelTable.getWeights` out of the
   per-sample loop where the increment is constant (`:511-512`). Gate: level of the first 12 samples of a
   pitched-up kick, old vs new, level-matched overall. ~4-6 h.
@@ -303,7 +310,7 @@ touches the velocity law. No step here is allowed to be reported as better becau
 ### E4 — Phase 4: variation (the first new features, on a payload that can hold them)
 
 - **4.1** Per-step payload **v2**: one byte per step (or a compact parallel property) instead of the 395-char
-  string that currently encodes on/off and 1/100-quantised velocity (`PluginProcessor.cpp:844-864`), with v1
+  string that currently encodes on/off and 1/100-quantised velocity (`PluginProcessor.cpp:952-972`), with v1
   still readable, **a `stateVersion` on the root tree** (there is no version today — compatibility rests on
   `hasProperty("swing")` at `:1040` and `row.length() == 16` at `:958`, and rows are silently truncated at
   `:952`), and `shiftChannelRow` (`:334-374`) taught to carry every per-step field it now moves — today it
@@ -360,6 +367,16 @@ touches the velocity law. No step here is allowed to be reported as better becau
   session. ~10-14 h.
 - **5.3** Audition: wire `previewChannel` behind the audio-thread command queue introduced by 2.3, or delete
   it. Leaving a message-thread `triggerChannel` in the tree is a loaded gun. ~2-4 h.
+  **Done 2026-11-16, and neither of the two routes the sentence offered.** The queue it named does not
+  exist: 2.3 repaired the *render split loop*, not a command queue, so there was nothing to wire behind —
+  and "delete it" describes a seam that was never reached: `triggerChannel`'s one caller was
+  `previewChannel`, and `previewChannel` had no caller anywhere in `Source/` or `Tests/` (measured at
+  `3c3f059`; the same dead path `AGENTS.md` records as README's false "sound button's preview" claim). So
+  the gun was not loaded — it was in a drawer, which is a different reason not to leave it in the tree.
+  What shipped is a third thing: a bounded ring of packed requests that the UI thread fills and the render
+  empties at the head of its own note-event pass, so an audition enters through the same door a keyboard
+  note does, `triggerChannel` is deleted with the seam in place of it, and the path finally has a caller.
+  See **G**, 5.3.
 - **5.4** Live programs/kits: `getNumPrograms() > 1` with names, i.e. a preset browser in Live's own
   browser. Partly blocked by path-only sample refs (`:995-1008`). ~16-24 h.
 - **5.5** Pattern → MIDI clip export by drag. `juce::MidiFile` is already linked; the drag idiom exists in
@@ -394,7 +411,7 @@ touches the velocity law. No step here is allowed to be reported as better becau
   at any height, and `spare` could not say so because it was `area.getHeight()` after a
   `removeFromTop`, which clamps: a strip 44 px short leaves a rectangle of exactly 0, so the
   check built on it had no red state to reach. Fixed as one budget-chosen rule.
-  `Layout::stripPlan (room)` (`Source/Common.h:490`) returns four stages priced at exactly
+  `Layout::stripPlan (room)` (`Source/Common.h:511`) returns four stages priced at exactly
   their own cost — **268** full / **246** gaps in / **210** rows at their floors / **166**
   captions gone — over a hard floor of **123 px** of room, and `ChannelStrip::resized`
   (`Source/ChannelStrip.cpp:241`) asks it for every row height instead of holding a copy of
@@ -419,7 +436,7 @@ touches the velocity law. No step here is allowed to be reported as better becau
   **The editor-height half, paid for the same day.** The strip held its 285 px down to a 585 px
   window, so the debt was never the strip: it was that `editorHeight 844` did double duty as the
   default *and* the minimum, and nobody had ever asked what the layout costs at its cheapest.
-  `Layout::editorPlan (interior, barHeight, gridFloor)` (`Source/Common.h:609`) answers that in
+  `Layout::editorPlan (interior, barHeight, gridFloor)` (`Source/Common.h:630`) answers that in
   four stages, each giving up exactly one thing, in a fixed order: the GROOVEBOX row — 34 px that
   holds the mark, the one-line load/MIDI hint *and* the rule, all three drawn inside it — then the
   strip's slack and its rows down to the floors `stripPlan` already prices, then the strip's four
@@ -521,14 +538,14 @@ touches the velocity law. No step here is allowed to be reported as better becau
   | B2 | `SequencerEngine.cpp:525-532` (position from PPQ, disarm) | yes | `:1508-1528`, with `position = hostHead` at `:1555` |
   | B4 | `SampleStore.h:62` (the 512 ceiling) | yes | unchanged, `SampleStore.h:62` |
   | B4 | `SampleStore.cpp:123-131` (`addSample` returns 0) | yes | `SampleStore.cpp:151` |
-  | B5 | `PluginProcessor.h:244` (`getUndoManager`, "no callers") | yes | `PluginProcessor.h:497`; **it has a caller now** — `PluginEditor.cpp:182` |
+  | B5 | `PluginProcessor.h:244` (`getUndoManager`, "no callers") | yes | `PluginProcessor.h:590`; **it has a caller now** — `PluginEditor.cpp:182` |
   | B6 | `PluginProcessor.cpp:92,97` (two `substring` parses) | yes | `parameterChanged` at `:113`, and the parse is **gone** — ids are looked up in `Params::laneTargets()` |
-  | B7 | `TransportBar.cpp:235-237` (audition) | **no — that is the swing grid** | no audition call exists in `TransportBar.cpp` at all |
-  | B7 | `PluginProcessor.cpp:884` (`previewChannel`) | yes | `PluginProcessor.cpp:1748` — still no UI caller |
+  | B7 | `TransportBar.cpp:235-237` (audition) | **no — that is the swing grid** | no audition call exists in `TransportBar.cpp` at all; since 5.3 there is exactly one, in `StepGridComponent.cpp:912` |
+  | B7 | `PluginProcessor.cpp:884` (`previewChannel`) | yes | `PluginProcessor.cpp:1808` — **it has a UI caller now**, the lane-name click, and it queues instead of playing (5.3) |
   | B7 | `SampleStore.h:88` (`getSampleIds`) | yes | `SampleStore.h:108`, `SampleStore.cpp:225` |
-  | F1 | `PluginProcessor.cpp:673-693` (1/100-quantised velocity) | yes, and discharged by 4.1/4.2 | the codec is `slotPropertyName`/`pushPatternToState`/`applySlotFromState` at `:1185-1358` |
-  | F1 | `:334-361` (`shiftChannelRow`) | yes | `PluginProcessor.cpp:563` |
-  | U5 | `ChannelStrip.cpp:197-209` (the `tight` branch) | yes | **discharged by 5.6** — that branch is gone: the row heights come from `Layout::stripPlan` (`Common.h:490`), which `ChannelStrip.cpp:241-332` asks once per strip |
+  | F1 | `PluginProcessor.cpp:673-693` (1/100-quantised velocity) | yes, and discharged by 4.1/4.2 | the codec is `slotPropertyName`/`pushPatternToState`/`applySlotFromState` at `:1245-1526` |
+  | F1 | `:334-361` (`shiftChannelRow`) | yes | `PluginProcessor.cpp:560` |
+  | U5 | `ChannelStrip.cpp:197-209` (the `tight` branch) | yes | **discharged by 5.6** — that branch is gone: the row heights come from `Layout::stripPlan` (`Common.h:511`), which `ChannelStrip.cpp:241-332` asks once per strip |
   | E2 | `SequencerEngine.cpp:368,457` (`free()` via a refcount) | **no — no refcount, no `free` in that file, at any baseline** | the registry is append-only with dedupe-not-free; the sentence is describing a design that was rejected |
   | 3.x | `SequencerEngine.cpp:290,138` (velocity is gain only) | **half — 138 was the gain line, 290 a MIDI argument** | the gain is `SequencerEngine.cpp:385`, inside `trigger` at `:343` — and the sentence is out of date too, since 4.3b velocity is gain *and* tone |
   | 2.8 | `SequencerEngine.h:317` (the only read of `soundingChannels`) | **no — 317 was `double position = 0.0;`, the read was 309** | `SequencerEngine.h:682` |
@@ -588,6 +605,33 @@ touches the velocity law. No step here is allowed to be reported as better becau
   promotion has to make an absent `cite-pin.txt` a **refusal**, not an empty exemption list. The same
   hazard now covers a second harness: the new `AGENTS.md` bullet points at `out/planbuild/verify-sha.ps1`
   as the way to verify a peer's SHA, and a fresh clone does not have it either.
+  **A third consequence, measured the hard way the same day.** A scripted probe of these gates truncated
+  `AGENTS.md` and `NEXT-STEPS.md` to zero bytes, and the only copies of this phase's prose were `HEAD`
+  plus four files in this folder — the section text and the three scripts that write it — and a session
+  transcript. The replay is checked rather than claimed: the same scripts, `git diff --numstat` back to
+  the same two pairs, and the audit's log byte-identical to the pre-loss one. A tracked `tools/cite/`
+  would have had the identical failure and a one-command recovery; reconstruction recipes that live in
+  `out/` only survive until someone runs `git clean -xdf`, which is the same `# base:` line's risk in
+  AGENTS.md's own words, now with a cost attached to it.
+- **6.7a** The from-nothing run now exists, and it changes nothing about the item. `out/verify-clone.ps1`
+  clones over `file://` with `--no-hardlinks` into a folder that has never been seen, detaches the SHA,
+  configures (fetching JUCE 8.0.4 into `external/JUCE`, 58 s), builds the three suites per target,
+  freshness-checks each exe against its OWN inputs and then runs `ctest`. At `cad30ae`: 37 tracked files,
+  top level `installer Source Tests .gitignore AGENTS.md CMakeLists.txt NEXT-STEPS.md README.md`, no
+  `out/`, `external/`, `build/` or `launch/`; the only tracked scripts are `Tests/RtPathGuard.ps1` and
+  `installer/build-installer.ps1`; `stale=0` on 25 / 25 / 3 inputs (`3562F62E3846`, `A790C27D3245`,
+  `167A6273ED1A`); 546 smoke / 675 layout / 85 planner with 0 failures and 0 problems, `GUARD OK`, `[28]`
+  back at `4BC3AA231178C071`, `100% tests passed out of 4`, exit 0. So "the tracked file set alone is
+  enough to build and pass the suites" is a measurement, not an inference from a linked worktree that
+  shares this repo's object DB. What the run could not do is the item: a clone inherits 147 numbered
+  pointers -- 28 in `AGENTS.md`, 119 in `NEXT-STEPS.md`, none in `README.md`, which links rather than
+  numbers -- and zero of the four files that check them. `launch/` was not built either, and the installed
+  payload is still the `3c3f059` export: `git log --oneline 3c3f059..master -- Source Tests CMakeLists.txt`
+  is empty, so Program Files matches `master`'s compiled sources, and it is behind `lane-44` by three --
+  `ba7c953`, `8e49944`, `cad30ae` -- the first of which also rewords `installer/README.txt`, a payload
+  input. That costs the owner one repackage and one UAC click, not a recompile of what is installed today.
+  Promotion itself is still the open decision: `tools/cite/` plus a fifth `add_test`, or the four files
+  tracked with no CTest entry, or the prose saying plainly that the citation gate is a local harness.
 
 ---
 
@@ -729,7 +773,7 @@ designed around, and the strip now reports 5 px to spare. *(Dated record, and th
 changed meaning under 5.6: it used to be the leftover of the layout rectangle and is now the plan's
 own deficit. They are the same number wherever the old roomy set fitted — stage 0 is priced at that
 set — and differed only where it did not, which is where the old reading was the lie. The strip is 285
-px today, `Layout::stripDesignHeight` at `Source/Common.h:540`.)* The box is a 34 px `ComboBox` sharing the last row
+px today, `Layout::stripDesignHeight` at `Source/Common.h:561`.)* The box is a 34 px `ComboBox` sharing the last row
 with Mute (40 px), items `0 1 2 3` at ids `1 2 3 4` because JUCE keeps 0 for "no selection"; a combo box
 rather than a popup menu because it shows the value without a click and `setSelectedId` fires synchronously,
 which is what makes both directions testable headless.
@@ -1075,7 +1119,7 @@ it, so it waits for the apps to be closed rather than fighting them.
 **4.1 — the step payload says what a step is (done 2026-11-15).** The grid now travels as `v2:` + base64 of two
 bytes a step — the switched-on flag, then the level as a 7-bit MIDI number — with `stateVersion: 2` on the root
 of the tree beside it. `[27]` is the new section, `[19]`'s record probe was rewritten to read the bytes, and
-`Source/PluginProcessor.cpp:943-1132` is the codec.
+`Source/PluginProcessor.cpp:1245-1526` is the codec.
 
 | | v1 rows, on this build | v2 |
 |---|---|---|
@@ -1626,8 +1670,8 @@ item 14 lands, which is the honest state and is what `README.md`'s limitations r
 **The law, in one place.** `Layout::numPatternSlots` is 4 (`Source/Common.h:34`) and slot 0 is the grid that
 already existed: the property is still `pattern`, with the same bytes, so a session written before the bank
 opens as one lane, one pattern, pointed at slot 0, counter shut. The other three are **sparse** —
-`slotPropertyName` (`Source/PluginProcessor.cpp:1185`) names them and `slotCarriesAnything` (the next function,
-at `:1192`) decides whether they are on the tree at all, so an empty slot costs a session nothing and the
+`slotPropertyName` (`Source/PluginProcessor.cpp:1245`) names them and `slotCarriesAnything` (the next function,
+at `:1252`) decides whether they are on the tree at all, so an empty slot costs a session nothing and the
 census a test can read is *which names are present*, not a count. Which slot a bar sounds is
 `SequencerEngine::slotPlaying` (`Source/SequencerEngine.cpp:277`): it starts at the lane's selected slot and
 walks **forward over the filled ones only**, so two filled slots of four alternate those two rather than going
@@ -1645,12 +1689,12 @@ this cell store, and is it worth storing"; that sentence written three times is 
 retunes a kit, and it already bit once this year with `allParameterIds`.
 
 **The panel.** Each lane's label column carries a strip of marks (`getSlotDotBounds` at
-`Source/StepGridComponent.cpp:257`, hit-tested by `bankTargetAt` at `:296`, dispatched at `:860`): four slot
+`Source/StepGridComponent.cpp:270`, hit-tested by `bankTargetAt` at `:309`, dispatched at `:873`): four slot
 marks — solid when filled, outline when not, a white ring on the selected one and a dot inside a mark when the
 sounding slot is not the selected one — then a copy mark, then the rotate chip. Copy duplicates the row into
 the next *unfilled* slot starting after the selected one and moves the pointer there
-(`GrooveboxProcessor::duplicateChannelRowToNextSlot`, `Source/PluginProcessor.cpp:686`, which ends by storing
-the new pointer at `:676`); it is wrapped in `beginTransaction ("Duplicate row")` at
+(`GrooveboxProcessor::duplicateChannelRowToNextSlot`, `Source/PluginProcessor.cpp:683`, which ends by storing
+the new pointer at `:722`); it is wrapped in `beginTransaction ("Duplicate row")` at
 `Source/StepGridComponent.cpp:871` so one undo takes the copy and the pointer back together, and a half-copied
 bank cannot be a thing. `cycleChannelEvolve` (`:615`) walks the ladder and wraps back to off,
 because off has to be reachable by the same gesture that turns it on.
@@ -1659,7 +1703,7 @@ because off has to be reachable by the same gesture that turns it on.
 patterns, and a lane the user is editing must not change under them because a bar boundary arrived.
 
 **It is state, not a parameter.** `slots` and `evolve` are tree properties on the atomics (`pushBankToState`
-at `Source/PluginProcessor.cpp:1468`, `applyBankFromState` at `:1500`, gated by `isGridProperty` at `:1523`)
+at `Source/PluginProcessor.cpp:1528`, `applyBankFromState` at `:1560`, gated by `isGridProperty` at `:1583`)
 and they are deliberately **not** in the 116-parameter table, so the host cannot ramp a slot change and Live's
 arrangement cannot draw one. The README says so next to the limitation about no song mode, and the reason it
 stays that way is that a slot is a *pattern*, and the other patterns — the grid itself — are not automatable
@@ -1783,7 +1827,7 @@ than overrunning.
 
 **State, and the fourth byte.** The step record is generation 4: stride 4, 768 bytes a slot,
 1027 characters of payload (`[27]` prints the width it wrote). `Layout::maxRatchetHits` is 8
-(`Source/Common.h:305`) and `Layout::ratchetByte` (`:389`) is the one clamp, applied on the way
+(`Source/Common.h:305`) and `Layout::ratchetByte` (`:410`) is the one clamp, applied on the way
 in, on the way out of the codec, and again where the engine reads the atomic — so a byte that
 meant 60 costs eight strikes, not sixty, and a hand-edited preset cannot ask for a hundred
 voices. A record with no fourth byte — every session written before this — reads as one strike
@@ -1801,7 +1845,7 @@ count, `100%` over the other two, with the tooltip moving with it. A cell carrie
 strike on the axis the rest of the grid already reads as time — `paintStrikePips` under
 `strikePipsFit` (`Source/StepGridComponent.h:115`), which is the same arithmetic the drawing does
 rather than a second copy of it; the resting grid marks a rolled cell with a 2 px cut at its top
-edge (`restingStrikeMarks`, `Source/StepGridComponent.cpp:468`) and nothing at all on one strike,
+edge (`restingStrikeMarks`, `Source/StepGridComponent.cpp:481`) and nothing at all on one strike,
 on an off cell, or under an open overlay. Adding the control moved `oneRowWidth` 1774 → **1854**
 and with it the derived floor 1218 → **1298** and the default 1832 → **1890**; nothing else gave
 way, and the 68 × 27 px cell the floor now measures was verified to hold all eight ticks at the
@@ -1887,14 +1931,18 @@ sentence names (`out/cite-head-check.py` to enumerate, `out/cite-judge.py` to pr
 `out/repoint45.py` to write the 23 decisions, each matched once on the line it names). The gate
 `out/cite-audit.py` now prints **UNPINNED miss: 0**; it printed 5 before, and all five were
 symbols this lane moved.
-Three of the refused shifts are the inverse trap and worth naming: `Common.h:305`/`:389`,
-`StepGridComponent.h:115`, `StepGridComponent.cpp:468`, `SequencerEngine.cpp:140` and
-`TransportBar.cpp:699` are *already* current-tree numbers, written by this lane, and a map keyed
-on HEAD moves them a second time — which is the failure mode `cite-sweep.py`'s own docstring
-records from the 4.4 sitting, arrived at by a different road. And one correction was not a move
+Some of the refused shifts are the inverse trap and worth naming: `Common.h:305`/`:389`,
+`StepGridComponent.h:115`, `SequencerEngine.cpp:140` and `TransportBar.cpp:699` are *already*
+current-tree numbers, written by this lane, and a map keyed on HEAD moves them a second time —
+which is the failure mode `cite-sweep.py`'s own docstring records from the 4.4 sitting, arrived at
+by a different road. A fifth of them, `StepGridComponent.cpp:468` for `restingStrikeMarks`, has
+since moved for real: 5.3 put the audition above it and it is `:481` today. That is the honest
+asymmetry in a refused shift — refusing a move is a verdict about the tree as it stands, not a
+pin, so the next lane has to re-check the number rather than inherit the refusal. `:389` has since moved for real, and it is `Common.h:410` today: 14a's two chance helpers went in above it, which is what re-checking rather than inheriting is for.
+And one correction was not a move
 at all: 5.6's record says "the strip is 285 px today, `PluginEditor.cpp:47`", and 47 is the
 editor's own initialiser list at every recent commit — the number is `Layout::stripDesignHeight`,
-`Source/Common.h:540`, and the sentence says that now. Wrong the day it was typed, not drift, and
+`Source/Common.h:561`, and the sentence says that now. Wrong the day it was typed, not drift, and
 the difference only shows up if something reads the line rather than shifting it.
 `cite-pin.txt`'s `base:` stays at `bcd6188`: the seventeen ranges under it are coordinates in
 that commit, and advancing it means re-checking every one in the same pass — a 23-pointer fix
@@ -1961,12 +2009,16 @@ handing over now — so Program Files is behind the tree by every `Source/`-chan
 4.4, 5.6 and 4.5 among them, and the payload has to be re-hashed against this lane's artefact tree. Current
 numbers for the next verification: **465 smoke / 651 layout / 85 planner checks, 0 problems, guard OK**, and
 `[28]`'s fingerprint is the same `4BC3AA231178C071` — 4.5 was required not to move it, and did not.)*
+*(Later again — 5.6's height half, 4.5, 5.3 and the 14a seam have all landed in this lane since that
+sentence: **546 smoke / 675 layout / 85 planner checks, 0 problems, guard OK**, and the same
+`4BC3AA231178C071`. Program Files is behind the tree by two `Source/`-changing commits after the `3c3f059` —
+export — `ba7c953` and `8e49944` — and closing that gap is the owner's install step.)*
 
 **Still open, and whose.** Item 14 stays with the owner: `PatternPlanner.h` and `GenrePatterns.h` still have
 no UI or state caller, only the planner suite — the three planner/panel contracts are decisions, not work to
 invent under commit pressure. 5.6's height half, 4.4 and 4.5 stay in this lane. *(Written before any of the
 three landed; all three have now shipped from it, and the lane's open list is 6.5's false spec sentence and
-nothing else it owns.)* The duplicate subject line
+nothing else it owns. 14a has since landed the one seam that item 14 named as its own prerequisite -- `writeSlotRows` -- so the planner has a door and still no caller: what is left of item 14 is the wiring and the three contracts, and both stay with the owner.)* The duplicate subject line
 (`4724922` reusing `4e6a7ef`'s text verbatim while containing two lines of `AGENTS.md`) is recorded under
 `AGENTS.md` "Commit log" conventions, with the replacement subject the export lane asked for. Measured there
 before recommending anything: the rewrite would be *local* — `origin/master` is `ecfe76c` and nothing from
@@ -2071,3 +2123,309 @@ different). The `d8bbeb8` receipt at `out/verify-53.console.txt` names `7EF0E28A
 still the binary whose verdicts it reports -- the relink differs from it only in the two clocks. Both
 binaries are kept at `out/planbuild/relink-{A,B}.exe`; the durable statement is the one in
 `AGENTS.md`, not these files, since `out/` is gitignored.
+
+### 5.3 — hear a lane by clicking its name (done 2026-11-16)
+
+**The plan's premise was false, and fixing it was most of the design.** E5/5.3 said *"wire `previewChannel`
+behind the audio-thread command queue introduced by 2.3, or delete it"*. There is no command queue: 2.3
+repaired the render *split loop*, and nothing since has put a queue between the panel and the engine. And
+"delete it" describes a seam nothing ever reached — measured at `3c3f059`, `triggerChannel` had exactly one
+caller, `GrooveboxProcessor::previewChannel` (`PluginProcessor.cpp:1748`), and `previewChannel` had zero
+callers in `Source/` **or** `Tests/`. That is the same dead path `AGENTS.md` keeps as one of the three false
+README claims it caught, so the loaded-gun framing was wrong in the interesting direction: the risk was not
+a live wire someone would grab mid-set, it was a feature that had been shipped to nobody for four commits.
+What landed is a third route — build the seam, then give it its caller. `triggerChannel` is gone; the
+audition goes in through the door a keyboard note already uses, and the message thread now cannot start a
+voice at all.
+
+**The seam is a ring, and its shape is all borrowed from the note path.** `SequencerEngine::requestPreview`
+(`Source/SequencerEngine.cpp:637`) range-checks first, then refuses when full rather than waiting
+(`return false`, never a spin), then packs `(struck << 8) | channel` into one `std::atomic<std::uint32_t>`
+slot of a 16-deep array (`SequencerEngine.h:447`). The ordering is the only subtle part and it is the
+textbook SPSC argument: each thread advances its own counter so it may read *that* one relaxed, and the
+crossing is the acquire — the producer's `previewConsumed` load is what says the slot about to be
+overwritten has genuinely been let go of, and the consumer's `previewProduced` load is what says the packed
+word it is about to read was really written. No lock, no allocation, nothing on the render's critical path
+but a modulo and two loads. `drainPreviewRequests` (`:666`) takes everything outstanding in one pass at the
+*head* of `noteEvents`, at `sampleOffset 0` with `isNoteOn` true, bounded by `maxNoteEvents`. That ceiling
+is why 16 requests against a pool of 64 voices needs no budget of its own: the drain cannot crowd out the
+MIDI events it shares the array with, which is a property of the array's size rather than a rule someone
+has to remember.
+
+**Level is quantised to seven bits, in one place, because a note-on cannot carry anything else.** JUCE hands
+`getFloatVelocity()` back as the 0..127 byte over 127, so `requestPreview` stores
+`roundToInt (jlimit (0,1,v) * 127)` (`:656`) and the drain rebuilds the float from those bits. This is what
+makes the identity gate a bit-comparison instead of a tolerance, and the cost is stated rather than hidden:
+a level off that lattice is not reachable by a keyboard either. The rounding law got two checks because one
+cannot see it — 0.5 is the level where *floor* is wrong and round is right (63.5 → 64), and 0.3 is the level
+where *ceil* is wrong and round is right (38.1 → 38). Every arm of that mutation pair now reddens exactly
+one of those two lines, which is the gate having two sides rather than a saying about nearest.
+
+**A preview and a key on the same sample resolve the same way on every run, by not being sorted together.**
+`collectNoteEvents` sorts `[numPreviews, numEvents)` (`:733`), not the array. The previews lead in arrival
+order and are all due on sample 0; `std::sort` is not stable, so sorting them with the MIDI would let the
+engine pick an arbitrary winner between a click and a key struck on the same sample, and the tie would move
+between runs on the same build. (It stays `std::sort` and not `std::stable_sort` for 4.5's reason: the
+latter allocates, and this array lives on the render thread.)
+
+**The hit area is the label rect, and the bank answers first.** `auditionLaneAt`
+(`Source/StepGridComponent.cpp:162`) asks `channelAtY` — the same row rule the file drop uses, so the gap
+between rows, the sliver under the last one and the border left of the column are not lanes — and then
+requires `getLabelBounds (channel).contains (position)`. The click handler (`:873`) runs `bankTargetAt`
+*before* `cellAt` and returns from there, so the six controls that share that same column — four slot
+marks, a copy mark and the rotate chip — own their pixels outright: a click on one moves the control and
+queues nothing. Where a row is too short to carry the
+strip, the name still has a rect and still sounds, which is what the README claims and what the gate
+measures at the editor's own floor as well as at its default size.
+
+**Gates.** SmokeTest **[34] "a lane can be auditioned from the panel"**, 19 checks in six arms — a-f: an
+auditioned lane makes a sound (precondition); a click and a key at the same struck level are *the same
+samples* on both channels (no second engine); the two-sided quantisation pair; the hit starts inside the
+block the request arrived in, with nothing sounding before the ask; exactly the ceiling taken with nothing
+rendered between, an out-of-range lane refused, and room again after one block; twelve requests → twelve
+voices and sixteen asks on one lane → the same onsets sixteen notes give (the queue neither dedupes nor
+invents); mute obeys and an empty lane stays silent to the last sample; the grid-coexistence arm (four armed
+steps give four onsets *as its own precondition*, then one insertion at index 1 and every other onset on its
+old sample); and the choke arm — a tone held in block 0, a click cutting it in block 1, the held lane loud
+eight blocks in, the choked one under a quarter of that and under 0.005 absolute, so the ratio cannot be
+satisfied by "quieter instead of gone". **484 checks, 0 failures**, `[28]` still `4BC3AA231178C071` — that
+one is a requirement rather than a hope, because an audition that is not playing must not retune anything
+that is. LayoutTest's new section *"auditioning a lane from its name"* is nineteen `expect` sites and
+twenty-four executed checks — the geometry group runs at two window sizes — counted here in the groups
+rather than left to the total: two fixture prechecks (the wav was written, all twelve lanes hold it), five
+geometry assertions at each size (own rectangle, the middle of a name, the whole inside edge, one pixel
+outside every edge, and no cell in the row auditioning), the click precondition, a twelve-lane count and a
+twelve-lane identity, the cell arm (a plain-mode precondition, the step still toggles, and a cell costs no
+voice), the bank arm (its own geometry precondition, the region does cover the mark, the mark moves, and
+the audition sharing those pixels stays silent), and the dead points (they answer no lane, and they queue
+nothing). **675 checks, 0 problems.**
+
+**Why identity reads a voice rather than a level, and why it is two expects.** The harness loads the *same*
+sample into all twelve lanes and reads `debugVoice (i).channel` after rendering one block, so a misrouted
+audition is a wrong channel number rather than an ambiguous silence — the failure line says "a voice on
+channel 5 for a click on channel 9". That needs no new accessor and no debug counter. It is also why
+"sounding" returns a count *and* a channel as one struct: a misroute is only visible when exactly one voice
+is up, so the identity arm is deliberately conditional on `count == 1`, and arm **l4** (never queue) kills
+the count while leaving identity vacuously green. One expect would have hidden the second defect inside the
+first one's exemption.
+
+**Seventeen arms, and the disagreement is the evidence.** `out/mut53.py`, driven by
+`out/mutate-53.sh` (logs `out/mutate-53b.log`, `out/mutate-53c.log`, `out/mutate-53d.log`) and, for the
+arms written after those rounds, `out/mutate-one.sh` (`out/mutate-53e.log`, `out/mutate-53f.log`), which
+runs one arm as green → red → restore-hash → green so the suite is proven alive on the *current* tests
+before any count is believed. Every arm restores the recorded good file before it mutates, edits one
+expression, and the final restore is hash-compared against `out/*.good` (`StepGridComponent.cpp
+dc8a9def…`, `SequencerEngine.cpp 949f7153…`) with a green re-run of both suites after:
+
+| Arm | Mutation | Problems | What it proves the gate can see |
+|---|---|---|---|
+| l1 | the row answers, not the name | 6 | both sizes' outside-the-name arms, and the dead points |
+| l2 | hit area = `getFullRowBounds` | 6 | same set, by the wider-rect road |
+| l3 | hit area `.expanded (1)` | 4 | the 1 px border arms only — no cell claim rides on it |
+| l4 | click computes the lane, queues nobody | 2 | precondition + count; identity stays green by design |
+| l5 | bank hoisted **without** its return | 15 | 12 of them are 4.4's own bank gates, 3 are the audition |
+| l6 | bank hoisted, return removed, audition still runs | 3 | precondition, count, and "the mark moves too" |
+| l7 | always audition lane 0 | 1 | identity alone — the only arm that can reach it |
+| l8 | the handler binds to the row, above the cell branch | 4 | "editing a step never costs a voice", and the dead points from the call side |
+| l9 | hit area `.reduced (1)` | 2 | the inside-edge probes at both sizes — the mirror of l3, and nothing else |
+| l10 | the hit test answers nothing | 7 | the positive geometry, the click precondition, the count, and the bank-region overlap |
+| e1 | nothing drains | 12 | most of [34]: the ring is load-bearing for the whole feature |
+| e2 | ceiling + 8 | 1 | the exact-ceiling arm, and nothing else |
+| e3 | floor instead of round | 1 | the 0.5 side of the tie |
+| e4 | ceil instead of round | 1 | the 0.3 side of the tie |
+| e5 | the request routes to the neighbour | 9 | the choke-to-the-floor check, which a dead queue satisfies by silence |
+| e6 | the range guard removed | 2 | the refusal gate — **after** it was relocated, see below |
+| e7 | the shared mute gate bypassed | 6 | the audition's mute line *and* five note/grid ones, from one expression |
+
+Seventeen arms, no arm green, and every check that a mutation can legitimately reach reached. The pattern
+the set was built for is there: the oversized arms (l1/l2/l3) and the stingy ones (l9/l10) reddens
+different lines, the two rounding laws split the tie between them (e3/e4), and a queue that is *dead*
+(e1) cannot redden a gate whose pass condition is silence — that took e5 and e7.
+
+**e6 went green the first time, and that was a defect in the test.** The out-of-range refusal check sat
+directly under the ceiling loop, which by then has filled the ring — so `previewChannel (-1)` answered
+`false` because there was no room, not because there was no frame, and deleting the range check changed
+nothing. Moved above the fill loop, where the only way to be refused is to be refused, the same arm
+reddens **two** lines: the refusal, and the ceiling itself (with the guard gone the two junk requests eat
+slots and 24 offers yield 14). The count is the tell that the door and the queue are one mechanism. Both
+runs are in the logs, and the second one is the arm's number in the table above.
+
+**The nine checks no arm reddens, and why each is allowed to stay that way.** In [34]: the ruler (four
+onsets with nothing clicked) exists to survive every audition mutation — it measures the grid alone, and a
+precondition that a feature arm can kill is a precondition that reports the feature instead of the
+fixture; "nothing sounds before the ask", which no single expression can break because the producer cannot
+increment before the call that made it; and "an empty lane stays silent", discharged by
+`retainSampleForChannel` returning null — the same line that keeps a note off an unloaded lane, and
+mutating it dereferences a null pointer rather than reddening a gate. In the label section: the two
+fixture prechecks (the wav was written, all twelve lanes hold it), "every lane has a name rectangle",
+"the panel is in plain mode when this arm runs", "a click on a cell still edits that cell" — which is
+4.5's editor path, gated by 4.5's own arms — and "the bank mark is laid out inside the name column at this
+size", a statement about the geometry the arm exists to make true. Counted as the list above enumerates them
+— three in [34], six in the label section, the latter because "the two fixture prechecks" is two checks — six
+of the nine are preconditions whose job is to be green: the ruler, the wav being written, all twelve lanes
+holding it, every lane having a name rectangle, the panel being in plain mode, and the bank mark sitting
+inside the column. The other three are not preconditions, and they are not claims about a different feature's
+suite either; they are claims discharged by a mechanism outside this arm: the producer's ordering, the null
+that `retainSampleForChannel` already returns, and 4.5's editor path, which 4.5's own arms gate. That is
+written here rather than left to the table because a coverage claim that does not name its residual is the
+same shape as the check e6 just caught.
+
+**Two harness bugs that had to die first** are in `AGENTS.md`, and they were not cosmetic: round one
+reported **BUILD FAILED** for e2-e4 because a mid-statement `// MUT` comment ate the `);` on the next line,
+and it reported 1 failure for e1 where there were 12, because the driver greped `^FAIL` and the smoke
+format puts two spaces in front of every per-check line but none in front of its own summary. An arm that
+cannot compile and an arm that cannot be counted both look exactly like a suite that does not need the
+feature.
+
+**The one lesson worth carrying past this item: two controls in one rectangle means one defect can light up
+a different feature's suite.** l5 reddens fifteen checks and twelve of them are 4.4's bank gates, so its
+problem count says "4.4 is broken" while its failure *lines* say "the label column now answers twice". A
+count attributes nothing; the list of sentences does. This is the same trap `AGENTS.md` records for a control
+identified by its range, one layer further down — two components that share pixels share a defect.
+
+**A false claim discharged while writing the docs.** README's humanize section said *"the sound button's
+preview is a diagnostic"* — `ChannelStrip::handleSoundClicked` opens a `juce::FileChooser` and plays nothing
+(`previewChannel` has exactly one UI caller, `StepGridComponent.cpp:913`), which makes it the second claim
+about that button in `AGENTS.md`'s list, after "the menu switches between loaded samples", and the fourth in
+the list overall — a claim the file had already contradicted once and which had survived into prose nobody
+re-read. It now says the button
+browses, and points at the lane name for the sound. `installer/README.txt` gained the matching paragraph, and
+`README.md` gained *"Hearing one lane"* between the MIDI and mix sections.
+
+**Deliberately not here.** No slot lookup in the request path: the lane's *sound* — sample, pitch, envelope,
+level, choke — is one setting for the lane and not one per slot (4.4's rule), so an audition cannot be
+"wrong about the bank" because there is nothing bank-shaped to be wrong about. No velocity from a modifier
+or a drag: full level is the answer to "what is this sound", and a kit's rows are not equal-loud, so a
+remembered per-lane audition level would be a new parameter with no owner. No held audition and no note-off:
+a click has no duration, and the release path belongs to a note. No preview on the sound button, no lane
+menu from `getSampleIds()` — that half of B7 is still 5.2's. And nothing about the queue is a parameter,
+recorded, saved or undone: an audition is a question about a sound, not an event in the pattern, which is why
+one undo step cannot be filled with twelve clicks.
+
+### 14a — the door a generated pattern comes through (done 2026-11-16)
+
+**What was ruled, and what this is not.** Item 14's plan sentence closed on a dependency rather than a
+feature — *a generator therefore needs a slot-taking writer that pushes once per slot; that seam is the thing
+to agree with the sequencer lane before writing any wiring* — and the owner's ruling was that this lane writes
+it. So 14a is the door and nobody walks through it yet: `writeSlotRows` (`Source/PluginProcessor.h:364`,
+defined at `Source/PluginProcessor.cpp:736`, row struct `SlotRowWrite` at `Source/PluginProcessor.h:308`) has **no caller in
+`Source/`**. `PatternPlanner` and the genre table are still caller-less, and the three planner/panel contracts
+item 14 also names are still open. What is settled is the shape a generated take arrives through: into a slot
+the user is not pointing at, in one push, without moving a pointer.
+
+**Why the four cell seams cannot serve the shape.** `setStep`, `setStepVelocity`, `setStepChance` and
+`setStepRatchet` each resolve the slot for themselves, with `selectedSlotOf (channel)`, so a grid painted
+through them can only ever land on the slot the lane is already playing — which is precisely the thing a
+generated take must not do to what the user is hearing. And every one of them ends in `pushPatternToState`,
+which re-serialises the whole row: four fields by twelve lanes by sixteen steps is **768 encodings of one
+768-byte record for one pattern**. `writeSlotRows` takes the slot as an argument, never reads the selection,
+and pushes once.
+
+**The economy, measured — and two numbers this lane had written down wrong.** The first cut of the header
+comment said the cell seams pay "192 tree writes and 192 undo commands". Neither is what happens. Of the 768
+encodings, **240** move the property — 192 level moves and the 48 flags that actually flip — because
+`ValueTree::setProperty` does not notify when the value is unchanged, so the codec runs 768 times and the tree
+hears 240. And those 240 writes are **two** undo actions, not 240 or 192: a transaction is the editor's per
+gesture rather than the cell's, and `UndoManager::perform` coalesces successive `SetPropertyAction`s on one
+property (`juce_UndoManager.cpp:141`). So what the one push buys is 768 encodings down to one and 240 host
+notifications down to one, with the undo history saving one action out of two — a different and much smaller
+claim than the one the sentence was making. Both numbers are now printed by the section that gates them
+(`[35]` part d) rather than asserted by a comment, which is the only reason they can be re-checked next phase:
+**a count inside a comment is a claim, and a count nobody measured is a guess wearing a number.**
+
+**The contract, in the four consequences the header states.** A refusal is only ever about the *shape* of the
+ask — slot outside the bank, null `lanes` or `rows`, count outside `1..12`, a named lane outside the twelve —
+and never about what the machine already holds, so the return value is worth reading. Every one of those is
+checked before a single cell moves, which is what makes a refusal leave the session byte-identical. A slot no
+lane points at is inaudible while it fills, and filling the slot a lane *does* point at is allowed; for that
+case the four fields are stored neighbours-then-flag, so a step that comes on arrives with the level,
+probability and strike count that go with it instead of a block's worth of the old ones. A lane named twice is
+written twice and the later row wins, because a caller assembling a lane list can easily name one twice and
+last-write is the rule that matches what the list says. Lanes not named keep every cell they hold, in this
+slot and in every other.
+
+**One helper went public on purpose.** `slotPropertyName` (`Source/PluginProcessor.cpp:1245`) was private until
+this seam needed a test that reads the record it wrote. The bank is sparse — slot 0 is `pattern`, the others
+`pattern1..3`, and only when filled — so a caller that aims at a slot has to be able to *name* it, and a test
+or a host that spells the name out is a second grammar for the same property. The section now gates both
+halves at once: it asks the function for the name, and it asserts that a bank with only slot 2 filled names
+its records exactly `pattern` and `pattern2`.
+
+**Gates: section `[35]`, 61 of the suite's 546 checks.** Six parts. (a) a fresh session holds slot 0's record
+under that literal name and nothing else, which is what makes a later emptiness a *removal* rather than a
+never-was. (b) seven refusals, each asked while nothing else could say no, each followed by the whole 192-cell
+live grid and the tree census being byte-for-byte what they were, a printed precondition that the refused ask
+*disagrees* with the grid in the flag, the level and the strike count, and the zero-repaint rule. (c) an
+accepted twelve-lane fill: one property change, one repaint, a v4 record on the slot the bank has, all 192
+cells equal to the ask, no lane's pointer moved, the user's grid unchanged, and the two renders identical
+sample for sample while nothing points at the filled slot. (d) the same grid through the bulk seam (one
+change), the same grid through the cell seams (240 changes, printed), the two records agreeing so the economy
+is not bought by writing less, the undo actions two against one, and one undo restoring both routes to the
+absent record. (e) the neutral fill removing a slot's record, the bank's marks agreeing with the record rather
+than with the gesture, slot 0 being exempt exactly as the save path says it is, and the render: a fill of the
+slot nobody points at sounds nothing on an armed lane with a sample in it, and pointing that lane at the slot
+sounds `0 4 8 12 16` — four hits and the bar's own wrap at 16, through the transport rather than a second
+door. (f) the three clamps and the duplicate lane.
+
+**Ten arms in `out/mut14.py`, eight red and two green on purpose.**
+
+    w1  store before the pre-scan            2   the refusal's grid, and the first lane's own cell
+    w2  flag before its neighbours           0   declared: no single-threaded harness sees a row mid-write
+    w3  a push per cell                      4   the notification counts, in both directions
+    w4  the panel is never told              1   the repaint count
+    w5  slot read from the selection        16   everything that says "aimed at a slot", plus the render
+    w6  level stored unclamped               1   the clamp
+    w7  probability stored off the lattice   1   the rung
+    w8  strike count stored past the ceiling 0   declared: discharged at every reachable read
+    w9  only the trues are written           3   the removal, the dots, the duplicate lane
+    w10 an empty lane list accepted          2   the refusal and the zero-repaint rule
+
+**Three things the lap taught.**
+
+- **w1 came back green, and the fixture was the bug, not the arm.** A default `SlotRowWrite` is every cell
+  off, and every cell off is exactly what that grid already held at step 0 — so the leak wrote the value that
+  was already there and the check read its own fixture. The refused asks are now *shaped* to disagree with the
+  grid in all three of flag, level and strikes, and the section prints that difference as its own precondition.
+  A control that cannot bite indicts the pair it is comparing first.
+- **w8 is green for the opposite reason: the rule it breaks is real and gated, just not at that door.** The
+  stored atomic is clamped again on the way out of `getStepRatchet`, again by `cellSaysAnything` and the codec,
+  and again at the one place the number becomes sound — `SequencerEngine.cpp:874`, where 4.5's own
+  `setStepRatchet (3, 7, 999)` check does gate "sixty cannot become sixty hits". So the seam's clamp keeps the
+  two write doors storing one representation and is not the load-bearing one, and no observation this harness
+  can reach tells the two builds apart. The check's comment now says so, so the next reader does not count it
+  as the control for that.
+- **w4 reddened two checks that have nothing to do with it, and they were lying beforehand.** "The audio thread
+  ran throughout [0 blocks]" is section `[11]`, the two-hundred-load concurrency hammer: two hundred loads can
+  finish on one core before the scheduler starts the render thread, so the section was able to measure no
+  overlap at all and still print three greens. `[11]` now waits, bounded, for the first block before the
+  loads begin, and says so if it never gets one. Found by an unrelated arm, which is the usual way a fixture
+  that has always been flaky under load gets noticed.
+
+**Run.** 546 smoke / 675 layout / 85 planner checks, 0 problems, RT-path guard exit 0, `Groovebox` target 0,
+`ctest` 4/4 (`out/gate14-run2.txt`, suite logs in `out/smoke-14-final-utf8.txt` and its twins), and `[28]`'s
+fingerprint is still `4BC3AA231178C071` over 161280 samples (peak 0.68136, rms 0.16312) — a door nobody
+walks through must not retune a hit. The falsification lap is `out/arms14-run-c.txt`: ten arms, each from a
+restored-good file, run against the *final* shape of the test file, with `FINAL BUILD exit: 0` and
+`PASSED 546 checks, 0 failures` at the bottom so the restore is proven by the log rather than asserted by
+this paragraph.
+
+**Off the tip, cold.** `8e49944` was then checked in a worktree that had never held a build — a new
+folder, a fresh `cmake` configure (it cloned JUCE into `external/JUCE`), the three suites built per
+target and `ctest` run after them, and no `Groovebox` plugin target: `out/planbuild/verify-sha.ps1
+-Sha 8e49944 -Tag 14a -Since d8bbeb8`. It prints `DIRTY FILES: 0`, `NAMED BY: lane-44`, `stale=0`
+beside each exe's own input count, then 546 smoke checks with 0 failures, 675 layout and 85 planner
+with 0 problems, `GUARD OK: the parameter path is allocation-free` and `100% tests passed out of 4`
+— and `[28]` comes back at the same `4BC3AA231178C071` in that tree. The run is
+`out/verify-14a.console.txt`, with the per-suite logs beside it. Scope is part of the claim: that
+proves the *sources*, not the deliverable. `launch/` was not touched and no setup was built, so
+Program Files stays behind the tree by two `Source/`-changing commits after the `3c3f059` export, and closing
+that gap is the owner's install step. This paragraph then lands as a docs-only commit on top of the
+tree that run was made in, touching no compiled input, so by the rule in `AGENTS.md` it is not owed
+a rebuild either.
+
+**Deliberately not here.** No UI and no "generate" button: the seam is the agreement, the wiring is the
+decision that still belongs to the owner. No undo-transaction wrapper — the fill is already one action because
+it is one property write, not because anything opened a transaction. No pointer move, no slot copy, no
+clear-on-write: `writeSlotRows` fills, and the only way a slot goes away is by holding nothing. No validation
+of what a caller asks for beyond the shape of the ask, and no gate on the store's strike clamp, for the w8
+reason above.
