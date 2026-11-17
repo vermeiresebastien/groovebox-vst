@@ -2034,9 +2034,10 @@ and a renamed SHA in another lane's verification worktree to buy nothing. The ow
 `8e49944` printed the same 546/675/85, which is what `git diff --name-only 8e49944..a942cd0` =
 `NEXT-STEPS.md` alone predicts: a docs commit cannot move a verdict. Against this lane's own
 `d8bbeb8` receipt (484/675/85) 14a is +62 smoke checks, and the `[28]` baseline is one of them in
-kind, not in name: `4BC3AA231178C071` is an asserted constant at Tests/SmokeTest.cpp:5174 in
-`8e49944` (5159 in this tree), never
-printed by a green run, so the receipt for it is the `0 failures` line and nothing more.
+kind, not in name: `4BC3AA231178C071` is an asserted constant at Tests/SmokeTest.cpp:5174 -- true at
+`8e49944` and in this merged tree, where 5159 belongs to `5d071b0` and to the installed `3c3f059`,
+14a's 62 new checks having pushed it 15 lines down -- and it is never printed by a green run, so the
+receipt for it is the `0 failures` line and nothing more.
 `writeSlotRows` is defined at Source/PluginProcessor.cpp:736 in `a942cd0`, declared at :364 there,
 and driven from section [35]; at that ref `PatternPlanner` still has no caller in Source/, so the
 handover's future-tense exclusion is
@@ -2429,3 +2430,56 @@ it is one property write, not because anything opened a transaction. No pointer 
 clear-on-write: `writeSlotRows` fills, and the only way a slot goes away is by holding nothing. No validation
 of what a caller asks for beyond the shape of the ask, and no gate on the store's strike clamp, for the w8
 reason above.
+
+### Receipt -- the merged tree, item 22 called in (2026-11-17, export lane)
+
+**The merge landed as `7ab94d9`**, parents `7e0f0ab` (master) and `448ce89` (lane-44), merge-base
+`5d071b0`. It conflicts in two paths, not the one the handover previewed, and both are docs: the merged
+tree differs from `448ce89` in `AGENTS.md` and `NEXT-STEPS.md` and in **nothing else** -- `git diff
+--name-only HEAD lane-44 -- Source Tests CMakeLists.txt external installer` is empty, so the compiled
+inputs and the payload *are* the lane's, which is the side that has been run.
+
+**The union was predicted before it was written, then checked against the prediction.** `AGENTS.md`
+resolves to 1068 lines and `NEXT-STEPS.md` to 2431 at `7ab94d9`. The
+proof is four statements, not a reading: every distinct line holds the count `ours + theirs - base` (0
+violations, so nothing was lost *or* duplicated by the double append); every line either side added is
+present; every line that went away (13 and 6 in `AGENTS.md`, 38 and 0 in `NEXT-STEPS.md`) is a line the
+*other* side itself removed, so each is a rewrite being taken rather than a bullet vanishing; and read
+against either side the merged file differs only by the other side's additions, in order. No markers,
+`i/lf w/crlf` intact on all four docs, numstat 168/13 and 396/38.
+
+**Item 22's pin-set duty is discharged with the pair named.** `out/cite-pin.txt` is now the lane's
+19-entry set (`a2a9e2c225aa`), installed after measuring that it is a strict superset of this tree's
+17-entry `3518a1e1089c` -- the two extras are the `repaired` pins at `NEXT-STEPS.md` 100 and 860, which
+hold a line *away* from the base because the base's number was wrong where it was written. The displaced
+17-entry file is kept as `out/cite-pin-17entry-main-3518a1e1.txt`. Over the merged docs, base `bcd6188`:
+sweep `31 right / 0 to correct / 0 unresolvable / 111 edited-since-base left alone / 2 repaired held`,
+audit `32 points-at-symbol / 75 needs-a-human / 19 table rows / 29 pinned / 2 repaired / 2
+baseline-qualified / UNPINNED miss: 0`.
+
+**The one defect was in the set the gates cannot see, and it was a swapped pair, not drift.**
+`NEXT-STEPS.md:2037` read `SmokeTest.cpp:5174 in `8e49944` (5159 in this tree)`. Re-derived across ten
+refs with `git grep -n goldenFingerprint`: **5174 is this tree's number** -- every ref from `8e49944` on
+(`8e49944`, `a942cd0`, `ccd6308`, `448ce89`, the merged tree) -- and **5159 is every ref before it**:
+`5d071b0`, master's `7e0f0ab` and `9c872f7` and the installed `3c3f059` all carry one blob of 10,026
+lines, and so does the lane's own earlier `d8bbeb8` receipt at 10,598. 14a's 62 new checks pushed the
+constant 15 lines *down*. So the parenthetical pointed the base-side number at the lane's tree and
+labelled it "this tree" -- a claim written from two trees, which no renumbering can fix because the
+number was right where it was written and wrong about which tree it described. The sentence now states the
+pair beside the trees. The audit could not have caught it because the citation names no symbol, and the
+sweep could not have moved it because the line is newer than the base.
+
+**Two things that did *not* bite, measured rather than assumed.** `cad30ae` sits between the verified ref
+`a942cd0` and the lane's tip and touches `Tests/SmokeTest.cpp` -- but it rewrites two comment lines at
+8170-8171 with **zero** line-count delta (blob `17e1cd75` -> `6d098701`, both 11,372 lines), and 0 of the
+docs' citations into that file have a target window that differs between the two refs, so no pointer
+moved. And `AGENTS.md:789`'s (780 before this receipt's own 9-line `AGENTS.md` append shifted it, which is
+why the pointer was re-derived rather than carried)
+`PluginProcessor.h:519` stays correct as written: 519 is `parameterChanged` at `9c872f7`, the tree the
+sentence names, while in the merged file the declaration is at 612 with its comment opening at 602 --
+which is also item 22's repaired pointer at `NEXT-STEPS.md:119`, re-derived here rather than inherited
+from either side.
+
+**Still owed, unchanged by this receipt:** no build has run against the merged tree, `launch/` still
+holds the `3c3f059` export and Program Files holds the same, so the gap to a deliverable is one compile,
+one repackage and one UAC click. Nothing is pushed.

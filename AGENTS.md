@@ -769,6 +769,15 @@ reproducible from `git checkout`.
   conflict region into ten. Ask before sweeping -- and before quoting `to correct: 0` as owed -- which
   side's code the merged tree takes; if it takes the peer's, this side's drift is deferred, and the
   deferral is a stated state of the tree, not a green gate.
+  Once the merge lands the deferral is called in, and what is owed is one-sided by construction: each
+  side's prose was hand-verified against *its own* code, so the only citations that can go stale are the
+  ones pointing **into a file the merge took from the other side**. Enumerate exactly those -- citations
+  on lines authored by the side whose code lost, intersected with `git diff --name-only <merge-base> HEAD
+  -- Source Tests installer` -- and ask of each whether the cited window still holds the text it held at
+  the base. This is the question the sweep cannot answer, because for those doc lines its whole verdict is
+  "edited since base, left alone". Measured at `7ab94d9`: 3 candidates, 1 real defect -- and it was two
+  numbers swapped between two trees, the shape `UNPINNED miss: 0` is blind to because the citation names no
+  symbol, so the audit judged it and passed it.
 - **An exemption list that is merely *older* can silence a real finding, not only invent one.** The
   hazard this section records is the loud direction: absent pins re-report exempt citations as
   `UNPINNED miss` (measured 22 on a correct tree). The quiet direction is worse because the gate
