@@ -25,9 +25,9 @@
 ; Build with installer\build-installer.ps1, which calls ISCC.
 
 #define MyAppName "Groovebox"
-#ifndef MyAppVersion
-  #define MyAppVersion "0.1.0"
-#endif
+; There is deliberately no default for MyAppVersion. A setup exe labelled 0.1.0 that holds a newer
+; build is worse than no version at all, so build-installer.ps1 passes /DMyAppVersion read out of
+; CMakeLists.txt, and a bare ISCC run of this script is meant to fail rather than guess a number.
 #define MyAppPublisher "Skeer Audio"
 #define MyAppURL "https://skeer.audio/"
 #define MyAppExeName "Groovebox.exe"

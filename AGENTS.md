@@ -911,6 +911,14 @@ on purpose: see the two bolded rules below.
 - Payload is read straight out of `launch/` ([installer/Groovebox.iss:35](installer/Groovebox.iss)),
   so a setup can never carry binaries older than the last build; the only exception is
   `README.txt`, a tracked source in `installer/`.
+- **One version, in [CMakeLists.txt](CMakeLists.txt), and the installer cannot fall back to it.**
+  `build-installer.ps1` reads `project(... VERSION ...)` and passes `/DMyAppVersion`; the `.iss`
+  deliberately has **no `#ifndef MyAppVersion` default** -- measured on the 0.2.0 bump: a bare
+  `ISCC installer\Groovebox.iss` exits **2** at `Groovebox.iss:42` (`AppVersion={#MyAppVersion}`) and
+  writes no exe, so a hand-run compile either carries the declared number or fails loudly. The
+  bundle's own `moduleinfo.json` has a `"Version"` field generated from the same `project` line, so
+  after a bump a rebuilt bundle must read the new value there -- it says `0.1.0` in the `3c3f059`
+  export still in `launch/`, which is what makes it a version check and not an identity one.
 - **`CloseApplications=no`** ([installer/Groovebox.iss:80](installer/Groovebox.iss)).
   With `yes` -- and the house default filter `*.exe,*.vst3` -- a silent install that
   finds the bundle locked force-quits the host holding it, which on this machine means
