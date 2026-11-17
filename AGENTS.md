@@ -593,7 +593,7 @@ gate. The two are not interchangeable and neither alone is the whole check; run 
   lenient by accident. A new discontinuity check multiplies `sourceSlew`, it does not
   copy a constant.
 - **Verify a SHA another lane names in a detached worktree, and assert the ref, not just the SHA.**
-  `out/planbuild/verify-sha.ps1 -Sha <sha> -Tag <tag> -Since <prev>` checks the tree out detached,
+  `tools/verify-sha.ps1 -Sha <sha> -Tag <tag> -Since <prev>` checks the tree out detached,
   builds each suite **per target**, refuses any exe older than its own inputs, then runs the suites
   and `ctest` -- in that order, because CTest does not build. It is **suites-only** -- see the next
   bullet for the grep that proves it and for why the one I used here in `ccfdfdd` went false the same
@@ -602,16 +602,18 @@ gate. The two are not interchangeable and neither alone is the whole check; run 
   -- the sentence that used to claim otherwise here was written in `aa22b44` and is the reason for the
   bullet below. It prints `NAMED BY:` deliberately: a worktree made with `--detach` leaves the commit
   named by no branch, one `git worktree prune` from unverifiable, which is how a first commit landed on
-  a detached HEAD while the branch sat where it was. The script lives in gitignored `out/` -- item **6.7**
-  is the same hazard for the citation tooling -- so this describes a working tree, not a clone.
+  a detached HEAD while the branch sat where it was. The script used to live in gitignored `out/` and
+  is now a tracked `tools/` file (item **6.7**), with every path resolved from `$PSScriptRoot` and an
+  `out/` log folder created on demand, because a typed absolute path made it a machine-local harness.
 - **A grep discriminator on a word the prose also uses is not a gate -- and mine proved it the same
   afternoon.** The bullet above said "`grep -n launch` returns zero hits in its 131 lines"; I then
   added a `NOT CONFIGURED` refusal and a run banner, and the script went to 168 lines with **one**
   `launch` hit -- line 67, the banner printing "no plugin target built, launch/ untouched". The claim
   stayed true and the evidence for it went false, which is the worse combination: the next reader who
   checks the grep concludes the *sentence* is the lie. Discriminate on what only a build step can
-  contain, measured at `9c872f7`+ and re-checked today: `--target launch` **0**, `Groovebox.exe` **0**,
-  `vst3` **0** hits in `out/planbuild/verify-sha.ps1` -- a banner cannot produce any of those three.
+  contain, measured at `9c872f7`+ and re-checked at the promoted path: `--target launch` **0**,
+  `Groovebox.exe` **0**, `vst3` **0** hits in `tools/verify-sha.ps1`, which is now 178 lines with the
+  same single `launch` hit at line 77 -- a banner cannot produce any of those three.
   Same rule as the "must not print X" gate that an exception report satisfies by quoting X: state a
   negative about a file in terms of the syntax only an action would write, never the vocabulary of the
   disclaimer.
@@ -739,10 +741,13 @@ gate. The two are not interchangeable and neither alone is the whole check; run 
 `README.md`, `AGENTS.md`, `NEXT-STEPS.md` and `installer/README.txt` point at code as
 `SequencerEngine.cpp:151-159`, and every phase that adds lines moves those numbers. A doc whose
 pointers land in an unrelated comment is worse than one with no pointers, because it is trusted.
-Two scripts in `out/` keep them honest, and the rules below are what each one cost to learn. Say it once,
-up front: those scripts and their pin list live in gitignored `out/`, so this gate belongs to a working
-tree and not to a clone -- plan item **6.7** is the decision to move them, and until then nothing here is
-reproducible from `git checkout`.
+`tools/cite/` keeps them honest -- the sweep, the audit, their one shared reader and the pin list are
+tracked files now (item **6.7**, shape (b): tracked, and deliberately *not* a fifth `add_test`, because
+these need Python and the plugin build needs neither), and `tools/README.md` is what a fresh clone
+reads first. The rules below are what each one cost to learn, and the move added two of its own: an
+absent, base-less or empty `cite-pin.txt` is a **refusal** -- exit 3, with no census printed at all --
+and every census line names the pin file's path, its entry count, its `# base:` and its own sha256,
+because an exemption list needs a provenance exactly like a hash does.
 
 - **A sweep shift preserves what the base's number pointed at -- it cannot repair a pointer that was
   already wrong at the base.** `out/cite-sweep.py` renumbered 43 citations from `bcd6188` onto the 4.4
@@ -781,8 +786,8 @@ reproducible from `git checkout`.
 - **An exemption list that is merely *older* can silence a real finding, not only invent one.** The
   hazard this section records is the loud direction: absent pins re-report exempt citations as
   `UNPINNED miss` (measured 22 on a correct tree). The quiet direction is worse because the gate
-  still prints 0. Measured with the same docs and the two `cite-pin.txt` files that exist right now --
-  main `out/` carries 17 range entries, the working set in `out/wt-44/out/` carries 19 -- run over
+  still prints 0. Measured with the same docs and the two `cite-pin.txt` files that existed *then* --
+  main `out/` carried 17 range entries, the working set in `out/wt-44/out/` carried 19 -- run over
   **this** tree's docs: stale pins give `checked 20, judged 60, pinned 31, miss 0`, current pins give
   `checked 21, judged 58, pinned 31, miss 1`, and the one extra check is a genuine defect --
   NEXT-STEPS.md line 114 cites PluginProcessor.h lines 333-338 for the `parameterChanged` sentence
@@ -797,7 +802,13 @@ reproducible from `git checkout`.
   master still carries the number the shared base `5d071b0` carried, so this is my side's stale
   pointer, not a merge artifact. Two consequences: the merged tree has to be audited with the
   **current** six-file set (item **22**), and `miss: 0` is only evidence when the pin file's own
-  provenance is printed beside it -- an exemption list needs a ref, exactly like a hash.
+  provenance is printed beside it -- an exemption list needs a ref, exactly like a hash. Re-run on the
+  merged tree with the promoted tooling and `CITE_PIN` pointed at the superseded 17-entry list (kept as
+  `out/cite-pin-17entry-main-3518a1e1.txt`): the audit says `miss: 0` under *both* sets, while the sweep
+  goes `to correct: 0` -> `to correct: 2`, and the two it wants to rewrite are the `repaired` pointers --
+  pin ranges at base lines 100 and 860, which carry by masked text onto `NEXT-STEPS.md` lines 119 and
+  1122 -- back to numbers that were wrong the day they were written. So the quiet direction is not only a
+  silenced finding; it is an undone fix, printed as a clean pass.
 - **A rewrite has to be keyed, not incremental, or it shifts twice.** The target number is computed
   from the base's own citation and applied to the line matched by its text with every digit masked out.
   The first version added the delta it found instead, got run twice in one sitting, and moved 34
@@ -810,11 +821,11 @@ reproducible from `git checkout`.
   In the sweep it is worse, because `--apply` rewrites the four digits it captured and leaves the fifth
   where it was: a correct pointer becomes a wrong one, in the same pass that prints `to correct: 0`.
   Four scripts read citations and all four had spelled the pattern out again, so the cap now lives once,
-  in `out/cite_pins.py`, beside the reason -- and widening it again when a file passes 99,999 lines is a
+  in `cite_pins.py`, beside the reason -- and widening it again when a file passes 99,999 lines is a
   re-check of every five-digit pointer, not a one-character edit.
 - **A doc section that names its own baseline keeps that baseline's numbers, and a pin must
   *restore* the base's text rather than merely skip.** Skipping left A3 already-shifted: an exception
-  that only declines to act cannot undo the action it declines. `out/cite-pin.txt` carries the range
+  that only declines to act cannot undo the action it declines. `cite-pin.txt` carries the range
   and the reason, and three reasons appear there, which are three different claims -- `pinned` (the
   section declares its tree, so moving the number falsifies the record), `unverified` (the audit names
   a symbol and cannot find it at those lines) and `repaired` (the base's number was wrong *where it was
@@ -853,12 +864,12 @@ reproducible from `git checkout`.
   unresolvable: 0` and `UNPINNED miss: 0` to `122 already right, 2 to correct` and `miss: 13` --
   thirteen of the fifteen `unverified` pins had fallen out of the slice they were written against,
   with no error anywhere, because HEAD is a perfectly valid name for a commit that just moved.
-  `out/cite-pin.txt` now carries `# base: bcd6188`, both scripts print the base they used, and every label
+  `cite-pin.txt` now carries `# base: bcd6188`, both scripts print the base they used, and every label
   they print interpolates it (`edited-since-bcd6188 lines left alone`), because a run that says "HEAD" while
   reading another tree is the same defect in the report that the pin exists to prevent in the number.
   Setting the base back to `HEAD` reproduces the 13 misses: the line is what holds the gate, not luck.
   Advance a base deliberately, in the same pass that re-checks every range under it. One reader
-  answers "is this line excepted" (`out/cite_pins.py`, including the base); two answers is how an
+  answers "is this line excepted" (`cite_pins.py`, including the base); two answers is how an
   exception quietly becomes a shift -- the sweep still had its own copy of the pin grammar lying
   about unused, which is the same rule as any list written twice in this repo.
 - **A number quoted as a mistake loses the colon.** Write "line 373", never `` `:373` ``, when the
@@ -1021,7 +1032,7 @@ on purpose: see the two bolded rules below.
   published -- the rewrite is local, and the exposure is two lanes' worktrees rather than GitHub. Its
   cost, though, is this file's own evidence: `4724922` has **5** descendants on `master` (`71c04fd`,
   `10fabec`, `bbd8cb1`, `fbf973c`, `bcd6188`) plus `lane-44`'s two on top, and every one of those SHAs
-  changes. `bcd6188` is the base that `out/cite-pin.txt` is written in and `README.md`/`AGENTS.md`/
+  changes. `bcd6188` is the base that `cite-pin.txt` is written in and `README.md`/`AGENTS.md`/
   `NEXT-STEPS.md` quote all six as the provenance of a corrected claim -- so an amend means re-anchoring
   the pin base, re-sweeping the ids the prose cites as evidence, and re-naming the SHA another lane
   verified in a detached worktree, to fix a subject that this bullet has already disambiguated.

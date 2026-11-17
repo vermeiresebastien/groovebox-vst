@@ -1,0 +1,99 @@
+# Doc line ranges whose citations are deliberately NOT renumbered, with the reason.
+#
+# cite-sweep.py reads this twice: it skips these lines when deciding what to shift, and it
+# *restores* them when the shift has already happened -- a line whose text differs from
+# HEAD's only in digits is written back as HEAD wrote it. Restoring rather than leaving is
+# the point: a mechanically shifted number looks verified, and these do not deserve that.
+#
+# Three reasons appear here, and they are not all the same job:
+#
+#   pinned    -- the doc section names its own baseline commit, so its numbers are correct
+#                *for that tree* and moving them would falsify the record;
+#   unverified -- cite-audit.py can name the symbol in the sentence and cannot find it
+#                at the lines the citation gives, so the map cannot answer it. Measured
+#                against `460b3bf` afterwards, 13 of the 15 were RIGHT where they were
+#                written and only went stale later, and the rest were wrong the day they
+#                were typed -- which is the other half of why a map cannot fix them: a
+#                shift preserves what HEAD's number pointed at, wrong or not. They stay at
+#                HEAD's text and the finding -- where each symbol actually lives now -- is
+#                a tracked item in NEXT-STEPS.md 6.6, which 6.7 closed by moving this
+#                folder out of gitignored `out/`.
+#   repaired  -- the first two hold a line *at* the baseline; this one holds it *away* from the
+#                baseline, and the sweep must not restore. The base's number was wrong the day it
+#                was written, and renumbering it faithfully moves the error along with everything
+#                else: `bcd6188`'s `PluginProcessor.h:256-261` is `envelopeSecondsFor` and
+#                `formatEnvelopeValue`, not the `parameterChanged` doc comment the sentence is
+#                quoting, and `PluginProcessor.cpp:772-961` opens in the middle of
+#                `loadSampleIntoChannel`, not in the base64 codec. Both were fixed by reading the
+#                tree, and both are still in the sentence's own item -- so an `unverified` pin
+#                would have put the wrong number back on the next pass. The working copy's number
+#                is what stays. `cite-sweep.py` skips them and prints them as held, and
+#                `cite-audit.py` *judges* them rather than excepting them: a repair is a claim
+#                about this tree, and this is the only tool that can check one. Verified 2026-11-16
+#                against the working tree -- `parameterChanged` is declared at
+#                `Source/PluginProcessor.h:612`, its comment opening at 602; the encode is
+#                `juce::Base64::toBase64` at `Source/PluginProcessor.cpp:1350` and the decode
+#                `convertFromBase64` at 1435, both inside 1245-1526. The line beside the first
+#                repair, `PluginProcessor.cpp:92,97` in the same B5 item, is deliberately left
+#                `unverified` above: reading those two substring calls costs a rewrite of what the
+#                item claims, which is plan 6.6's, not 14a's.
+#
+# Format: <doc> <first>-<last>   # <reason>
+#
+# base: bcd6188
+#
+# The numbers are coordinates in the commit named on the `base:` line above, never in HEAD.
+# That distinction was earned the hard way, in the same sitting as the 4.4 commit: both scripts
+# read their baseline with `git show HEAD:`, so the moment this lane committed its own docs the
+# same commands over the same tree answered `122 already right, 2 to correct / UNPINNED miss: 13`
+# instead of `43, 0, 0 / miss: 0` -- the pins had silently re-scoped to a different slice, and
+# thirteen of the fifteen `unverified` entries fell out of their own ranges. A baseline you cannot
+# re-check is an opinion, and `HEAD` is not one you can: it moves under the commit that documents
+# it. Advance `base:` deliberately, in the same pass that re-checks every range below it, and the
+# run prints which base it used so a stale one is visible rather than merely wrong.
+#
+# The working-copy side is matched by masked text, not by index, because the docs grow: editing
+# this file above a pinned line shifts every number below it, and a range taken as a working-copy
+# index would then pin the wrong paragraph -- a plausible one, since documents of this shape
+# repeat themselves.
+NEXT-STEPS.md 14-46   # pinned: section A's table says "Status at 460b3bf", and A3 is the same audit
+AGENTS.md 145-145     # pinned: a line number from the ecfe76c deliberate-break experiment; the file
+                      # is untouched this phase, so the number is history, not drift
+
+# unverified before 4.4 -- each is a plan or run-record entry whose citation names a symbol
+# that was not at those lines when the entry was written (460b3bf's tree, not this one).
+NEXT-STEPS.md 57-57   # unverified: processBlock
+NEXT-STEPS.md 59-59   # unverified: renderVoices, outLeft
+NEXT-STEPS.md 68-68   # unverified: position from PPQ
+NEXT-STEPS.md 81-81   # unverified: SampleStore::addSample
+NEXT-STEPS.md 92-92   # unverified: getUndoManager
+NEXT-STEPS.md 98-98   # unverified: parameterChanged
+NEXT-STEPS.md 106-106   # unverified: previewChannel
+NEXT-STEPS.md 107-107   # unverified: SampleStore::getSampleIds
+NEXT-STEPS.md 131-131   # unverified: shiftChannelRow
+NEXT-STEPS.md 140-140   # unverified: the `tight` branch
+NEXT-STEPS.md 230-230   # unverified: the refcount's free()
+NEXT-STEPS.md 272-272   # unverified: velocity gain only (two line numbers, one sentence)
+NEXT-STEPS.md 428-428   # unverified: soundingChannels read
+NEXT-STEPS.md 488-488   # unverified: allParameterIds
+NEXT-STEPS.md 678-678   # unverified: dropRemaining recursion
+
+# repaired before 14a -- the base's number was wrong where it was written, so these are held from
+# the shift and NOT restored. Coordinates are base (`bcd6188`) lines; the numbers in the docs now
+# are working-tree numbers, checked against the tree by hand on 2026-11-16.
+NEXT-STEPS.md 100-100   # repaired: B5's `parameterChanged` doc comment. Base said h:256-261, which
+                        # is envelopeSecondsFor / formatEnvelopeValue there and 456-461 here -- the
+                        # sweep moves the error along faithfully. Working copy gives h:602-612, and
+                        # the declaration is at 612 with its comment opening at 602.
+NEXT-STEPS.md 860-860   # repaired: 4.1's "is the codec". Base said cpp:772-961, which opens inside
+                        # loadSampleIntoChannel and ends at a lane-id parser; the map puts that at
+                        # 1051-1240, which is the tempo and mutate setters. Working copy gives
+                        # cpp:1245-1526, and that is where the base64 codec lives: toBase64 at 1350,
+                        # convertFromBase64 at 1435.
+# NOT pinned, and this is where the note is so the next session does not re-pin it: the AGENTS.md
+# fit-claim bullet (base 106-113) cites four locations in the *current* tree, not in the base, so
+# pinning it would make cite-sweep.py -apply write bcd6188's numbers back over verified ones -- the
+# restore path is for dated records only. Two of its lines instead carry a non-digit annotation
+# naming the sentence or the variable they point at, which takes them out of the map's reach and
+# out of the restore set at the same time. Verified 2026-11-16 at 5.6: README.md:440,
+# NEXT-STEPS.md:370, PluginEditor.cpp:101 and the `floorHeight` printf in LayoutTest.cpp.

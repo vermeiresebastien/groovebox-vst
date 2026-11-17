@@ -3,6 +3,12 @@
 build/
 build*/
 out/
+
+# The promoted citation tools import each other, so CPython drops a bytecode cache
+# beside them. It is derived from the .py files and would be stale on the next edit.
+__pycache__/
+*.pyc
+
 *.user
 *-configure.log
 *.log

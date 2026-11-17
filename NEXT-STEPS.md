@@ -569,11 +569,11 @@ touches the velocity law. No step here is allowed to be reported as better becau
     both scripts read as a pointer, so a wrong figure narrated in prose would be judged, shifted and — worst
     — re-verified as if it were one.
 
-  Afterwards the pair of scripts is the check, in this order: `python out/cite-sweep.py . -apply`, then re-run
-  it and require `to correct: 0, unresolvable: 0` on the second pass; then `python out/cite-audit.py .` and
-  require `UNPINNED miss ... : 0`, which says every citation the audit can judge either points at its symbol
-  or is excepted with a reason it prints — one of three: a range in `out/cite-pin.txt`, an indented table row
-  that lists citations rather than pointing, or a sentence that names the commit its own number belongs to.
+  Afterwards the pair is the check, in this order: `python tools/cite/cite-sweep.py . -apply`, then re-run
+  it and require `to correct: 0, unresolvable: 0` on the second pass; then `python tools/cite/cite-audit.py .`
+  and require `UNPINNED miss ... : 0` — every citation the audit can judge either points at its symbol or is
+  excepted with a reason it prints, one of three: a range in `cite-pin.txt`, an indented table row that lists
+  citations rather than pointing, or a sentence naming the commit its own number belongs to.
   The last one exists because pins are base coordinates and prose written this phase has no base line to pin;
   it is checked *after* the symbol test so it cannot cost a passing citation, it prints every exemption, and
   both sides were measured — the sentence above about `SequencerEngine.h:309` reports `BASE`, and a copy of
@@ -630,8 +630,8 @@ touches the velocity law. No step here is allowed to be reported as better becau
   is empty, so Program Files matches `master`'s compiled sources, and it is behind `lane-44` by three --
   `ba7c953`, `8e49944`, `cad30ae` -- the first of which also rewords `installer/README.txt`, a payload
   input. That costs the owner one repackage and one UAC click, not a recompile of what is installed today.
-  Promotion itself is still the open decision: `tools/cite/` plus a fifth `add_test`, or the four files
-  tracked with no CTest entry, or the prose saying plainly that the citation gate is a local harness.
+  The owner took shape (b) on 2026-11-17: the four files are tracked under `tools/cite/` with no CTest
+  entry, and an absent pin list is a refusal. **LANDED** — receipt at the tail of this file.
 
 ---
 
@@ -2473,8 +2473,8 @@ sweep could not have moved it because the line is newer than the base.
 `a942cd0` and the lane's tip and touches `Tests/SmokeTest.cpp` -- but it rewrites two comment lines at
 8170-8171 with **zero** line-count delta (blob `17e1cd75` -> `6d098701`, both 11,372 lines), and 0 of the
 docs' citations into that file have a target window that differs between the two refs, so no pointer
-moved. And `AGENTS.md:789`'s (780 before this receipt's own 9-line `AGENTS.md` append shifted it, which is
-why the pointer was re-derived rather than carried)
+moved. And `AGENTS.md:794`'s (789 at `25c031b`, 794 under the 11 lines the 6.7 promotion added to that
+file above it, which is why the pointer is re-derived here rather than carried)
 `PluginProcessor.h:519` stays correct as written: 519 is `parameterChanged` at `9c872f7`, the tree the
 sentence names, while in the merged file the declaration is at 612 with its comment opening at 602 --
 which is also item 22's repaired pointer at `NEXT-STEPS.md:119`, re-derived here rather than inherited
@@ -2483,3 +2483,105 @@ from either side.
 **Still owed, unchanged by this receipt:** no build has run against the merged tree, `launch/` still
 holds the `3c3f059` export and Program Files holds the same, so the gap to a deliverable is one compile,
 one repackage and one UAC click. Nothing is pushed.
+
+---
+
+### Receipt -- item 6.7 landed as shape (b) (2026-11-17, export lane)
+
+**What moved.** Six files went into `tools/`, taking the tracked set from 37 to 43 and adding `tools` to
+the top level (`installer Source Tests tools .gitignore AGENTS.md CMakeLists.txt NEXT-STEPS.md README.md`);
+`.gitignore` gained `__pycache__/` and `*.pyc` beside `out/`, because a tracked package that imports itself
+makes CPython leave a bytecode cache on the first run -- three `.pyc` files did get staged here before the
+index was checked, and `git rm -r --cached` plus the ignore rule is what keeps them out of the next one.
+`cite-sweep.py`, `cite-audit.py`, `cite_pins.py` and `cite-pin.txt` copied byte-identical out of
+`out/wt-44/out/` (363 / 214 / 188 / 98 lines at `8514a49b` / `f3553b60` / `fab91daf` / `a2a9e2c2`) and then
+patched to 368 / 216 / 255 / 99 lines at `9881271c` / `a27efa74` / `7beb55e4` / `cb75d3d5`;
+`out/planbuild/verify-sha.ps1` to `tools/verify-sha.ps1` (168 -> 178 lines, `e87840af` -> `ed09229a`); and
+`tools/README.md` (70 lines, `32ab871e`), which is what a clone reads first -- and which now also carries
+the line-ending note, so a reader meets it before they meet a digest that disagrees with this file. All six
+are `i/lf w/lf` in `git ls-files --eol` -- LF in the blob and, unlike the four docs, LF on disk too -- with
+zero bare CR, as their `out/` sources were. That `w/lf` is not the state a clone gets: under this repo's
+`core.autocrlf=true` git warns on every touch that LF will be replaced by CRLF the next time it reads one
+of these files, and `git checkout-index` -- the actual write path of a checkout -- confirmed it by handing
+back CRLF for all six (the before/after table is in `out/probe-crlf/RESULT.txt`, since a per-file list here
+would go stale the first time a tool is edited). So a reader anywhere but this working tree meets CRLF
+tools, and that had to be measured rather than assumed: the CRLF-checked-out pair prints a census identical
+to the LF originals' -- audit 32, 83, 19, 29, 2, 2 with miss 0, sweep 31 right / 0 to correct / 0
+unresolvable -- and the only line that differs is the pin banner, whose digest moves because that number
+names the bytes it read. The distinction is worth having, because both are re-checkable and they are not
+the same claim: the six digests listed at the head of this receipt are the *blob* side and reproduce from
+any clone at any line ending with `git show :<path> | sha256sum` -- re-run against the staged index, all
+six equal -- while a banner digest is a fact about the file on disk and moves the moment a checkout
+converts it. That is why the census prints the pin path it used beside its count.
+No `add_test` was added -- the owner's ruling was shape (b) precisely
+because these need Python and nothing in the plugin build.
+
+**The refusal, both directions, six runs.** `cite_pins.read_pins()` now exits 3 with *no census line
+printed* when the pin file is absent, when it has no `# base:` line, or when it parses zero entries -- and
+the control was measured too: the tracked list gives exit 0 *with* census lines, for both scripts. The old
+behaviour returned `{}` and `"HEAD"`, which is what turned a correct tree into 22 findings; a run that
+prints a number it could not have computed is the failure this item named. `CITE_PIN=<path>` overrides the
+location -- that is how the two pin sets were compared below -- and every census now prints the pin file's
+path, entry count, base and sha256 (`pin set: ...\tools\cite\cite-pin.txt  entries 19  # base: bcd6188
+  sha256 cb75d3d5a489f836...`), because `miss: 0` is only evidence when you can see which list produced it.
+
+**The pin file is read beside the script, not inside the audited tree.** That was the 22-finding
+mechanism: `python out/wt-44/out/cite-audit.py <main-tree>` took its exemptions from `ROOT/out/`, which
+exists only in the lane that wrote it. Scripts and exemptions now travel together, and the tree argument
+selects only what gets judged. `base(root)` and `load(root)` still accept the argument and ignore it, so
+the lane's two remaining helpers (`cite-head-check.py`, `cite-judge.py`, left in `out/`) keep working.
+
+**Census from the tracked path, over the merged docs** (base `bcd6188`, 19 pin ranges -- 2 `pinned`,
+15 `unverified`, 2 `repaired`): sweep `already right 31`, `to correct: 0`, `unresolvable: 0`, `0` citations
+whose enclosing function differs base-vs-now, `repaired pointers held, NOT restored: 2`,
+`edited-since-bcd6188 lines left alone: 119`; audit `points at the symbol 32`, `no symbol named 83`,
+`table row 19`, `pinned 29`, `held 2`, `baseline-qualified 2`, `UNPINNED miss: 0`. The second sweep pass
+after a no-op first pass (`APPLIED 0 rewrites`) is what makes `to correct: 0` mean the tree is swept rather
+than mean the tool ran once. Both long counts include this receipt: the paragraph below contributes two
+citations of its own, so a census taken before the file ends is already stale by two -- the doc-recording-
+its-own-census hazard in its natural habitat. The numbers above are therefore what the pass taken *after*
+the last word of this file printed, and the pass was run a third time over the corrected digits to show
+they did not move; this note carries no citation of its own, which is why those two numbers are a fixed
+point and not a race.
+
+**The superseded list, re-run as a live arm.** With `CITE_PIN` pointed at the kept
+`out/cite-pin-17entry-main-3518a1e1.txt`: the audit still says `miss: 0`, while the sweep goes from
+`to correct: 0` to `to correct: 2` -- line 119 of this file would lose its `PluginProcessor.h:602-612` for
+456-461, and line 1122 would lose `Source/PluginProcessor.cpp:1245-1526` for 1051-1240. Those are the two
+`repaired` pointers, pinned at base lines 100 and 860 and matched onto the working copy by masked text, so
+a stale exemption list does not merely under-report: it quietly restores a number that was wrong the day it
+was written, in a pass that prints `unresolvable: 0`. Recorded in `AGENTS.md` beside the rule it tests.
+
+**`verify-sha.ps1` after the port.** Parses with 0 errors; every path resolved from `$PSScriptRoot`
+(`$RepoRoot = Split-Path -Parent $PSScriptRoot`), `Worktree` defaulting to `<repo>\out\wt-verify` and the
+log folder created on demand; run from `C:\` with `-Sha 25c031b -Since 25c031b` it answered `DIFF SINCE
+25c031b: 0 files, compiled inputs 0, payload inputs 0` and exit 0, so the cheap verdict no longer depends
+on the caller's directory. The three discriminators in the `AGENTS.md` bullet were re-measured at the new
+path -- `--target launch` **0**, `Groovebox.exe` **0**, `vst3` **0** hits in 178 lines, with the single
+`launch` hit being the SCOPE banner at line 77.
+
+**Prose re-pointed, not rewritten.** `AGENTS.md` gained 11 lines: the section header now says where the
+tooling lives and what the refusal is, the `verify-sha` bullet's "lives in gitignored `out/`" became the
+promoted fact, and the exemption-list bullet's "the two `cite-pin.txt` files that exist right now" became
+`existed *then*` because `out/` now carries 19 and the 17 is a named kept file -- the present tense was
+false the moment the move landed. Five present-tense path pointers were re-pointed and two *historical*
+ones (`out/cite-sweep.py` renumbered 43 at 4.4, `out/cite-audit.py` printed a byte-identical log) were
+left exactly as written: they record where the script stood when the measurement was taken, and rewriting
+them would destroy the evidence. `NEXT-STEPS.md` re-points in three places and every one is line-neutral
+(9/9 across the three hunks): the how-to-run block at 572-576 (5/5), this item's own closing two lines at
+633-634 (2/2), and the 789 -> 794 pointer inside the merge receipt above this one (2/2). Everything after
+that is this receipt, which appends its own block and was written last for that reason. That growth moved
+the `AGENTS.md` line carrying the 519 pointer from 789 to 794, and 794 is what the receipt above it now
+says -- re-derived, not carried.
+
+**What this does not claim.** No build ran -- nothing here compiles anything, and the suite counts are
+untouched by this stage. `out/verify-clone.ps1` (6.7a's from-nothing harness) has not been re-run against
+a tip that contains `tools/`; that is S6's job, and until it is done, "a clone can run the citation gate"
+is a statement about six tracked files and three refusal states measured in place. What has been measured
+toward it is more than a read-through and less than a clone: all six were written back out by
+`git checkout-index` and both scripts were run from that copy, which proves the tools survive the line
+ending a checkout gives them -- and the scratch directory was then deleted, because a second copy of the
+gate sitting in `out/` is the exact thing this item was written to retire. What no run has yet paid for is
+a clone with no `out/` at all, which is where the sweep's `os.makedirs` earns its keep. The stale
+`out/cite-pin.txt` and `out/wt-44/out/*.py` copies were left in place as scratch, un-referenced by any
+instruction: the printed pin path and sha are what tell a reader which list a run actually used.
