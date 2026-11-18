@@ -1109,10 +1109,15 @@ int main()
                     + juce::String (rowAtFloor) + " px at it; the name line needs "
                     + juce::String (StepGridComponent::minimumRowHeight));
 
-        // 6. And the window a session opens at is untouched: the wordmark still drawn, the
-        //    strip at its design height, the bar on one line, the grid at the 405 px
-        //    `out/layout-35-final.txt` recorded. Had any of those moved, the repair would have
-        //    retuned everybody's normal layout to buy a laptop size nobody was using it for.
+        // 6. And the window a session opens at is still stage 0 of the plan: the wordmark
+        //    still drawn, the strip at its design height, the grid at the 405 px
+        //    `out/layout-35-final.txt` recorded and the rows at 30 px.
+        //    What moved is the bar: it is on two lines at the default now, because Generate
+        //    costs the variation band 82 px and paying for that in width would put the last
+        //    control of a 1972 px window off a 1920 px screen -- see the comment on
+        //    `editorWidth` in PluginEditor.cpp. The 36 px the second line takes is what the
+        //    height grew by, so both halves are asked here: a check that only asked the half
+        //    that held would be the one-axis fit claim this file already has a rule against.
         editor->setSize (preferredWidth, preferredHeight);
 
         const auto grid0   = stepGrid != nullptr ? stepGrid->getHeight() : 0;
@@ -1134,13 +1139,15 @@ int main()
         // test here, and a claim that asks it what it decided would stay green on a rule that
         // decided a stage and then laid the window out as if it had not.
         expect (wordmarkSeen == 1 && strip0 == Layout::stripDesignHeight
-                  && bar0 == TransportBar::oneRowHeight,
-                "the default window still shows the wordmark, a strip at its design height and one bar line",
+                  && bar0 == TransportBar::twoRowHeight,
+                "the default window shows the wordmark, a strip at its design height and a two-line bar",
                 juce::String (wordmarkSeen) + " wordmark labels visible, strip "
                     + juce::String (strip0) + " px against "
                     + juce::String (Layout::stripDesignHeight) + " designed, bar "
                     + juce::String (bar0) + " px against "
-                    + juce::String (TransportBar::oneRowHeight) + " for one line");
+                    + juce::String (TransportBar::twoRowHeight) + " for two lines, because the bar is "
+                    + juce::String (transportBar->getWidth()) + " px against "
+                    + juce::String (TransportBar::oneRowWidth) + " for one");
 
         // 397 is what a 30 px row costs and 409 what a 31 px row would, asked of the grid's
         // own inverse: the 405 sits between them, so the row is 30 px and the 8 px left over
@@ -1154,6 +1161,31 @@ int main()
                     + " px, " + juce::String (StepGridComponent::heightForRowAtLeast (30))
                     + " px being the least a 30 px row costs and "
                     + juce::String (StepGridComponent::heightForRowAtLeast (31)) + " px a 31 px one");
+
+        // The counterfactual the 36 px was bought against, with the price derived rather than
+        // remembered: the same window one bar-line shorter is what the default was before
+        // Generate. Its row is not illegal -- it is 27 px, which is
+        // `StepGridComponent::minimumRowHeight` to the pixel, the smallest row that still
+        // carries a name line over a bank strip. That is the claim this arm makes measurable:
+        // at the old height the default opens with one px of margin between a pattern bank you
+        // can click and a label column with no strip in it, and the grid gives up 36 px of the
+        // 405 it is designed to have.
+        {
+            editor->setSize (preferredWidth,
+                             preferredHeight - (TransportBar::twoRowHeight - TransportBar::oneRowHeight));
+
+            const auto gridOld = stepGrid != nullptr ? stepGrid->getHeight() : 0;
+            const auto rowOld  = stepGrid != nullptr ? stepGrid->getRowBounds (0).getHeight() : 0;
+
+            expect (rowOld == StepGridComponent::minimumRowHeight && gridOld < grid0,
+                    "and at one bar-line shorter the row lands on the bank strip's own floor",
+                    juce::String (rowOld) + " px row against "
+                        + juce::String (StepGridComponent::minimumRowHeight)
+                        + " minimum, " + juce::String (gridOld) + " px grid against "
+                        + juce::String (grid0) + " designed");
+
+            editor->setSize (preferredWidth, preferredHeight);
+        }
 
         // 7. Totality, at the worst bar, over every interior the editor can be handed. No
         //    stage may be priced at or below the one after it -- the order the stages give
@@ -2161,6 +2193,7 @@ int main()
         juce::TextButton* ratchetButton = nullptr;
         juce::TextButton* resetButton = nullptr;
         juce::TextButton* rerollButton = nullptr;
+        juce::TextButton* generateButton = nullptr;
         juce::Label* seedLabel = nullptr;
 
         /**
@@ -2173,6 +2206,12 @@ int main()
             made the same mistake one layer down and mis-filed Mutate as a swing fader; the
             bar names its controls for that reason, and this is the only place allowed to go
             looking.
+
+            Visible counts as part of the identity here, on purpose. The bounds loop in the
+            size walk only checks children that are visible, so a control that exists and is
+            named but never shown would pass every geometry gate in this file while the user
+            has no door: `addAndMakeVisible` and `setName` are two different ways for the same
+            control to be unusable, and asking for the name alone only gates one of them.
         */
         const auto namedButton = [transportBar] (const juce::String& name)
         {
@@ -2180,7 +2219,7 @@ int main()
             {
                 if (auto* button = dynamic_cast<juce::TextButton*> (transportBar->getChildComponent (i)))
                 {
-                    if (button->getName() == name)
+                    if (button->getName() == name && button->isVisible())
                         return button;
                 }
             }
@@ -2193,12 +2232,13 @@ int main()
         ratchetButton = namedButton ("Ratchet");
         resetButton = namedButton ("ResetValues");
         rerollButton = namedButton ("Reroll");
+        generateButton = namedButton ("Generate");
 
         for (int i = 0; i < transportBar->getNumChildComponents(); ++i)
         {
             if (auto* label = dynamic_cast<juce::Label*> (transportBar->getChildComponent (i)))
             {
-                if (label->getName() == "Seed")
+                if (label->getName() == "Seed" && label->isVisible())
                     seedLabel = label;
             }
         }
@@ -2282,14 +2322,46 @@ int main()
 
         ++checked;
 
-        if (velocityButton == nullptr || chanceButton == nullptr || ratchetButton == nullptr
-            || resetButton == nullptr || rerollButton == nullptr || seedLabel == nullptr)
+        /**
+            One guard, and it names what it could not find.
+
+            This used to print the same sentence whichever control was missing, so a
+            deleted `setName` and a deleted button were indistinguishable in the log and the
+            only way to tell was to read the source. The list is built from the same six
+            lookups the block below runs on, so it cannot disagree with them.
+        */
         {
-            fail ("the variation controls are not all on the transport bar");
+            juce::String absent;
+
+            const auto ask = [&absent] (const char* name, bool missing)
+            {
+                if (missing)
+                    absent += (absent.isEmpty() ? "" : ", ") + juce::String (name);
+            };
+
+            ask ("Velocity",    velocityButton == nullptr);
+            ask ("Chance",      chanceButton == nullptr);
+            ask ("Ratchet",     ratchetButton == nullptr);
+            ask ("ResetValues", resetButton == nullptr);
+            ask ("Generate",    generateButton == nullptr);
+            ask ("Reroll",      rerollButton == nullptr);
+            ask ("Seed",        seedLabel == nullptr);
+
+            if (absent.isNotEmpty())
+                fail ("the transport bar has no control named: " + absent);
+            else
+                pass ("Velocity, Chance, Ratchet, the shared reset, Generate, Reroll and the "
+                      "seed readout are all there");
+        }
+
+        if (velocityButton == nullptr || chanceButton == nullptr || ratchetButton == nullptr
+            || resetButton == nullptr || generateButton == nullptr
+            || rerollButton == nullptr || seedLabel == nullptr)
+        {
+            std::printf ("       (the rest of this section needs all seven)\n");
         }
         else
         {
-            pass ("Velocity, Chance, Ratchet, the shared reset, Reroll and the seed readout are all there");
 
             //---- one number on the grid at a time --------------------------------
             /**
@@ -2740,6 +2812,110 @@ int main()
 
                 processor.setPlaying (false);
             }
+
+            //---- the band's own geometry, at both sides of the wrap --------------
+            /**
+                Generate is 76 px of button plus 6 px of air, and the band grew by exactly
+                that 82 when it joined -- `variationGroupWidth` went from 584 to 666 -- which
+                is the arithmetic the bar's own comment used to state wrong, calling the seed
+                readout's remainder 70 px when it is 58. A comment about arithmetic is not a
+                gate, and the property worth holding here is the one the comment was reaching
+                for: adding a control *inside* the band moved the band's width instead of any
+                control's size.
+
+                Both wrap states are asked because `resized()` hands the same
+                `variationGroupWidth` to the band from either line. One state proves nothing:
+                it cannot tell "the band is budgeted the same on both lines" from "the band
+                came out right here by luck", and a control that ate the remainder would eat
+                it in both. The faders are already gated at both of these widths by the size
+                walk, so no slider number is retyped here -- what is new is Generate's own
+                rectangle, the left-to-right order at the tail of the band, and the one
+                control with no size of its own.
+
+                That control is the seed readout, and it is the last thing in the band, so it
+                is what a future control in this band takes from. It is gated against the
+                widest string it will ever be asked to print -- the seed is an int capped at
+                Params::seedMax, so that string is "999999" -- measured with the label's own
+                font rather than a typed pixel count, because a number typed here would be a
+                second copy of a rule that lives in TransportBar.cpp. Under the label's
+                minimum horizontal scale JUCE ellipsises, and an ellipsised seed is a take you
+                cannot write down, which is the only reason the number is on the bar at all.
+            */
+            const auto bandInset = preferredWidth - transportBar->getWidth();
+
+            const struct
+            {
+                int width;
+                const char* what;
+            } states[] = {
+                { TransportBar::oneRowWidth,     "one line"  },
+                { TransportBar::oneRowWidth - 1, "two lines" },
+            };
+
+            const auto widestSeed = juce::String (Params::seedMax);
+            const auto neededPx = juce::TextLayout::getStringWidth (seedLabel->getFont(), widestSeed);
+            const auto minScale = seedLabel->getMinimumHorizontalScale();
+
+            auto seedWidthOneLine = -1;
+
+            for (const auto& state : states)
+            {
+                editor->setSize (state.width + bandInset, juce::jmax (preferredHeight, 790));
+
+                // The precondition the other four checks in this loop lean on: the bar's rule
+                // is about bar widths, and the editor's constrainer is what decides whether
+                // the window reaches one. If this clamped, every line below would be measuring
+                // a state that was never asked for.
+                expect (transportBar->getWidth() == state.width,
+                        juce::String ("the bar really is ") + state.what
+                            + ", at " + juce::String (state.width) + " px",
+                        juce::String (transportBar->getWidth()) + " px for a window of "
+                            + juce::String (editor->getWidth()));
+
+                expect (generateButton->getWidth() == 76 && generateButton->getHeight() == 24,
+                        juce::String ("Generate is 76 x 24 on ") + state.what,
+                        juce::String (generateButton->getWidth()) + " x "
+                            + juce::String (generateButton->getHeight()));
+
+                expect (rerollButton->getWidth() == 58 && rerollButton->getHeight() == 24,
+                        juce::String ("Reroll is 58 x 24 on ") + state.what,
+                        juce::String (rerollButton->getWidth()) + " x "
+                            + juce::String (rerollButton->getHeight()));
+
+                expect (generateButton->getRight() <= rerollButton->getX()
+                            && rerollButton->getRight() <= seedLabel->getX(),
+                        juce::String ("the tail of the band reads left to right on ") + state.what,
+                        "Generate " + juce::String (generateButton->getX()) + ".."
+                            + juce::String (generateButton->getRight()) + ", Reroll "
+                            + juce::String (rerollButton->getX()) + ".."
+                            + juce::String (rerollButton->getRight()) + ", seed from "
+                            + juce::String (seedLabel->getX()));
+
+                if (seedWidthOneLine < 0)
+                {
+                    seedWidthOneLine = seedLabel->getWidth();
+
+                    expect (seedWidthOneLine > 0,
+                            "the seed readout got a width at all on one line",
+                            juce::String (seedWidthOneLine) + " px left over in the band");
+                }
+                else
+                {
+                    expect (seedLabel->getWidth() == seedWidthOneLine,
+                            "the seed readout kept its width onto the second line",
+                            juce::String (seedWidthOneLine) + " px on one line, "
+                                + juce::String (seedLabel->getWidth()) + " px on two");
+                }
+
+                expect ((float) seedLabel->getWidth() >= neededPx * minScale,
+                        "the seed readout can show " + widestSeed + " without ellipsising",
+                        juce::String (seedLabel->getWidth()) + " px given; "
+                            + juce::String ((double) neededPx, 1) + " px at full scale, "
+                            + juce::String ((double) (neededPx * minScale), 1)
+                            + " at its own limit of " + juce::String ((double) minScale, 2));
+            }
+
+            editor->setSize (preferredWidth, juce::jmax (preferredHeight, 790));
         }
     }
 

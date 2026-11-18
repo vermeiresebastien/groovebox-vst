@@ -1,4 +1,5 @@
 #include "PluginProcessor.h"
+#include "PatternPlanner.h"
 #include "PluginEditor.h"
 
 namespace gb
@@ -796,6 +797,148 @@ bool GrooveboxProcessor::writeSlotRows (int slot, const int* lanes, const SlotRo
     return true;
 }
 
+int GrooveboxProcessor::firstUnpointedSlot() const
+{
+    for (int slot = 0; slot < Layout::numPatternSlots; ++slot)
+    {
+        bool taken = false;
+
+        for (int channel = 0; channel < Layout::numChannels && ! taken; ++channel)
+            taken = selectedSlotOf (channel) == slot;
+
+        if (! taken)
+            return slot;
+    }
+
+    return -1;
+}
+
+GrooveboxProcessor::GeneratedTake GrooveboxProcessor::generateGenreTake (int genreIndex)
+{
+    /**
+        The planner and the machine have to mean the same grid.
+
+        `makePlan` fills a `velocity[maxLanes][numSteps]` and this function copies it,
+        without a bounds check, into twelve `SlotRowWrite`s of `Layout::numSteps` cells for
+        `Layout::numChannels` lanes. Two 12s and two 16s that are each typed once in their
+        own header is one invariant stated twice, so the compiler holds it: if either pair
+        ever stops agreeing, this build does not link rather than write a take that stops
+        short of the lanes or runs off the end of a row.
+    */
+    static_assert (PatternPlanner::maxLanes == Layout::numChannels
+                   && GenrePatterns::numSteps == Layout::numSteps,
+                   "PatternPlanner's grid and the sequencer's grid have to be the same shape");
+
+    GeneratedTake take;
+    take.genreIndex = genreIndex;
+
+    if (! juce::isPositiveAndBelow (genreIndex, GenrePatterns::numGenres))
+    {
+        take.refusal = GeneratedTake::Refusal::unknownGenre;
+        take.message = "That genre is not in the table.";
+        return take;
+    }
+
+    const auto& genre = GenrePatterns::genres[genreIndex];
+    const auto seedUsed = generationCounter;
+    take.coreIndex = PatternPlanner::coreFor (genre, seedUsed);
+
+    const auto slot = firstUnpointedSlot();
+
+    if (slot < 0)
+    {
+        take.refusal = GeneratedTake::Refusal::bankFull;
+        take.message = "Every pattern dot is already pointed at by a lane, so there is "
+                       "nowhere silent to write a take. Move a lane back to a dot it can "
+                       "spare, or duplicate less.";
+        return take;
+    }
+
+    // The planner classifies a lane by what its file is called and, failing that, by what
+    // the strip is called -- so it is given both, and given them as `const char*` that
+    // outlives the call. The two arrays are the owners; `infos` only ever points into them.
+    juce::String sampleNames[Layout::numChannels];
+    juce::String laneNames[Layout::numChannels];
+    PatternPlanner::LaneInfo infos[Layout::numChannels];
+
+    for (int channel = 0; channel < Layout::numChannels; ++channel)
+    {
+        infos[channel].hasSample = samples.channelHasSample (channel);
+
+        sampleNames[channel] = infos[channel].hasSample
+                                 ? samples.getSampleName (samples.getChannelSampleId (channel))
+                                 : juce::String();
+        laneNames[channel] = samples.getChannelName (channel);
+
+        infos[channel].sampleName = sampleNames[channel].toRawUTF8();
+        infos[channel].channelName = laneNames[channel].toRawUTF8();
+    }
+
+    const auto plan = PatternPlanner::makePlan (genre, take.coreIndex, infos, Layout::numChannels);
+
+    take.rowsAsked = plan.totalRows;
+    take.rowsPlaced = plan.numPlaced;
+
+    for (const auto dropped : plan.dropped)
+        take.rowsDropped += dropped;
+
+    if (plan.numPlaced == 0)
+    {
+        take.refusal = GeneratedTake::Refusal::noLanes;
+        take.message = juce::String (genre.name) + " found no lane it could use. A row lands "
+                     "on a lane that holds a sample and is named for its family -- load one, or "
+                     "name one Kick, Snare, Clap or Hat.";
+        return take;
+    }
+
+    SlotRowWrite rows[Layout::numChannels];
+    int lanes[Layout::numChannels];
+
+    for (int channel = 0; channel < Layout::numChannels; ++channel)
+    {
+        // Every lane is named, placed or not, so the take replaces this slot rather than
+        // overdubbing it -- and an unplaced one stays exactly as `SlotRowWrite` built it,
+        // which is the neutral cell the codec calls a cell that says nothing.
+        lanes[channel] = channel;
+
+        for (int step = 0; step < Layout::numSteps; ++step)
+        {
+            const auto level = plan.velocity[channel][(size_t) step];
+
+            if (level > 0.0f)
+            {
+                rows[channel].on[(size_t) step] = true;
+                rows[channel].level[(size_t) step] = level;
+            }
+        }
+    }
+
+    // The shape of this ask is built fifteen lines above and is always one the seam accepts,
+    // so the only answer that can come back is the one that says the grid moved.
+    take.applied = writeSlotRows (slot, lanes, rows, Layout::numChannels);
+
+    if (take.applied)
+    {
+        take.slot = slot;
+        take.message = juce::String (genre.name) + " take written to dot "
+                     + juce::String (slot + 1) + " on every lane.";
+
+        // Provenance is written into the transaction the caller already opened, beside the
+        // record it describes, so one Ctrl+Z takes the grid and the claim about it back
+        // together -- a JUCE ActionSet holds both writes and `undo()` runs the whole set.
+        // The three facts are the id, not the display name: the label is what the menu shows
+        // and the id is what the table is keyed on.
+        apvts.state.setProperty (juce::Identifier (slotSourceName (slot).toRawUTF8 ()),
+                                 juce::String (genre.id) + ":" + juce::String (take.coreIndex)
+                                     + ":" + juce::String ((int) seedUsed),
+                                 &undoManager);
+
+        generationCounter = PatternPlanner::nextSeed (generationCounter);
+    }
+
+    return take;
+}
+
 //==============================================================================
 // Channels
 
@@ -1249,6 +1392,24 @@ juce::String GrooveboxProcessor::slotPropertyName (int slot)
                      : juce::String ("pattern") + juce::String (slot);
 }
 
+juce::String GrooveboxProcessor::slotSourceName (int slot)
+{
+    // The same grammar as the record it sits beside, and the same suffix rule: slot 0 keeps
+    // the bare name. `source` rather than `patternSource` because `recordCensus` in the test
+    // suite is a literal census of names starting with `pattern` -- a provenance property
+    // that shared that prefix would silently join the list of records on the tree.
+    return slot == 0 ? juce::String ("source")
+                     : juce::String ("source") + juce::String (slot);
+}
+
+juce::String GrooveboxProcessor::slotSource (int slot) const
+{
+    if (! juce::isPositiveAndBelow (slot, Layout::numPatternSlots))
+        return {};
+
+    return apvts.state.getProperty (juce::Identifier (slotSourceName (slot))).toString();
+}
+
 bool GrooveboxProcessor::slotCarriesAnything (int slot) const
 {
     const auto& cells = sequencerState.slots[(size_t) juce::jlimit (0, Layout::numPatternSlots - 1, slot)];
@@ -1288,8 +1449,21 @@ void GrooveboxProcessor::pushPatternToState (int slot)
     holdingUnreadableSlot[(size_t) slot] = false;
 
     const auto name = slotPropertyName (slot);
+    const auto carries = slotCarriesAnything (slot);
 
-    if (slot != 0 && ! slotCarriesAnything (slot))
+    if (! carries)
+    {
+        // A dot that holds nothing came from nowhere: its provenance goes with it, in the
+        // same push that decides the record goes. Slot 0 keeps its all-zeros record -- that
+        // is what an empty machine has always saved as -- and loses the source property for
+        // the same reason the sparse slots do. Removing an absent property costs nothing:
+        // JUCE performs no action and sends no message, so a hand-drawn row being cleared
+        // does not gain a tree write it never had.
+        apvts.state.removeProperty (juce::Identifier (slotSourceName (slot).toRawUTF8()),
+                                    &undoManager);
+    }
+
+    if (slot != 0 && ! carries)
     {
         // An empty bank slot has no record: a pattern that is all off at full level and
         // every-time probability is exactly what a session without the property means, so

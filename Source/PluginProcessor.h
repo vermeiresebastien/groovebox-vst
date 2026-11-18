@@ -364,6 +364,95 @@ public:
     bool writeSlotRows (int slot, const int* lanes, const SlotRowWrite* rows, int numLanes);
 
     /**
+        Which slot a generated take may be written into without touching what is heard.
+
+        The lowest index no lane points at, or -1 when all `Layout::numPatternSlots` are
+        named by at least one lane. Slot 0 is not privileged and usually unavailable: a
+        machine that has been played at all has every lane on it, so the first take lands
+        on 1.
+
+        A question about *pointers*, not about *records*. A slot can hold a record and
+        still be unpointed — the bank lets a lane move away from one it filled — and
+        overwriting such a slot is the intended use, because the grid the user drew lives
+        behind a pointer and this answer is by construction behind none.
+
+        The one case where the answer is not silent is a lane whose evolve period is
+        running: `getChannelSlotPlaying` can be sounding a slot no lane *selects*, and the
+        rotation is not a pointer this function can see. Such a write is still coherent one
+        cell at a time, because `writeSlotRows` stores the numbers before the flag, but it
+        is audible — which is why the panel names the slot it landed on rather than
+        promising silence.
+    */
+    int firstUnpointedSlot() const;
+
+    /**
+        What one press of the generator did, in the shape the panel reads it back.
+
+        The whole answer, because a press that wrote nothing still owes the user a reason:
+        `refusal` says which of the three it was and `message` says it in the words that go
+        on screen. Both are written by the one switch in `generateGenreTake`, so a fourth
+        refusal cannot be added without either the code or the compiler noticing that the
+        sentence is missing.
+    */
+    struct GeneratedTake
+    {
+        /** The three ways a press writes nothing, plus the case that wrote something. */
+        enum class Refusal
+        {
+            written,        ///< `applied` is true; nothing went wrong.
+            bankFull,       ///< every slot is pointed at, so there is nowhere silent to write
+            unknownGenre,   ///< the index is not in `GenrePatterns::genres`
+            noLanes,        ///< no row of the template found a lane in this kit
+        };
+
+        bool applied = false;
+        Refusal refusal = Refusal::written;
+        juce::String message;
+
+        int genreIndex = -1;
+
+        /** Which variant of the genre this rolled, and which slot the take went into. */
+        int coreIndex = -1;
+        int slot = -1;
+
+        /** Rows the template asked for, rows that got a lane, and rows that did not. */
+        int rowsAsked = 0;
+        int rowsPlaced = 0;
+        int rowsDropped = 0;
+    };
+
+    /**
+        Builds one genre core for this kit and writes it into a silent slot in one push.
+
+        The caller owns the undo transaction — see `beginTransaction` — so a press is one
+        Ctrl+Z, and the caller owns the menu that names the genre, because the table is the
+        same constexpr list the popup is built from. What lives here is the decision chain:
+        which variant (`PatternPlanner::coreFor` on this seam's own counter), which lanes
+        each row goes to (`PatternPlanner::makePlan`, which reads the sample and strip names
+        and never guesses at a kit it cannot classify), and where the grid lands
+        (`firstUnpointedSlot`, then one `writeSlotRows`).
+
+        The plan is a velocity grid; a cell is four facts. So every lane of the target slot
+        is named, not only the placed ones: an unplaced lane is written as the *neutral*
+        row, which is what makes a take replace the slot outright instead of overdubbing
+        whatever that slot held the last time a lane pointed at it — and neutral, not
+        silence at zero level, because `writeSlotRows` stores a level even under a step that
+        is off, and a hand-drawn hit later switched on in this slot would arrive at the
+        generator's idea of nothing. The same argument keeps `chance` and `strikes` at their
+        neutral values: the template says how loud and when, not how often and how many.
+
+        The counter advances only on a press that wrote something, so the same failing ask
+        repeated says the same sentence, and the first press of a session is core 0 — the
+        documented pattern — rather than a roll. It is not the `Seed` parameter: a second
+        dice the host cannot see would redefine what the first one means. The counter itself
+        is not saved, and nothing needs it to be — what a press *produced* is, as `<id>:<core>:
+        <seed>` in the slot's `source` property, which is the provenance the third contract
+        ruled, and is what makes a recalled session still able to answer where a dot came
+        from. The running number is not a fact about a slot; the number that rolled it is.
+    */
+    GeneratedTake generateGenreTake (int genreIndex);
+
+    /**
         The tree property one slot's cells live in: `pattern` for slot 0, `pattern1` to
         `pattern3` for the rest.
 
@@ -380,6 +469,49 @@ public:
         be wrong about which slot it is.
     */
     static juce::String slotPropertyName (int slot);
+
+    /**
+        Which row of the genre table a slot came from: `source` for slot 0, `source1` to
+        `source3` for the rest, and only beside a slot that a press actually wrote.
+
+        The owner's third contract, in the form he ruled it: provenance -- genre, core
+        variant and the one-shot seed that rolled it -- is *state saved beside the slot*, so
+        it survives save and recall, is invisible to the host, and costs no migration. Not
+        in-memory, and not dropped. `slotPropertyName`'s sparseness rule is inherited whole:
+        the name `source2` exists when a press put it there and the slot still carries
+        something, and `pushPatternToState` is the one place that decides either.
+
+        The value is the three facts in one short string -- `<genre id>:<core>:<seed>` --
+        with the id rather than the display name because the id is what the table is keyed
+        on and a rename of a label must not rewrite a saved session.
+
+        It is deliberately *not* a grid property, and `isGridProperty` says so: an undo of a
+        press restores the grid through the listener that repaints, and a provenance write
+        has no cell to bring the engine. It travels in the same undo transaction as the grid
+        it describes, which is what stops `Ctrl+Z` from leaving a dot that claims a genre it
+        no longer holds -- and `pushPatternToState` drops it the moment the slot carries
+        nothing, for the same reason.
+    */
+    static juce::String slotSourceName (int slot);
+
+    /** What a press put in that slot's source property, or an empty string. */
+    juce::String slotSource (int slot) const;
+
+    /**
+        Is this one of the properties whose contents the atomics are derived from?
+
+        The whole of the undo door: the listener watches exactly these, and each is written
+        by a `push...ToState` on this side. Built from `slotPropertyName`, so a slot cannot
+        be stored under one list of names and restored under another — and a source property
+        is deliberately not in it, which is why a provenance write costs no repaint.
+
+        Public because the smoke suite counts a press as one *record* write plus one
+        provenance write, and to split them it has to ask production which names belong to
+        the grid. A list of those names written a second time in `Tests/` is the same mistake
+        `allParameterIds` was: the fifth slot gets left off, and both copies agree with each
+        other instead of with the writer.
+    */
+    static bool isGridProperty (const juce::Identifier& property);
 
     //==========================================================================
     // Channels
@@ -695,6 +827,17 @@ private:
     std::atomic<double> displayedTempo { 120.0 };
     double lastKnownSampleRate = 44100.0;
 
+    /**
+        The generator's own dice, advanced once per take that was written.
+
+        Message-thread only, and deliberately not a parameter: `generateGenreTake` reads it
+        through `PatternPlanner::coreFor` and moves it with `PatternPlanner::nextSeed`, so
+        the first press of a session gets the documented core and every press after that a
+        rolled one. Saving it would claim that a session remembers which variant it was
+        given, when what it remembers — and what a user hears — is the grid that landed.
+    */
+    unsigned int generationCounter = 0;
+
     /** True only while `pushPatternToState` writes the property.
         The write comes from the atomics, so reading it back would be a round trip
         through the same data — and with the undo manager attached to that write, a
@@ -723,15 +866,6 @@ private:
         about what the properties hold rather than a memory of the last one to fail.
     */
     std::array<bool, (size_t) Layout::numPatternSlots> holdingUnreadableSlot {};
-
-    /**
-        Is this one of the properties whose contents the atomics are derived from?
-
-        The whole of the undo door: the listener watches exactly these, and each is written
-        by a `push...ToState` on this side. Built from `slotPropertyName`, so a slot cannot
-        be stored under one list of names and restored under another.
-    */
-    static bool isGridProperty (const juce::Identifier& property);
 
     /** What the host last asked for, so a transport reset re-prepares the engine
         at the size it will actually be given. */

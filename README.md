@@ -388,6 +388,65 @@ floor the row comes out at exactly 27 px, with nothing to spare. Narrower or sho
 the editor permits, the strip is not drawn, is not clickable and there is nothing to explain
 the difference: the rule is one answer behind the painting, the hit test and the test suite.
 
+## Generated takes
+
+**Generate** — in the Variation band, between the Touch fader and **Reroll** — is the one way
+into the genre table. Clicking it opens a menu of the 29 genre names, in the order the table
+holds them. Picking one writes that genre's pattern; dismissing the menu writes nothing, and
+`0` is the dismissal rather than the top row of the list.
+
+Three things about where a take lands are worth knowing before you press it, and the panel
+says the first of them rather than leaving you to find it:
+
+- **The take goes into a dot, not into the grid you are looking at.** It is written into the
+  lowest-numbered slot that no lane is pointing at, and it is written for all twelve lanes at
+  once — a complete new pattern, not a fill of the row under the ring.
+- **A press moves no pointer.** So it arrives *silent*: every lane keeps playing the dot it
+  was on, and you hear the new grid once you point a lane at the dot the press reported. That
+  report is what the button's tooltip becomes, and it names the dot that was actually written
+  — because the ring on the grid has not moved there to show it.
+- **A second press without a re-aim replaces the first.** The target is chosen by pointers and
+  a press moves none, so four presses in a row give you one take in one dot, not four takes.
+  Aim a lane at the dot you just got and the next press looks for the next free one.
+
+The one time a press is not silent is a lane whose rotate period is running: a rotating lane
+can be sounding a slot that no lane *selects*, and the rotation is not a pointer the generator
+can see. That is the reason the panel names the slot rather than promising you silence.
+
+One **Ctrl+Z** takes the whole grid back. The click owns the undo transaction and the write
+under it is one push per slot rather than 768 cell edits, so twelve lanes and sixteen steps
+cost one step in the history.
+
+What a press does *not* do is the other half of the design:
+
+- **It replaces; it does not overdub.** Every lane of the target dot is named, including the
+  ones this kit gave the genre no row for, so a slot that held an old pattern comes out of it
+  holding only the new one.
+- **It writes when and how loud, not how often and how many.** A generated cell leaves
+  probability at 100 % and strike count at 1 — the neutral values — so the *Mutate*,
+  *Humanize* and *Touch* knobs mean exactly what they mean over a grid you drew, and a row you
+  later switch on in this dot arrives at full, not at whatever the generator's silence was.
+- **It refuses rather than guesses.** If every dot is pointed at, there is nowhere silent to
+  write: the press says so in the tooltip and moves nothing. If the genre has rows and this kit
+  has no lane that can take them — a row lands on a lane that holds a sample *and* whose name
+  or file says its family, Kick, Snare, Clap or Hat — the press tells you how many rows it
+  asked for and how many it placed. Both refusals happen before a single cell moves.
+- **It does not touch your tempo or your swing.** Each row of the table carries a BPM and a
+  swing figure, and neither reaches the menu, which shows the genre's name and nothing else:
+  both fields are descriptive. If you want 132 with a shuffle on it, the tempo and the swing
+  knobs are where that happens.
+
+**Repeated presses of one genre deal different variants of it.** Each genre carries four
+arrangements of the same idea, and the press picks one with the generator's own counter, which
+starts at zero: **the first press of a session is the documented pattern, not a roll**, and
+every press after it is the next variant. A press that was refused does not advance that
+counter, so the same failing ask repeated says the same sentence. The counter itself is neither
+the **Seed** parameter nor something a session saves — *Reroll* still means one thing, and a
+second dice the host cannot see would redefine what the first one means. What a set file *does*
+keep, beside a dot that came from a press, is the three numbers that made it: the genre, which
+variant of that genre, and the counter value it was rolled from. No control shows them to you
+yet, and the host never sees them; they are in the file so the dot can say where it came from.
+
 ## The envelope
 
 Every channel has its own ADSR, shown as four rows (**A D S R**) under the level
@@ -543,13 +602,19 @@ and leaves it alone.
 ## Layout
 
 - **Top bar** — transport, tempo, swing and its grid, the **Variation** group (the knob,
-  the **Humanize** and **Touch** faders, **Reroll** and the seed readout), "Clear pattern",
+  the **Humanize** and **Touch** faders, **Generate**, **Reroll** and the seed readout),
+  "Clear pattern",
   the **Velocity**, **Chance** and **Ratchet** toggles with the shared reset — which reads
   **100%** over a level or a probability and **x1** over a strike count, because a button
   that says "100%" about a number of hits is describing something it is not going to do —
-  and the master trim and meter. An 1854 px bar lays all of that on one row; narrower, the
+  and the master trim and meter. A 1936 px bar lays all of that on one row; narrower, the
   Variation group moves to a second line and the bar grows 36 px to take it. Either way no
-  control gives up width to fit the window. The smallest editor is **1298 × 695 px** — the
+  control gives up width to fit the window. The window a session opens at is **1890 × 880 px**,
+  which is *under* that one-row width — so the default shows the two-line bar, and the extra
+  36 px of height over the previous 844 is what pays for the line the fourth control in the
+  band pushed off it. It did not go the other way on purpose: 1936 px of bar plus the editor's
+  margins is a 1972 px window, which is past a 1920 px screen, and a control that falls off the
+  right edge of the *display* is worse than a bar on two lines. The smallest editor is **1298 × 695 px** — the
   width is `TransportBar::wrappedRowWidth + 2 * Layout::editorMargin`, the height is
   `Layout::editorFloorHeight (TransportBar::twoRowHeight, gridFloor)`, and neither is a typed
   literal: the height is what the cheapest of the four stages of `Layout::editorPlan` costs,
@@ -1112,11 +1177,12 @@ Notes on the design:
   arrangement of bars into sections, no per-section lane settings, and nothing that carries
   a pattern out of the plugin. What the bank gives you is a lane that walks its own four
   grids on a fixed period; ordering the four grids differently over time is not it.
-- The genre presets and the pattern planner exist, are tested and are documented **in this file** —
-  `installer/README.txt`, the copy that lands in the install folder, names no genre at all. While they
-  have **no caller in the plugin yet** that is the honest reading of "documented": nothing in the editor
-  asks them for a pattern, so there is nothing for a user-facing page to describe yet, and they are
-  wired only for the step that decides how a host or a button should reach them.
+- The generator is a button, not a parameter. A press is one undo step and one write into the
+  session, but there is nothing for the host to automate, so a take cannot be recorded into a
+  timeline or recalled from one, and the variant dice it rolled is not saved either — the grid
+  that landed *is* the record. The menu is one flat list of the 29 names in the table: sorting
+  them into families would be a second classification of the same rows that nothing else in the
+  build agrees with, and the genre's own name is the thing being chosen.
 - *Humanize* is timing only, and late only: it cannot start a hit ahead of its step.
 - *Touch* is level only, and it is a deviation, not a redraw: it cannot turn a rest into
   a hit, cannot strike a step more than a quarter of its own level above or below what

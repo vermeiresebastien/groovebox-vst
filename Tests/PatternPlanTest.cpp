@@ -138,6 +138,13 @@ int main()
         reportInt ((int) (sizeof (GenrePatterns::genreIds) / sizeof (GenrePatterns::genreIds[0])),
                    genres, "genreIds covers every genre");
 
+        // The count is a hand-written literal beside an initializer that already knows its
+        // own length, so these are two answers to one question and they can disagree. Every
+        // walk in this file and in the planner runs to numGenres, so a row beyond it is not
+        // an error anywhere -- it is a genre nobody can generate and nobody reads.
+        reportInt ((int) (sizeof (GenrePatterns::genres) / sizeof (GenrePatterns::genres[0])),
+                   genres, "numGenres is the length of the table, not a count kept beside it");
+
         int cores = 0, rows = 0, badLen = 0, badChar = 0, badFamily = 0;
         for (int g = 0; g < genres; ++g)
         {

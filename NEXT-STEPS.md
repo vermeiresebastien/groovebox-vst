@@ -95,17 +95,17 @@ Zero coverage today: `setPlayHead` / `PositionInfo` / `AudioPlayHead` appear **n
 
 **B3 — The kit goes silent after enough recalls, and RAM creeps until it does.**
 `applyMetadata` calls `samples.addFile()` for all 12 lanes on **every** `setStateInformation`
-(`PluginProcessor.cpp:1102-1117`) with no path dedupe, and the registry is append-only — an id is
+(`PluginProcessor.cpp:1245-1260`) with no path dedupe, and the registry is append-only — an id is
 "never removed, never moved, never reused" (`SampleStore.h:49`) up to `maxSamples = 512`
 (`SampleStore.h:62`), after which `addSample` returns 0 forever (`SampleStore.cpp:123-131`). Live calls
 state-set on set load, preset recall, track duplicate and its own device undo: ~12 ids a pop, so after
 roughly **43** of those, every sample load in that instance fails and 12 decoded buffers of RAM were
 wasted each time. No test catches it — all four round-trip tests build a fresh processor
-(`SmokeTest.cpp:633,675,1146,1380`).
+(`SmokeTest.cpp:854,896,1146,1380`).
 
 **B4 — Undo is cosmetic and self-erasing.**
 Edits push the encoded 395-char pattern string into the tree with the undo manager
-(`PluginProcessor.cpp:972`), and transactions exist, so Ctrl+Z would restore the *string* — but
+(`PluginProcessor.cpp:1115`), and transactions exist, so Ctrl+Z would restore the *string* — but
 `GrooveboxProcessor` is only an APVTS listener, never a `ValueTree::Listener` (no such listener exists
 anywhere in `Source/`), so the engine atomics are untouched; the next edit or save re-encodes the live
 atomics over the undone string. Also `getUndoManager()` (`PluginProcessor.h:244`) has **no callers**: there
@@ -158,7 +158,7 @@ sample-exact clock invariant that test `[12]` protects.
 | **U2** | Kit workflow: multi-file drop fills lanes (`StepGridComponent.cpp`'s `filesDropped` uses `files[0]` and ignores the rest; its silence was fixed earlier, it raises the same error box the browse path does), lane menu from `getSampleIds()`, remembered folder, audition on click (B7 — the audition landed as **5.3** on 2026-11-16; the other three are still this row's) | 12 file dialogs → one gesture | 12-20 h | low | U3 |
 | **U3** | Live programs/kits (`getNumPrograms()==1`) = a free preset browser in Live's browser | makes the thing shareable and recallable | 16-24 h, partly blocked by path-only refs | med | — |
 | **U4** | Pattern → MIDI clip export by drag (`juce::MidiFile` already linked; `skulpt/Source/SequenceView.cpp:507` is the precedent) | gets your groove into the arranger | 4-8 h | low | — |
-| **U5** | Editor floor for a 1366×768 laptop, all-12-strip layout test — **done, all three halves**: the row half (2026-11-16, pulled into 4.3b — the bar wraps to two lines below 1774 px, `TransportBar::oneRowWidth`/`wrappedRowWidth`), the strip-height half (2026-11-16, 5.6 — `Layout::stripPlan` prices four stages) and the editor-height half (2026-11-16, 5.6 — `Layout::editorPlan`, and the 5.6 entry below has the numbers and the gates). `LayoutTest.cpp` walked one size and the first strip; it now walks nine sizes × all twelve strips, two of them deliberately below the editor's own minimum, and each one asserts `0 clipped` **and** that it ran the shared rule. The published floor is **1298 × 695 px** — the width is `TransportBar::wrappedRowWidth + 2 * Layout::editorMargin`, the height is `Layout::editorFloorHeight (TransportBar::twoRowHeight, gridFloor)`, and neither is typed. 695 px fits the roughly 730 px a 768 px screen leaves for a window; it still does not fit Live maximised on that screen. The default is **1890×844** — 1832 until 4.5 put a fourth control on the bar, which took 80 px off the row rule and nothing off the grid | done | low | — |
+| **U5** | Editor floor for a 1366×768 laptop, all-12-strip layout test — **done, all three halves**: the row half (2026-11-16, pulled into 4.3b — the bar wraps to two lines below 1774 px, `TransportBar::oneRowWidth`/`wrappedRowWidth`), the strip-height half (2026-11-16, 5.6 — `Layout::stripPlan` prices four stages) and the editor-height half (2026-11-16, 5.6 — `Layout::editorPlan`, and the 5.6 entry below has the numbers and the gates). `LayoutTest.cpp` walked one size and the first strip; it now walks nine sizes × all twelve strips, two of them deliberately below the editor's own minimum, and each one asserts `0 clipped` **and** that it ran the shared rule. The published floor is **1298 × 695 px** — the width is `TransportBar::wrappedRowWidth + 2 * Layout::editorMargin`, the height is `Layout::editorFloorHeight (TransportBar::twoRowHeight, gridFloor)`, and neither is typed. 695 px fits the roughly 730 px a 768 px screen leaves for a window; it still does not fit Live maximised on that screen. The default is **1890×844** — 1832 until 4.5 put a fourth control on the bar, which took 80 px off the row rule and nothing off the grid. *(Item 14's fifth control took 82 px off the same rule, and the default is now **1890×880**: 1890 stopped being over `oneRowWidth` when it grew, so every session began on the wrapped row, and the second line was bought in height because 1936 px of bar plus the margins is a 1972 px window and this machine's display is 1920. The 14b entry has the gates and the counterfactual.)* | done | low | — |
 | **V1** | `verify.ps1`: build → both test exes with `$LASTEXITCODE` checked → SHA-256 manifest of `launch/` vs artefacts | today `installer/build-installer.ps1:92-105` only `Test-Path`s 5 files; nothing hashes anything | 3-4 h | low | — |
 | **V2** | RT tripwire (counting allocator armed inside `processBlock`) + click metric (max \|x[n]−x[n−1]\|) + level-matched A/B render rig | makes "sounds better" falsifiable, which is your rule | 12-16 h | med — JUCE 8.0.4 has **no** `OfflineRenderer`, BS.1770 LUFS would be hand-rolled | everything audio |
 | **M1** | Positioning: free BYO-sample in-plugin sequencer is genuinely unoccupied (Triaz Player can't load custom samples; TerminalVST is one sound per instance; Hydrogen isn't a plugin; Battery/Maschine sequence nothing in-plugin) | decide what the next 20 hours are *for* | 2 h decision | n/a | — |
@@ -310,7 +310,7 @@ touches the velocity law. No step here is allowed to be reported as better becau
 ### E4 — Phase 4: variation (the first new features, on a payload that can hold them)
 
 - **4.1** Per-step payload **v2**: one byte per step (or a compact parallel property) instead of the 395-char
-  string that currently encodes on/off and 1/100-quantised velocity (`PluginProcessor.cpp:952-972`), with v1
+  string that currently encodes on/off and 1/100-quantised velocity (`PluginProcessor.cpp:1095-1115`), with v1
   still readable, **a `stateVersion` on the root tree** (there is no version today — compatibility rests on
   `hasProperty("swing")` at `:1040` and `row.length() == 16` at `:958`, and rows are silently truncated at
   `:952`), and `shiftChannelRow` (`:334-374`) taught to carry every per-step field it now moves — today it
@@ -357,7 +357,7 @@ touches the velocity law. No step here is allowed to be reported as better becau
 
 - **5.1** Default kit from **synthesis**, not shipped files: 12 named lanes with a plausible kick/snare/hat/…
   so the plugin makes sound the instant it opens (today the constructor loads nothing,
-  `PluginProcessor.cpp:47-56`). Keep levels at the current trim so nothing is louder by default. Gate:
+  `PluginProcessor.cpp:48-57`). Keep levels at the current trim so nothing is louder by default. Gate:
   assert a fresh processor produces a non-zero onset per lane with zero file loads. ~8-12 h.
 - **5.2** Kit path: multi-file drop fills consecutive lanes (today `filesDropped` in
   `StepGridComponent.cpp` loads `files[0]` and ignores the rest; the silent-failure half of
@@ -453,8 +453,8 @@ touches the velocity law. No step here is allowed to be reported as better becau
   ellipsising it, so the marks and the name survive to the last px — and `Layout::gridGuardHeight`
   (120) is what the strip may never take from the grid on the way *below* the floor. The default is
   untouched: **1832×844 is stage 0**, strip 285, grid 405, rows 30, wordmark drawn. *(4.5 made the
-  default 1890×844, and 1890 is still over `oneRowWidth`, so stage 0 is still what you get when the
-  editor opens — the height plan did not move.)*
+  default 1890×844, and 1854 px is what that window hands the bar -- exactly the `oneRowWidth` of that
+  tree, so stage 0 came with a one-line bar. 14b moved `oneRowWidth` to 1936 and the height to 880.)*
   Gated by **13 new check sites**: twelve in `LayoutTest.cpp:825` (each stage boundary built out of
   the terms it is made of — the bar's `twoRowHeight`, the strip's own budget for the stage, the
   grid's row rule inverted — rather than by calling `editorCostForStage`; one px under every
@@ -933,15 +933,15 @@ meaning — the settled rate, the note — and the fall lives in two new mutable
 `dropRemaining`, recursed once per output sample at `SequencerEngine.cpp:858`. The window cost is one more row
 per lane: `ChannelStrip.cpp:299` (was `:249` before 5.6 rewrote `resized`) 205 to 219 px and the editor 830 to
 **844 px** at 1240 wide (the width is
-**1520** since 4.2's panel half, **1678** since 4.3's timing fader; 844 is still the default, and since 5.6 it is
-nothing else). The grid keeps its
+**1520** since 4.2's panel half, **1678** since 4.3's timing fader; 844 was the default from 5.6 until 14b and
+is 880 since). The grid keeps its
 405 (`out/layout-35-final.txt`: component 1 at y=126, h=405), so the window pays the 14 at the bottom. That was
 the debt Phase 5 U5 had to pay back, and it is paid. *(5.6 covered both halves: that 14 is now
 `Layout::stripPlan`'s `dropRow`, 14 px in the two roomy stages and 12 in the two at floors, and the strip is
 285 px at the default; and the 844 quoted above is the **default** only — the *minimum* is 695 px now, which
 `Layout::editorPlan` prices rather than types. The 5.6 entry has the numbers and the gates. *4.5 is the third
 width in that chain: a fourth control on the bar took the default to **1890** and the minimum to **1298**, and
-left 844 and 695 where they were.)*
+left 844 and 695 where they were. 14b is the fourth: a fifth control took `oneRowWidth` to 1936 and the default height to 880, and left **1298** and **695** exactly where 4.5 put them, because the band Generate grows is subtracted from the floor as well as added to the row.)*
 
 *What `[25]` measures.* Periods are counted from zero crossings, so the claim is about pitch and not about a
 waveform shape; the fixture tone is a known 220 Hz, hence a known 200.455-sample period.
@@ -1665,13 +1665,13 @@ did not happen, and was measured against this tree rather than against the sente
 lines to `installer/README.txt` and none of them name a genre; `grep -c -i genre` there is 0 and has been
 since, `README.md` describes the genre *table* and its test but lists no preset, and `PatternPlanner` still
 has zero callers in `Source/` at `3c3f059`. The presets have neither a document nor a destination until
-item 14 lands, which is the honest state and is what `README.md`'s limitations row now says.
+item 14 lands, which was the honest state then. *(14b landed it: the bar's Generate opens a menu of the 29 names, `generateGenreTake` calls the planner and hands its twelve rows to `writeSlotRows`, and both documents describe the door -- `README.md`'s limitations row now says what the door does *not* do. The clause above is the record of the gap, not its state.)*
 
 **The law, in one place.** `Layout::numPatternSlots` is 4 (`Source/Common.h:34`) and slot 0 is the grid that
 already existed: the property is still `pattern`, with the same bytes, so a session written before the bank
 opens as one lane, one pattern, pointed at slot 0, counter shut. The other three are **sparse** —
-`slotPropertyName` (`Source/PluginProcessor.cpp:1245`) names them and `slotCarriesAnything` (the next function,
-at `:1252`) decides whether they are on the tree at all, so an empty slot costs a session nothing and the
+`slotPropertyName` (`Source/PluginProcessor.cpp:1388`) names them and `slotCarriesAnything` (`:1413`)
+decides whether they are on the tree at all, so an empty slot costs a session nothing and the
 census a test can read is *which names are present*, not a count. Which slot a bar sounds is
 `SequencerEngine::slotPlaying` (`Source/SequencerEngine.cpp:277`): it starts at the lane's selected slot and
 walks **forward over the filled ones only**, so two filled slots of four alternate those two rather than going
@@ -1703,7 +1703,7 @@ because off has to be reachable by the same gesture that turns it on.
 patterns, and a lane the user is editing must not change under them because a bar boundary arrived.
 
 **It is state, not a parameter.** `slots` and `evolve` are tree properties on the atomics (`pushBankToState`
-at `Source/PluginProcessor.cpp:1528`, `applyBankFromState` at `:1560`, gated by `isGridProperty` at `:1583`)
+at `Source/PluginProcessor.cpp:1702`, `applyBankFromState` at `:1734`, gated by `isGridProperty` at `:1757`)
 and they are deliberately **not** in the 116-parameter table, so the host cannot ramp a slot change and Live's
 arrangement cannot draw one. The README says so next to the limitation about no song mode, and the reason it
 stays that way is that a slot is a *pattern*, and the other patterns — the grid itself — are not automatable
@@ -1763,7 +1763,7 @@ what belongs here is that the check passed for months on a name that was only ev
 
 **Not done here, on purpose.** `launch/`, the installer and post-install verification stay with the shipping
 lane, and the export hashes `AGENTS.md` quotes belong to that lane's build rather than to a feature commit.
-Item #14's three planner/panel contracts are the owner's to decide and were not invented here. And the bank
+Item #14's three planner/panel contracts were the owner's to decide and were not invented here; he ruled all three, and 14b is that ruling in the tree. And the bank
 has no check that renders *across* a slot change with a long release: what protects a rotation that lands a
 new bar's hit on the previous bar's tail is 3.1's steal hand-off, which is general and was not written for
 this — the gap is stated under section A's table instead of being glossed over.
@@ -2014,11 +2014,11 @@ sentence: **546 smoke / 675 layout / 85 planner checks, 0 problems, guard OK**, 
 `4BC3AA231178C071`. Program Files is behind the tree by two `Source/`-changing commits after the `3c3f059` —
 export — `ba7c953` and `8e49944` — and closing that gap is the owner's install step.)*
 
-**Still open, and whose.** Item 14 stays with the owner: `PatternPlanner.h` and `GenrePatterns.h` still have
-no UI or state caller, only the planner suite — the three planner/panel contracts are decisions, not work to
+**Still open, and whose.** Item 14 stayed with the owner: `PatternPlanner.h` and `GenrePatterns.h` had
+no UI or state caller, only the planner suite — the three planner/panel contracts were decisions, not work to
 invent under commit pressure. 5.6's height half, 4.4 and 4.5 stay in this lane. *(Written before any of the
 three landed; all three have now shipped from it, and the lane's open list is 6.5's false spec sentence and
-nothing else it owns. 14a has since landed the one seam that item 14 named as its own prerequisite -- `writeSlotRows` -- so the planner has a door and still no caller: what is left of item 14 is the wiring and the three contracts, and both stay with the owner.)* The duplicate subject line
+nothing else it owns. 14a has since landed the one seam that item 14 named as its own prerequisite -- `writeSlotRows` -- so the planner had a door and still no caller, and **14b is that caller**: the wiring, the three contracts and the button are in the tree, so item 14 is off this list and the 14b entry at the foot of this file carries the gates and what they cost.)* The duplicate subject line
 (`4724922` reusing `4e6a7ef`'s text verbatim while containing two lines of `AGENTS.md`) is recorded under
 `AGENTS.md` "Commit log" conventions, with the replacement subject the export lane asked for. Measured there
 before recommending anything: the rewrite would be *local* — `origin/master` is `ecfe76c` and nothing from
@@ -2309,9 +2309,9 @@ one undo step cannot be filled with twelve clicks.
 feature — *a generator therefore needs a slot-taking writer that pushes once per slot; that seam is the thing
 to agree with the sequencer lane before writing any wiring* — and the owner's ruling was that this lane writes
 it. So 14a is the door and nobody walks through it yet: `writeSlotRows` (`Source/PluginProcessor.h:364`,
-defined at `Source/PluginProcessor.cpp:736`, row struct `SlotRowWrite` at `Source/PluginProcessor.h:308`) has **no caller in
-`Source/`**. `PatternPlanner` and the genre table are still caller-less, and the three planner/panel contracts
-item 14 also names are still open. What is settled is the shape a generated take arrives through: into a slot
+defined at `Source/PluginProcessor.cpp:737`, row struct `SlotRowWrite` at `Source/PluginProcessor.h:308`) had **no caller in
+`Source/`**. `PatternPlanner` and the genre table were still caller-less, and the three planner/panel contracts
+item 14 also names were still open. **14b is that caller**: it wired `generateGenreTake` and took the three contracts off the open list, and moved none of the shape settled here — into a slot
 the user is not pointing at, in one push, without moving a pointer.
 
 **Why the four cell seams cannot serve the shape.** `setStep`, `setStepVelocity`, `setStepChance` and
@@ -2345,7 +2345,7 @@ written twice and the later row wins, because a caller assembling a lane list ca
 last-write is the rule that matches what the list says. Lanes not named keep every cell they hold, in this
 slot and in every other.
 
-**One helper went public on purpose.** `slotPropertyName` (`Source/PluginProcessor.cpp:1245`) was private until
+**One helper went public on purpose.** `slotPropertyName` (`Source/PluginProcessor.cpp:1388`) was private until
 this seam needed a test that reads the record it wrote. The bank is sparse — slot 0 is `pattern`, the others
 `pattern1..3`, and only when filled — so a caller that aims at a slot has to be able to *name* it, and a test
 or a host that spells the name out is a second grammar for the same property. The section now gates both
@@ -2585,3 +2585,152 @@ gate sitting in `out/` is the exact thing this item was written to retire. What 
 a clone with no `out/` at all, which is where the sweep's `os.makedirs` earns its keep. The stale
 `out/cite-pin.txt` and `out/wt-44/out/*.py` copies were left in place as scratch, un-referenced by any
 instruction: the printed pin path and sha are what tell a reader which list a run actually used.
+
+### 14b — the door has a caller, and the claim travels with the grid (done 2026-11-18)
+
+**What was ruled, and what this is.** The owner's third decision was *wire the generator door now*, and
+item 14's three contracts as he ruled them rather than as this lane had proposed them: a press writes a
+dot the editing ring is **not** on, with no confirmation dialog; genre and seed stay one-shot derived
+state and **no** parameter is added; provenance is **saved** beside the slot it generated — not in-memory
+only, and not dropped. 14a built the door. This is the walk through it: the menu, the decision chain, the
+one push, the claim, and the button that reports where it actually landed.
+
+**The chain, in the six places it is decided.** The bar's Generate (`Source/TransportBar.cpp:526`, 76 × 24
+like its three siblings) opens a menu built by a loop over `GenrePatterns::numGenres`
+(`Source/TransportBar.cpp:810`; the literal is `Source/GenrePatterns.h:1347`, 29) with `showMenuAsync`
+(`:819`) — a modal loop is what deadlocks a rendering host. A dismissal answers `0` and writes nothing.
+`handleGenreChosen` (`Source/TransportBar.cpp:826`) opens the undo transaction, calls the machine at `:845`
+and hands `take.message` to the tooltip. `generateGenreTake` (`Source/PluginProcessor.cpp:816`, declared at
+`Source/PluginProcessor.h:453`, return struct `GeneratedTake` at `Source/PluginProcessor.h:397`) is the
+decision chain and nothing else: which core, which lane per row, which dot, then one write.
+`firstUnpointedSlot` (`Source/PluginProcessor.cpp:800`) is the lowest dot no lane *points at* — it may
+already hold a record, and when twelve lanes over four dots cover the bank the answer is that there is no
+answer. The grid lands through one `writeSlotRows` (`Source/PluginProcessor.cpp:918`), and the claim goes
+in at `:931` inside the same transaction.
+
+**Contract 3, in the shape it is in the tree.** The property is `source` for slot 0 and `source1..3`
+otherwise (`slotSourceName`, `Source/PluginProcessor.cpp:1395`) — the same suffix grammar as the record it
+sits beside, and deliberately *not* a `pattern*` name, because the section's own census enumerates names
+starting with `pattern` and a provenance sharing that prefix would quietly join the list of grids. Its
+value is `<genre id>:<core>:<seed>` — the id the table is keyed on, not the label the menu shows — and the
+seed is `generationCounter` as it stood for *that* press, written before `PatternPlanner::nextSeed`
+(`Source/PatternPlanner.h:280`) advances it (`Source/PluginProcessor.cpp:936`), which only runs on a press
+that wrote something. It is sparse for exactly the reason the record is: `pushPatternToState` removes it in
+the same push that removes an emptied slot's record (`Source/PluginProcessor.cpp:1462`, gated on the same
+`slotCarriesAnything` answer at `:1452`), so a dot that says nothing in any of the four fields cannot be
+carrying a genre name into a save.
+
+**What the new write costs — measured, not hoped.** Nothing. Not one Ctrl+Z: the caller owns the
+transaction and JUCE folds the two `SetPropertyAction`s into one `ActionSet`, which the section gates by
+undoing and redoing a take and reading *both* halves back (`and the undo took the provenance with the
+record`, `and redo brings the claim back with it`). Not one repaint: the undo door is
+`isGridProperty` (`Source/PluginProcessor.cpp:1757`) and it excludes `source*` by construction, so the
+message still costs one grid change and one repaint — arm **a10** below is what proves that exclusion is
+load-bearing rather than decorative. Not one parameter: the run prints `all 116 parameters are present`,
+so the host sees no new row and there is no migration, no default and no state-version bump. And not one
+new name on a tree that holds nothing: the census line in the press gate reads `pattern pattern1` before
+and after, because the take went into a dot the bank already had open.
+
+**Gates: section `[36]`, 82 of the suite's 628 checks** (`Tests/SmokeTest.cpp:11450`, the last section in
+the file). The 82 is counted out of the green log, not out of the source, and it is eleven groups: one
+precondition the refusal arms need before a "no" means anything, five for the target — including the line
+that puts a record in a dot nobody points at, which is what makes "an occupied dot is still the target" a
+claim rather than a tautology — one that the kit's five files really did load onto lanes 0..4, fifteen for
+one accepted press (which dot, which core, five rows asked and four placed and one dropped,
+no pointer moved, the live grid byte-for-byte unchanged, the census, one property change and one repaint
+plus one provenance write, then each row read out of the *record* rather than the engine: kick, clap,
+`hat`, `ohat`, the three accents on the rungs 127/91/61, an off step stored OFF at FULL level, the spare
+snare and the seven silent lanes written neutral, chance and strikes left at neutral everywhere), three
+for the render (unchanged while the dot is unpointed, and sounding once every lane points at it), **thirty
+for the refusals** — five arms over the three `Refusal` values (`Source/PluginProcessor.h:402-405`), each
+six lines: a printed precondition that only the guard under test can say no, the refusal naming no slot,
+the session byte-identical, zero notifications *and* zero repaints, the opened transaction holding no
+action, and the gesture from before the refused press still undoing — seven for the counter and the
+sentence the button reports back, three for "one grid, two doors" (the seam's record is byte-identical to
+the hand-painted one *and* the two machines render the same bits), eight for the save/load round trip,
+six for undo/redo and three for the claim leaving with the record.
+
+**Sixteen arms in `out/ab-14.py`, fourteen red and two green on purpose.** Ten on
+`Source/PluginProcessor.cpp` against the smoke suite, five on `Source/TransportBar.cpp` against layout, one
+on `Source/GenrePatterns.h` against the planner. The counts are the *failure counts the arms printed*, and
+the names are carriers copied out of `out/ab-14.txt` — which prints at most five per arm
+(`out/ab-14.py:380`), so a twelve-failure arm lists four lines here rather than twelve.
+
+    a1  the target dot also avoids what a slot holds         12   the target rule, the census, the provenance, the kick row
+    a2  the lane list is checked after lane one is stored     2   the refusal leaves every cell it was aimed at
+    a3  a press stops advancing the variant counter           4   cores 1 and 2, the re-aim, and the refused-press rule
+    a4  the tooltip numbers the dots from zero                1   the line the button hands to its tooltip
+    a5  the accepted fill stops telling the panel             2   the repaint count, and the seam-vs-cells economy line
+    a6  the flag goes in before the three numbers          [0]   declared: no single-threaded harness sees a row mid-write
+    a7  the press stops recording where the take came from      7   contract 3 in all five places it is asserted
+    a8  the claim survives the dot going empty                1   record and provenance leave in the same push
+    a9  the claim is erased on every push, not when it empties  2   the round trip, and the 192-push control
+    a10 the provenance string is a grid property              3   the repaint count, the render equality, the round-trip precondition
+    b1  Generate is not named                              [0]   declared: the button ctor already passes the name
+    b2  Generate is named but never shown                     1   the bar's own named-control census (see the note on 654)
+    b3  Generate is drawn 60 px wide                          2   76 × 24 on one line, and on two
+    b4  Generate takes 60 px more than it costs              13   the seed readout ellipsis, and five zero-size children
+    b5  the wrapped band is laid out on the first line       10   the band's own line, at every size that wraps
+    c1  a row joins the table without joining the count       1   `numGenres` is the table's length, not a count kept beside it
+
+**Four things the lap taught.**
+
+- **a7's seven lines are the answer to "one check for the new property".** Contract 3 is asserted at the
+  press, at the save/load round trip, at the reopened session's *next* press, at undo and at redo — so
+  deleting the write reddens all five plus the two economy lines that count it. That is what a contract
+  about *saved* state has to cost: a single check would gate the string and not the claim.
+- **a10 reddened the render equality, which is not the check anyone wrote this for.** Letting `source`
+  into `isGridProperty` makes a provenance write a grid edit, and the two doors stop agreeing on what one
+  press costs — 192 cells and one property change became two, and the check that a take is bit-for-bit the
+  grid a user would paint picked it up. A rule whose only gate is a counter can pass a change that moves
+  a *different* mechanism's floor; the exclusion is now gated by something other than its own count.
+- **b2 is `FAILED 654 checks, 1 problems` and the two numbers are one fact.** The layout suite tells the
+  bar's controls apart by name — that is 4.5's rule — and its seventh-control census is followed by
+  `(the rest of this section needs all seven)` (`Tests/LayoutTest.cpp:2357`), so renaming Generate costs
+  the section 44 checks *and* fails one. The census exists because a deleted `setName` and a deleted
+  button were otherwise indistinguishable in the log; **b1** is the arm that makes that sentence checkable,
+  and it is green because `generateButton` gets its name from the constructor, so the arm deletes a call
+  that was never load-bearing. Only **b2** — named, then never placed — can bite.
+- **c1 is the `list written twice` trap in the one place this table cannot avoid it.** `numGenres` is a
+  literal beside an initialiser list that knows its own length, so `Tests/PatternPlanTest.cpp:145-146` asks
+  the array how long it is and compares, and a row added without the count is not an error anywhere — it is
+  a genre nobody can generate and nobody reads. 0 seconds to prove, because the planner suite links no JUCE.
+
+**The fifth control's arithmetic, and why the floor did not move.** Generate costs 76 + 6 px inside the
+variation band (`Source/PluginEditor.cpp:16`), which takes `variationGroupWidth` to 666 and
+`variationBandWidth` to 674 (`Source/TransportBar.h:115-116`) and the row to `oneRowWidth = 1936`
+(`:135`). A default of 1890 (`Source/PluginEditor.cpp:36`) is under that, so every session would have begun
+wrapped, and 1936 + margins is a 1972 px window on a 1920 px display — so the band goes down a line and the
+cost is paid in height instead: `twoRowHeight - oneRowHeight` is 36 (`:137-138`), which is why the default
+grew 844 → 880 (`Source/PluginEditor.cpp:38`). At 844 with a two-line bar the grid is 369 px and the row 27,
+which is *exactly* `StepGridComponent::minimumRowHeight` (`Source/StepGridComponent.h:275`) — not illegal,
+but a default parked on the cliff edge between a clickable bank strip and no strip at all. The **floor is
+unchanged at 1298 × 695**, because `wrappedRowWidth = oneRowWidth - variationBandWidth` (`:136`) subtracts
+the same 82 it adds: 1854 − 592 = 1936 − 674 = 1262, plus two 18 px margins. That identity is what the
+arms price: `Tests/LayoutTest.cpp:2876` gates the 76 × 24 at both wrap states, `:2911` gates the seed
+readout against the widest number it must show without ellipsising, `:1370` gates the band on its own line,
+and `:1294`/`:1297` walk the floor on both axes.
+
+**Run.** **628 smoke / 698 layout / 86 planner checks, 0 problems**, and `GUARD OK: the parameter path is
+allocation-free` from `Tests/RtPathGuard.ps1` (`out/guard-14b.txt`, exit 0 read off the call and not off a
+pipe). `[28]` is still `4BC3AA231178C071` over 161280 samples, peak 0.68136, rms 0.16312 — byte-identical
+to the 14a record, which is the whole point: a door with a caller through it must not retune a hit. The
+falsification lap is `out/ab-14.txt`: `16 of 16 arms ran`, and every arm printed the pre-mutation hash of
+the file it was about to break -- 012b31bba4c9b97d for the table, 91a541e32457d6ca for the processor and
+730c30b42ff433c3 for the bar -- then the restore check printed all three matching, `rebuild after restore:
+exit 0` and the green re-run sit at the foot of the log, so the restore is proven by the run rather
+than asserted by this paragraph. The green smoke output itself is `out/smoke-14b-final.txt`.
+
+**This entry is the last word in this file, so two older records are now behind it.** The 6.7 receipt's
+census of `AGENTS.md` and `NEXT-STEPS.md` — 11/11 and 9/9 — describes the tree as it stood at *that*
+commit, and `AGENTS.md`'s "Last green run" line carries 628/698/86 from this one; a re-census takes the
+pass run *after* the last word on this page, never the one quoted here.
+
+**Deliberately not here.** No control reads the provenance back: it is state the *file* carries so a
+reopened set can still answer where a dot came from, and the README's limitations row says plainly that
+nothing on screen shows it yet — a claim with no UI is a claim a future phase is meant to land, not a
+defect this one hid. No tempo, no swing, no key: a press writes a grid and nothing else, so 132 with a
+shuffle on it stays two knobs away. No sorting of 29 names into families — that would be a second
+classification of 533 rows nothing else in the build agrees with. No roll on the first press: core 0 is the
+documented pattern, and the running counter is not the Seed parameter and is deliberately not saved,
+because a second dice the host cannot see would redefine what the first one means.

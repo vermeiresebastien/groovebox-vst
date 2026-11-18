@@ -93,7 +93,7 @@ public:
         band lifted out of it: nothing on either line is squeezed, and a 1366 px laptop
         can now hold the whole machine.
 
-        The three numbers are deliberately typed once, here, and read by the layout test
+        The numbers here are deliberately typed once, and read by the layout test
         at each side of the boundary -- a width the row was measured at is worth nothing
         if nothing checks that the row still fits at it.
 
@@ -102,8 +102,18 @@ public:
         band the editor paid for as one. The editor asks `heightForWidth` with the width
         it is about to hand over, and adds its own margin to `wrappedRowWidth` to get its
         floor.
+
+        The pair below is the same band twice: the group as `layoutVariation` fills it, and
+        the width `resized()` actually takes for it, which is the group plus the 8 px of air
+        it removes after the band. The group grew from 584 to 666 when Generate joined it, by
+        the button's 76 px and the 6 px of air after it -- and because the growth is exactly
+        the cost, the seed label's remainder is the same 58 px on both sides of that change
+        (666 - (3 x 154 + 82 + 64)), which is the difference between moving a band to a second
+        line and stealing width off a control on the first. The layout test's band-geometry
+        loop holds 58 px at both wrap states; an earlier version of this comment said 70.
     */
-    static constexpr int variationBandWidth = 584 + 8;  // the group, plus the gap after it
+    static constexpr int variationGroupWidth = 666;
+    static constexpr int variationBandWidth = variationGroupWidth + 8;
     /**
         Every band, on one line, measured as the sum of what `resized()` takes.
 
@@ -114,8 +124,15 @@ public:
         that rule was written for. The wrapped first line therefore grew by the same 80 px
         and took the editor's floor with it -- see `PluginEditor.cpp`, which derives both
         numbers from these rather than remembering either.
+
+        Generate moved this to 1936 and did *not* move the floor, and the two numbers are
+        not the same quantity: the floor is `wrappedRowWidth`, what the first line costs
+        once the variation band has been lifted out of it, and a control added *inside* that
+        band is in the subtraction as well as in the total. 1854 - 592 and 1936 - 674 are
+        both 1262, so a narrower window now wraps at a width it did not wrap at before and
+        still holds every control at the size it already paid for.
     */
-    static constexpr int oneRowWidth = 1854;
+    static constexpr int oneRowWidth = 1936;
     static constexpr int wrappedRowWidth = oneRowWidth - variationBandWidth;
     static constexpr int oneRowHeight = 60;
     static constexpr int twoRowHeight = 96;             // two 38 px lines, their air and the rule
@@ -133,7 +150,7 @@ public:
 private:
     void timerCallback() override;
 
-    /** The three faders, Reroll and the seed, laid out into whatever band they were given. */
+    /** The three faders, Generate, Reroll and the seed, laid out into whatever band they were given. */
     void layoutVariation (juce::Rectangle<int> band);
 
     void handlePlayClicked();
@@ -148,6 +165,17 @@ private:
     void handleResetValuesClicked();
 
     void handleRerollClicked();
+
+    /** Opens the genre menu. Nothing is written until an item comes back chosen. */
+    void handleGenerateClicked();
+
+    /**
+        Runs one press of that menu, and says what it did on the button.
+
+        `genreIndex` is the index into `GenrePatterns::genres`, which is the list the menu
+        was built from, so the item id is this number plus one and nowhere else.
+    */
+    void handleGenreChosen (int genreIndex);
 
     void paintCaption (juce::Graphics& g, const juce::String& text, juce::Rectangle<int> area) const;
 
@@ -193,6 +221,18 @@ private:
     juce::Label humanizeValueLabel;
     juce::Slider touchSlider;
     juce::Label touchValueLabel;
+
+    /**
+        Asks the machine for a pattern, rather than bending the one it has.
+
+        Sitting in this band is the honest grouping: the three faders and Reroll say how
+        much of a take the variation may change, and this says where a take comes from. The
+        label is the risk -- a button on a bar that also holds **Clear pattern** has to say
+        that it writes into a slot nobody is pointing at and cannot overwrite the grid on
+        screen, which is what the tooltip says in the generator's own words.
+    */
+    juce::TextButton generateButton { "Generate" };
+
     juce::TextButton rerollButton { "Reroll" };
     juce::Label seedLabel;
 

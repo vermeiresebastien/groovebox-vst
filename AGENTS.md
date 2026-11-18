@@ -199,12 +199,12 @@ It is fully gitignored and nothing in it is authored in place.
 - **A verified number is not a verified claim.** The Touch A/B quoted `peak 1.438488 -> 1.485904`
   straight out of the run log, so every digit was true -- and both numbers are past 0 dBFS, because
   the fixture is four lanes x all sixteen steps at chance 1.0 on the whole velocity ladder
-  (`Tests/SmokeTest.cpp:8021-8027`), a load the genre table never asks for (densest row 10 of 16,
+  (`Tests/SmokeTest.cpp:8242-8248`), a load the genre table never asks for (densest row 10 of 16,
   average 3.4). So the copy reported a rise in *clipping* as if it were the cost of a control, while
   the headroom section two pages earlier says the latch fires at 0 dBFS and there is no limiter.
   When shipped copy quotes a measured level it states the fixture that produced it, whether that
   fixture is a playing state, and which trim was in place -- and the same test arm's relative ceiling
-  (`<= shut * 1.25`, `Tests/SmokeTest.cpp:8172`) is an anti-renormalisation gate, not a headroom gate,
+  (`<= shut * 1.25`, `Tests/SmokeTest.cpp:8393`) is an anti-renormalisation gate, not a headroom gate,
   which its comment now says, because nothing else in that arm bounds the summed take's level.
   Corrected by the shipping lane in `fbf973c`.
 
@@ -223,7 +223,7 @@ no generated header ([CMakeLists.txt:232-335](CMakeLists.txt)), which is what ke
 second. All four entries are `add_test` cases carrying a `PASS_REGULAR_EXPRESSION` that requires a
 `, 0 ` problem count, so a run that prints nothing and a run that prints a problem both fail the
 tracked path even at process exit 0, and `-V` is the documented form because the quiet one prints no
-counts. Last green run: 546 smoke checks, 675 layout checks, 85 planner checks, 0 problems, guard OK.
+counts. Last green run: 628 smoke checks, 698 layout checks, 86 planner checks, 0 problems, guard OK.
 
 **CTest does not build.** Measured by the lane that wired it (`ecfe76c`): with `GenrePatterns.h:101`
 broken and no rebuild, `ctest` reported 4/4 passed while the sources no longer matched the binaries.
@@ -409,6 +409,43 @@ gate. The two are not interchangeable and neither alone is the whole check; run 
   trap as the parameter table, one layer up: a property two components happen to agree on
   is not an identity, and the second copy of a classification is where the third control
   gets misfiled.
+- **A name can be supplied twice, and the arm that deletes the restatement is green.**
+  `juce::Button (const String& name) : Component (name), text (name)` -- so a
+  `TextButton { "Generate" }` already answers to `"Generate"` and the explicit
+  `generateButton.setName ("Generate")` is a statement of identity, not the mechanism that
+  provides it. Arm b1 of `out/ab-14.py` comments that line out and all 698 layout checks
+  pass. Two consequences, both now written where they will be read: `setName` is
+  load-bearing exactly where the label is not the identity (`resetValuesButton { "100%" }`
+  named `ResetValues`), and the way a control actually disappears from the panel is by not
+  being *shown* -- which is why the lookup folds `isVisible ()` into the match and why arm
+  b2, not b1, is what reddens the membership line (1 problem). Same rule as the range
+  bullet above, one level down: before trusting an identity check, ask how many places put
+  that value there, and arm the one the constructor does not fill.
+- **A layout constant that moves under a fixed default changes what every session looks
+  like, and only a check on the default's *state* says so.** Item 14 put a 76 px button in
+  the variation band, `oneRowWidth` went 1854 -> 1936, and `editorWidth` stayed 1890 -- so
+  every session opened with the band on a second line. Nothing in the tree was wrong: the
+  two-line layout is legal, the floor is derived, and each control kept its own width. What
+  caught it was the layout test's default-window arm asserting the bar's *line count* and
+  the grid's measured 405 px, and the reason those were there at all is the 4.3b fit-claim
+  audit in "Judging sound" above -- a bounds-only check would have called 1890 x 844 fine. Buying the line back
+  was a choice of axis: +82 px of width (to 1972) is past a 1920 px display, so the second
+  line was paid in 36 px of height instead, and the repaired default keeps every measured
+  design number -- 405 px grid, 30 px rows, 285 px strip, wordmark drawn. The gate for the
+  axis not taken is a counterfactual, not a literal: the same window at
+  `preferredHeight - (twoRowHeight - oneRowHeight)` is asked for its row, which comes out at
+  exactly `StepGridComponent::minimumRowHeight` (27 px). Note what that number is *not*: the
+  bank strip does not vanish at 844 -- 27 is the smallest row that still carries it -- so the
+  honest claim is "the default sat one px above the point where `hasBankStrip` refuses the
+  row and the door to the pattern bank disappears", not "the door was gone". A budget with
+  zero slack is a defect with a delay attached, and the check has to say which it found.
+- **A filtered falsifier run that matches no arm still prints its own green.** The first
+  cut of `out/ab-14.py`'s selection filter compared `label[0]` -- one character -- against
+  tokens like `B5`, so `python ab-14.py B5 C1` ran zero arms, then walked the restore,
+  hash-checked all three files and printed `PASSED 620 / 698 / 86`. That is the
+  missing-arm-from-the-log failure in its worst shape, because the tail of the report is
+  true and the body is empty. A driver that can select must print how many arms ran and
+  exit nonzero when that number is zero.
 - **An A/B arm that starts from the previous arm's file measures the first mutation
   twice.** `out/ab-42b.ps1` ran three breakages of the step-probability corner mark and
   all three came back with the *same* four BAD lines: each arm edited the working copy, so
@@ -577,7 +614,7 @@ gate. The two are not interchangeable and neither alone is the whole check; run 
   (apvts.getParameterRange (id).convertTo0to1 (v))`, wrapped as
   `GrooveboxProcessor::writeParameter` ([Source/PluginProcessor.cpp](Source/PluginProcessor.cpp)).
   116 parameters (8 global + 12 x 9); the pattern is deliberately not one. The listener
-  list in `allParameterIds` ([Source/PluginProcessor.cpp:24](Source/PluginProcessor.cpp))
+  list in `allParameterIds` ([Source/PluginProcessor.cpp:25](Source/PluginProcessor.cpp))
   is built from `Params::globalIds()` and `Params::laneTargets()` for the same reason:
   when it was a hand-written copy of the lane ids, the choke parameter was created,
   offered to the host and read on restore with nothing listening for it, and only a test
@@ -823,6 +860,17 @@ because an exemption list needs a provenance exactly like a hash does.
   Four scripts read citations and all four had spelled the pattern out again, so the cap now lives once,
   in `cite_pins.py`, beside the reason -- and widening it again when a file passes 99,999 lines is a
   re-check of every five-digit pointer, not a one-character edit.
+- **A space is a citation separator, so a file name written beside a hash becomes a pointer.** `CITE`
+  accepts `[: ]` between the file token and the number, which is what lets prose read a file name, a space
+  and a number as a citation at all. It read the table header's name beside a hex baseline ending 97d as a
+  pointer to line 12, and the bar source file's name beside a hex ending c3, as one to line 730 -- measured,
+  because 14b's
+  falsification paragraph put three baseline hashes next to three file names and the audit's census grew two
+  `JUDGE` lines it could never resolve. Nothing was rewritten, and only because those lines are newer than
+  the pin base so the sweep declines them: a hash beside its file name on an *old* line is a digit string
+  `-apply` will shift, silently lengthening a record by a line delta. So never put a hash in the same breath
+  as a `Name.ext` -- write the number and then name the file ("012b31bba4c9b97d for the table"), or keep the
+  backtick closed around the name so a quote mark sits where the separator would be.
 - **A doc section that names its own baseline keeps that baseline's numbers, and a pin must
   *restore* the base's text rather than merely skip.** Skipping left A3 already-shifted: an exception
   that only declines to act cannot undo the action it declines. `cite-pin.txt` carries the range
@@ -840,8 +888,9 @@ because an exemption list needs a provenance exactly like a hash does.
   a wider clause than anywhere else uses: a repaired pointer sits in prose that names its symbol one or
   two sentences *above* the citation, so held lines get a paragraph-scoped clause and print as `HELD`
   with the reason beside them. Both repairs moved from `JUDGE -- no symbol named in the clause` to a
-  located symbol (`parameterChanged` at `Source/PluginProcessor.h:612`, the codec's `v2` header) when the
-  clause widened, and the run's own counts went `ok 28 -> 30`, `JUDGE 75 -> 73`. Narrower and the two
+  located symbol -- `parameterChanged` and the codec's `v2` header, each printed `HELD` with its repaired
+  window beside it rather than restated here -- when the clause widened, and the run's own counts went
+  `ok 28 -> 30`, `JUDGE 75 -> 73`. Narrower and the two
   hand-verified pointers in `NEXT-STEPS.md` are the two the gate never looks at. The hold is probed, not
   trusted: `out/probe-cite.py` plants the base's wrong number back into a repaired pointer and requires the
   audit to call it a `MISS` *and* the sweep to report that line as held rather than restored -- three arms,

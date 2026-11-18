@@ -1,4 +1,5 @@
 #include "TransportBar.h"
+#include "GenrePatterns.h"
 
 namespace gb
 {
@@ -202,10 +203,17 @@ TransportBar::TransportBar (GrooveboxProcessor& processorToUse)
     // Named, so a test can ask for the control rather than recognise it. The reset is the
     // one that needs it: its label follows the overlay that is open, so "the button that
     // says 100%" is not an identity any more, and the faders set the precedent above.
+    //
+    // The other five lines state an identity the constructor already gave, because
+    // `Button (const String& name)` passes that name to `Component` as well as to its label:
+    // deleting `generateButton.setName` changes no answer in the suite (arm b1 of
+    // `out/ab-14.py`), while the failure the naming rule exists for -- a control present and
+    // named and never shown -- is caught by the test asking for visibility too, not here.
     resetValuesButton.setName ("ResetValues");
     velocityButton.setName ("Velocity");
     chanceButton.setName ("Chance");
     ratchetButton.setName ("Ratchet");
+    generateButton.setName ("Generate");
     rerollButton.setName ("Reroll");
 
     velocityButton.setTooltip ("Edit how hard each step hits: drag up and down inside a step");
@@ -292,6 +300,15 @@ TransportBar::TransportBar (GrooveboxProcessor& processorToUse)
     touchValueLabel.setFont (captionFont());
     addAndMakeVisible (touchValueLabel);
 
+    // The tooltip starts as the explanation and becomes the report: `handleGenreChosen`
+    // writes the generator's own sentence into it, which is where the user just looked and
+    // the only line on this bar that a press can speak on. It has to start with a sentence of
+    // its own because a button that only ever reports would say nothing about what it does
+    // until after the first click.
+    generateButton.setTooltip ("Write a genre pattern into a slot no lane is pointing at. "
+                               "One undo takes the whole grid back.");
+    addAndMakeVisible (generateButton);
+
     rerollButton.setTooltip ("Take a new seed: a different set of drops, the same grid");
     addAndMakeVisible (rerollButton);
 
@@ -345,6 +362,7 @@ TransportBar::TransportBar (GrooveboxProcessor& processorToUse)
     chanceButton.onClick      = [this] { handleChanceClicked(); };
     ratchetButton.onClick     = [this] { handleRatchetClicked(); };
     resetValuesButton.onClick = [this] { handleResetValuesClicked(); };
+    generateButton.onClick    = [this] { handleGenerateClicked(); };
     rerollButton.onClick      = [this] { handleRerollClicked(); };
 
     // Written straight through, for the same reason as the channel faders: an
@@ -484,7 +502,13 @@ void TransportBar::layoutVariation (juce::Rectangle<int> band)
     //
     // The band is the width it is because a slider that got narrower to make room is a
     // cost nobody was told about: 96 px of track and 42 px of readout per fader, three
-    // faders, Reroll and the seed.
+    // faders, Generate, Reroll and the seed. That is 462 + 82 + 64 = 608 of the 666 px the
+    // group is handed, so the seed label is whatever is left and is left 58 px -- the same
+    // 58 it had before Generate joined, because the group grew by exactly the 76 + 6 the new
+    // button costs. Which is the whole reason adding a control here grows
+    // `variationGroupWidth` instead of being tucked into the gap, and it is gated at both
+    // wrap states by the layout test's band-geometry loop, not by this sentence: an earlier
+    // version of this comment said 70 px.
     variationCaptionArea = band.removeFromTop (12); // drawn in paint()
     band.removeFromTop (2);
     mutateSlider.setBounds (band.removeFromLeft (96).withSizeKeepingCentre (96, 22));
@@ -499,6 +523,8 @@ void TransportBar::layoutVariation (juce::Rectangle<int> band)
     band.removeFromLeft (6);
     touchValueLabel.setBounds (band.removeFromLeft (42).withSizeKeepingCentre (42, 18));
     band.removeFromLeft (10);
+    generateButton.setBounds (band.removeFromLeft (76).withSizeKeepingCentre (76, 24));
+    band.removeFromLeft (6);
     rerollButton.setBounds (band.removeFromLeft (58).withSizeKeepingCentre (58, 24));
     band.removeFromLeft (6);
     seedLabel.setBounds (band.withSizeKeepingCentre (band.getWidth(), 18));
@@ -564,11 +590,11 @@ void TransportBar::resized()
 
     if (wrapped)
     {
-        layoutVariation (secondLine.removeFromLeft (584));
+        layoutVariation (secondLine.removeFromLeft (variationGroupWidth));
     }
     else
     {
-        layoutVariation (line.removeFromLeft (584));
+        layoutVariation (line.removeFromLeft (variationGroupWidth));
         line.removeFromLeft (8);
     }
 
@@ -758,6 +784,67 @@ void TransportBar::handleRerollClicked()
     */
     processor.rerollSeed();
     refresh();
+}
+
+void TransportBar::handleGenerateClicked()
+{
+    /**
+        The menu is the table, and it is asynchronous.
+
+        `showMenuAsync` rather than `showMenu`: a modal loop is the thing that deadlocks a
+        host that is still rendering, which is why the box that clears the grid goes through
+        `AlertWindow::showAsync` for the same reason.
+
+        Item ids are one-based, so the answer is the index into `GenrePatterns::genres` plus
+        one and `0` means the user dismissed it -- which writes nothing, rather than being
+        the top row of the menu by accident.
+
+        Twenty-nine items in one list because that is what the table is: sorting them into
+        families would be a second classification of 533 rows that nothing else in the build
+        agrees with, and the genre's own name is the thing being chosen. It is also the reason
+        the count comes from `numGenres` and not from a loop that stops when `addItem` throws:
+        the same number both the planner and the fidelity test read.
+    */
+    juce::PopupMenu menu;
+
+    for (int i = 0; i < GenrePatterns::numGenres; ++i)
+        menu.addItem (i + 1, juce::String (GenrePatterns::genres[i].name));
+
+    const auto options = juce::PopupMenu::Options()
+                             .withTargetComponent (generateButton)
+                             .withTargetScreenArea (generateButton.getScreenBounds());
+
+    juce::Component::SafePointer<TransportBar> safeThis (this);
+
+    menu.showMenuAsync (options, [safeThis] (const int itemId)
+    {
+        if (safeThis != nullptr && itemId > 0)
+            safeThis->handleGenreChosen (itemId - 1);
+    });
+}
+
+void TransportBar::handleGenreChosen (int genreIndex)
+{
+    /**
+        One transaction, one push, and the sentence the seam wrote.
+
+        The transaction opens here and not inside `generateGenreTake` because the machine's
+        rule is that the gesture owns the undo step and the gesture is this click: one Ctrl+Z
+        takes the whole grid back. `UndoManager::beginNewTransaction` only sets a flag -- the
+        set is not made until something is performed into it -- so a press that wrote nothing
+        leaves no step behind and cannot seal the gesture before it either.
+
+        The report goes on the button as its tooltip because there is no status line on this
+        bar, and a row that costs 666 px has no room for one that would be read twice a
+        session.
+    */
+    const auto name = juce::String (GenrePatterns::genres[genreIndex].name);
+
+    processor.beginTransaction ("Generate " + name);
+
+    const auto take = processor.generateGenreTake (genreIndex);
+
+    generateButton.setTooltip (take.message);
 }
 
 } // namespace gb

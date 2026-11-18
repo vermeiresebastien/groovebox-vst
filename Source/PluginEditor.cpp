@@ -7,37 +7,35 @@ namespace gb
 namespace
 {
     /**
-        The minimum the transport bar needs to show every control at its own size.
+        The window a new session opens at, and what the transport bar's row rule costs it.
 
-        The bar is one row at the default width, and the alternative to widening it was
-        shrinking a fader until it was too narrow to drag or letting the last button fall
-        off the right edge — which the layout test reads as a zero-width child, i.e. a
-        control that cannot be clicked. The grid takes the extra width as wider cells.
+        This was `TransportBar::oneRowWidth` plus the editor's margins with not a pixel to
+        spare -- 1678 for two variation faders, 1832 when the third arrived, 1890 when 4.5
+        put a fourth button on the row, each time widening the default rather than narrowing
+        a control, because a default one px short of the row opens every session already
+        wrapped. Generate costs 76 + 6 inside the variation band, which takes the row to
+        1936 and this width with it -- and 1972 px of window is past a 1920 px screen, so the
+        last control would fall off the right edge of the *display*, which is the failure the
+        whole chain was written to avoid. The row therefore does what the row rule says: the
+        band goes down a line, nothing on either line gets narrower.
 
-        1678 was the row with two variation faders in it; the 154 that made it 1832 is
-        exactly the 96 px track, the 42 px readout and the gaps between, paid for in full
-        rather than taken from the swing or the trim. 4.5's fourth bar button cost the row
-        another 80 and this came with it, so the default is now `TransportBar::oneRowWidth`
-        plus the editor's own margins with not a pixel to spare -- which is the point: a
-        narrower default would open a session already wrapped, and the wrap is the thing a
-        small window has to earn rather than the state it starts in.
+        What that line costs is paid in height, the same way 5.6 pays for it in the floor.
+        `twoRowHeight - oneRowHeight` is 36 px, so this grew by 36: the grid still gets the
+        405 px it was measured at, the rows are still 30 px and the default is still stage 0 of
+        `Layout::editorPlan`, which is what 1832x844 and then 1890x844 were chosen to be. At
+        844 px tall with a two-line bar the grid is 369 and the row is 27 -- not illegal, but
+        27 is exactly `StepGridComponent::minimumRowHeight`, the smallest row that still carries
+        a whole bank strip, so the default would open parked on the cliff edge with one px of
+        margin between a working door to the pattern bank and a row that has no strip to click
+        at all. `LayoutTest` gates both halves at the default size: the 405 and the 30 px, and
+        the 27 px that the old height now gives.
 
-        It is the *default*, not the floor. The floor is `TransportBar::wrappedRowWidth`,
-        and below `TransportBar::oneRowWidth` the variation band moves to a second line
-        of its own — the row-wrap rule that 5.6 was going to need anyway, taken off the
-        editor's floor here rather than leaving a third fader to push the minimum another
-        154 px wider. Nothing gets narrower on either line; the bar gets taller, and since
-        5.6's height half the bar's second line is paid for by the height floor itself, which
-        is priced under `TransportBar::twoRowHeight` rather than the one-line height.
+        It is the *default*, not the floor: the floor is derived below from
+        `TransportBar::wrappedRowWidth` and `Layout::editorFloorHeight`.
     */
     constexpr int editorWidth = 1890;
 
-    /**
-        The window a new session opens at. Unchanged by 5.6's height half, and no longer
-        the same number as the floor: the floor is derived below, from what the cheapest
-        stage of `Layout::editorPlan` costs under the bar's worst (wrapped) height.
-    */
-    constexpr int editorHeight = 844;
+    constexpr int editorHeight = 880;
 
     // What a `StepGridComponent` has to be handed to keep the bank strip's name line
     // readable, asked of the grid rather than remembered here: 361 px at the row height

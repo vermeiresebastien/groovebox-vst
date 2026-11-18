@@ -11,6 +11,7 @@
 */
 
 #include "PluginProcessor.h"
+#include "GenrePatterns.h"
 
 #include <atomic>
 #include <cmath>
@@ -598,6 +599,226 @@ SlewReport worstSlew (const std::vector<float>& data)
 
     return report;
 }
+
+    /**
+        Every property the root holds, as sorted `name=value` pairs.
+
+        Hoisted out of [35] because [36] refuses a generator press by comparing a whole
+        tree with itself, and a second spelling of "what the session holds" is a census that
+        can disagree with the one it is meant to be identical to.
+    */
+    juce::String treeCensus (GrooveboxProcessor& p)
+    {
+        juce::StringArray lines;
+        const auto& state = p.getValueTreeState().state;
+
+        for (auto i = 0; i < state.getNumProperties(); ++i)
+        {
+            const auto name = state.getPropertyName (i);
+            lines.add (name.toString() + "=" + state.getProperty (name).toString());
+        }
+
+        lines.sort (false);
+
+        return lines.joinIntoString (";");
+    }
+
+    /**
+        The slot's own record, read by the name production gives that slot.
+
+        A census-and-index read is what [32] uses, and it is right to there: the claim
+        is about the four names, and indexing the present properties is how a wrong
+        grammar gets seen. Here the claim is usually about a slot that is *absent* —
+        that is the bank's sparseness rule, and it is the subject of [35] parts c and e — and
+        an absent slot shifts every later name down one index, so `names[2]` is slot 1's
+        record in a tree that holds three. A name taken from `slotPropertyName` cannot
+        fail that way, and it is not an unfalsifiable restatement either: the census below is
+        a literal list of what the tree holds, checked as a string in [35] parts a and c, so
+        a build that renamed its slots would go red there rather than agreeing with itself in
+        both directions. An absent slot comes back as an empty string.
+    */
+    juce::String slotRecord (GrooveboxProcessor& p, int slot)
+    {
+        return p.getValueTreeState().state
+            .getProperty (juce::Identifier (p.slotPropertyName (slot))).toString();
+    }
+
+    /**
+        The `pattern*` names the tree actually holds, sorted.
+
+        Kept as a literal census beside the lookup above on purpose: if a future build
+        renamed the slots, `slotPropertyName` would be wrong on both sides of a save and
+        every read here would still agree with it. This is the one list that cannot agree
+        with a mistake, and the two checks that use it state the names as strings.
+    */
+    juce::StringArray recordCensus (GrooveboxProcessor& p)
+    {
+        juce::StringArray names;
+        const auto& state = p.getValueTreeState().state;
+
+        for (auto i = 0; i < state.getNumProperties(); ++i)
+        {
+            const auto name = state.getPropertyName (i).toString();
+            if (name.startsWith ("pattern"))
+                names.add (name);
+        }
+
+        names.sort (false);
+        return names;
+    }
+
+    /**
+        One cell as the current-generation record holds it, decoded with test-local arithmetic.
+
+        Hoisted out of [35] because [36] asks the same question of a slot it never selected,
+        and a second spelling of "what the four bytes mean" is a decoder that can disagree
+        with the one it is meant to agree with.
+
+        There is deliberately another decoder in this file, higher up, that accepts `v2:` and
+        `v3:` payloads: that section's claim *is* the tag, so it has to read the older records
+        in order to report on them. This one refuses them -- an untagged or older record comes
+        back as -1s, which is a failure line rather than a silent reinterpretation -- because
+        the claim here is that the build that wrote this grid wrote it as v4.
+    */
+    struct StoredCell
+    {
+        int on = -1, level = -1, chance = -1, strikes = -1;
+        int bytes = 0;
+    };
+
+    StoredCell storedCell (const juce::String& record, int channel, int step)
+    {
+        StoredCell cell;
+        const int stride = 4;
+
+        if (! record.startsWith ("v4:"))
+            return cell;
+
+        juce::MemoryBlock bytes;
+        juce::MemoryOutputStream sink (bytes, false);
+
+        if (! juce::Base64::convertFromBase64 (sink, record.fromFirstOccurrenceOf (":", false, false)))
+            return cell;
+
+        // Flush before the size and the pointer: the stream rounds the block up as it
+        // grows and only shrinks it to what was written in `flush` (which is exactly
+        // `trimExternalBlockSize`, and it can move the data pointer).
+        sink.flush();
+
+        const auto at = (channel * Layout::numSteps + step) * stride;
+        if (bytes.getSize() < (size_t) (at + stride))
+            return cell;
+
+        const auto* raw = static_cast<const juce::uint8*> (bytes.getData());
+        cell.on = raw[at];
+        cell.level = raw[at + 1];
+        cell.chance = raw[at + 2];
+        cell.strikes = raw[at + 3];
+        cell.bytes = (int) bytes.getSize();
+        return cell;
+    }
+
+    /** All 192 live cells, as one string: the identity "nothing about the grid moved" is read as. */
+    juce::String liveGrid (GrooveboxProcessor& p)
+    {
+        juce::String out;
+        for (auto c = 0; c < Layout::numChannels; ++c)
+            for (auto s = 0; s < Layout::numSteps; ++s)
+                out += juce::String (" ") + juce::String ((int) p.isStepOn (c, s))
+                     + juce::String (Layout::levelByte (p.getStepVelocity (c, s)))
+                     + juce::String (Layout::chanceByte (p.getStepChance (c, s)))
+                     + juce::String (p.getStepRatchet (c, s)) + "|";
+        return out;
+    }
+
+    /** The twelve pointers as twelve digits: the identity "nothing was aimed anywhere else". */
+    juce::String selections (GrooveboxProcessor& p)
+    {
+        juce::String out;
+        for (auto c = 0; c < Layout::numChannels; ++c)
+            out += juce::String (p.getChannelSlot (c));
+        return out;
+    }
+
+    /** Counts what a host or the panel is told about the tree, which is the currency the
+        economy claims are actually about.
+
+        Split into the two kinds of root property, because a generator press writes one of
+        each: the record and its provenance. The split asks `GrooveboxProcessor` which names
+        belong to the grid rather than keeping a second list here -- the reason is the same
+        one that made `allParameterIds` a function of the tables.
+    */
+    struct TreeCounter : juce::ValueTree::Listener
+    {
+        int changes = 0, gridChanges = 0, sourceChanges = 0;
+
+        void valueTreePropertyChanged (juce::ValueTree&, const juce::Identifier& id) override
+        {
+            ++changes;
+
+            if (GrooveboxProcessor::isGridProperty (id))
+                ++gridChanges;
+
+            for (auto slot = 0; slot < Layout::numPatternSlots; ++slot)
+                if (id == juce::Identifier (GrooveboxProcessor::slotSourceName (slot).toRawUTF8 ()))
+                {
+                    ++sourceChanges;
+                    break;
+                }
+        }
+    };
+
+    /**
+        A kit for the generator: five samples, four families, one of them spare.
+
+        The names are the classification, so they are chosen against `PatternPlanner`'s own
+        keyword lists rather than left to the lane's default strip name -- which would also
+        work, and would then be a second thing the expectation depends on. `snare` is here
+        because techno's documented core has no snare row: it is a lane that holds a sample,
+        classifies cleanly, and gets nothing, which is the only shape that can tell "written
+        as silence" apart from "not written at all".
+    */
+    struct GeneratorKit
+    {
+        /**
+            One length, stated once. Section [36]'s round-trip gate attributes a changed sample to
+            the step it sits in, and that is only a fact about the codec while a click ends inside
+            its own step window -- so the number is asked, not assumed, and it is asked of this.
+        */
+        static constexpr int clickLength = 4000;
+
+        juce::File kick, clap, hat, openHat, snare;
+
+        explicit GeneratorKit (double sampleRate)
+            : kick (makeClickWav ("kick", clickLength, sampleRate)),
+              clap (makeClickWav ("clap", clickLength, sampleRate)),
+              hat (makeClickWav ("hat", clickLength, sampleRate)),
+              openHat (makeClickWav ("ohat", clickLength, sampleRate)),
+              snare (makeClickWav ("snare", clickLength, sampleRate))
+        {
+        }
+
+        /** Loads the five onto lanes 0..4 and leaves the other seven empty. */
+        bool load (GrooveboxProcessor& p) const
+        {
+            const juce::File files[] = { kick, clap, hat, openHat, snare };
+
+            for (auto i = 0; i < 5; ++i)
+            {
+                juce::String error;
+                if (! files[i].existsAsFile() || ! p.loadSampleIntoChannel (i, files[i], error))
+                    return false;
+            }
+
+            return true;
+        }
+
+        void remove() const
+        {
+            kick.deleteFile(); clap.deleteFile(); hat.deleteFile();
+            openHat.deleteFile(); snare.deleteFile();
+        }
+    };
 
 } // namespace
 
@@ -10631,145 +10852,6 @@ int main()
         */
         auto click = makeClickWav ("slotwrite", 4000, sampleRate);
 
-        /** Every property the root holds, as sorted `name=value` pairs. */
-        auto treeCensus = [] (GrooveboxProcessor& p)
-        {
-            juce::StringArray lines;
-            const auto& state = p.getValueTreeState().state;
-
-            for (auto i = 0; i < state.getNumProperties(); ++i)
-            {
-                const auto name = state.getPropertyName (i);
-                lines.add (name.toString() + "=" + state.getProperty (name).toString());
-            }
-
-            lines.sort (false);
-
-            return lines.joinIntoString (";");
-        };
-
-        /**
-            The slot's own record, read by the name production gives that slot.
-
-            A census-and-index read is what [32] uses, and it is right to there: the claim
-            is about the four names, and indexing the present properties is how a wrong
-            grammar gets seen. Here the claim is usually about a slot that is *absent* —
-            that is the bank's sparseness rule, and it is the subject of parts c and e — and
-            an absent slot shifts every later name down one index, so `names[2]` is slot 1's
-            record in a tree that holds three. A name taken from `slotPropertyName` cannot
-            fail that way, and it is not an unfalsifiable restatement either: the census
-            below is a literal list of what the tree holds, checked as a string in parts a
-            and c, so a build that renamed its slots would go red there rather than agreeing
-            with itself in both directions. An absent slot comes back as an empty string.
-        */
-        auto slotRecord = [] (GrooveboxProcessor& p, int slot) -> juce::String
-        {
-            return p.getValueTreeState().state
-                .getProperty (juce::Identifier (p.slotPropertyName (slot))).toString();
-        };
-
-        /**
-            The `pattern*` names the tree actually holds, sorted.
-
-            Kept as a literal census beside the lookup above on purpose: if a future build
-            renamed the slots, `slotPropertyName` would be wrong on both sides of a save and
-            every read here would still agree with it. This is the one list that cannot agree
-            with a mistake, and the two checks that use it state the names as strings.
-        */
-        auto recordCensus = [] (GrooveboxProcessor& p)
-        {
-            juce::StringArray names;
-            const auto& state = p.getValueTreeState().state;
-
-            for (auto i = 0; i < state.getNumProperties(); ++i)
-            {
-                const auto name = state.getPropertyName (i).toString();
-                if (name.startsWith ("pattern"))
-                    names.add (name);
-            }
-
-            names.sort (false);
-            return names;
-        };
-
-        /** One cell as the record holds it, decoded with test-local arithmetic. */
-        struct StoredCell
-        {
-            int on = -1, level = -1, chance = -1, strikes = -1;
-            int bytes = 0;
-        };
-
-        auto storedCell = [] (const juce::String& record, int channel, int step) -> StoredCell
-        {
-            StoredCell cell;
-            const int stride = 4;
-
-            if (! record.startsWith ("v4:"))
-                return cell;
-
-            juce::MemoryBlock bytes;
-            juce::MemoryOutputStream sink (bytes, false);
-
-            if (! juce::Base64::convertFromBase64 (sink, record.fromFirstOccurrenceOf (":", false, false)))
-                return cell;
-
-            // Flush before the size and the pointer: the stream rounds the block up as it
-            // grows and only shrinks it to what was written in `flush` (which is exactly
-            // `trimExternalBlockSize`, and it can move the data pointer).
-            sink.flush();
-
-            const auto at = (channel * Layout::numSteps + step) * stride;
-            if (bytes.getSize() < (size_t) (at + stride))
-                return cell;
-
-            const auto* raw = static_cast<const juce::uint8*> (bytes.getData());
-            cell.on = raw[at];
-            cell.level = raw[at + 1];
-            cell.chance = raw[at + 2];
-            cell.strikes = raw[at + 3];
-            cell.bytes = (int) bytes.getSize();
-            return cell;
-        };
-
-        auto row = [] (bool hit)
-        {
-            GrooveboxProcessor::SlotRowWrite r;
-            for (auto s = 0; s < Layout::numSteps; ++s)
-                r.on[(size_t) s] = hit;
-            return r;
-        };
-
-        auto liveGrid = [] (GrooveboxProcessor& p)
-        {
-            juce::String out;
-            for (auto c = 0; c < Layout::numChannels; ++c)
-                for (auto s = 0; s < Layout::numSteps; ++s)
-                    out += juce::String (" ") + juce::String ((int) p.isStepOn (c, s))
-                         + juce::String (Layout::levelByte (p.getStepVelocity (c, s)))
-                         + juce::String (Layout::chanceByte (p.getStepChance (c, s)))
-                         + juce::String (p.getStepRatchet (c, s)) + "|";
-            return out;
-        };
-
-        auto selections = [] (GrooveboxProcessor& p)
-        {
-            juce::String out;
-            for (auto c = 0; c < Layout::numChannels; ++c)
-                out += juce::String (p.getChannelSlot (c));
-            return out;
-        };
-
-        // Counts what a host or the panel is told about the tree, which is the currency the
-        // economy claim is actually about.
-        struct TreeCounter : juce::ValueTree::Listener
-        {
-            int changes = 0;
-            void valueTreePropertyChanged (juce::ValueTree&, const juce::Identifier&) override
-            {
-                ++changes;
-            }
-        };
-
         GrooveboxProcessor machine;
         machine.prepareToPlay (sampleRate, blockSize);
         clearAllSteps (machine);
@@ -11362,6 +11444,1040 @@ int main()
         }
 
         click.deleteFile();
+    }
+
+    //======================================================================
+    std::printf ("\n[36] a genre take is written into a slot no lane points at\n");
+    {
+        /**
+            The door the Generate button opens, tested at the processor rather than the widget.
+
+            Three claims hold it together, and the parts below are arranged around them.
+
+            (1) The target is chosen by *pointers*, not by content. A slot no lane aims at is
+                the only legal target, and a slot that already holds a record is still a legal
+                one -- so a take cannot overwrite the grid the user is looking at, and the four
+                dots fill one after another instead of being avoided. Part a.
+
+            (2) A take goes through `writeSlotRows` and names every lane, placed or not, because
+                one that named only the lanes it used would overdub whatever the slot already
+                held. It therefore costs one serialisation and one repaint for 192 cells, and the
+                cells it does not use come back as the neutral row rather than as a level of
+                zero -- the difference between "this step is off" and "this step plays at
+                nothing", which is the difference the seam exists to keep. Parts b and f.
+
+            (3) Every refusal leaves nothing behind, including the undo history. The caller owns
+                the transaction, so a refused press has opened one and performed nothing into it;
+                if that sealed the gesture behind it, Ctrl+Z after a refusal would look like a
+                dead key. Parts d and g.
+
+            The kit is five files across four families with one spare lane, and the spare is a
+            snare on purpose: techno's table has no snare row, so that lane is the only shape that
+            tells "written as silence" apart from "never written at all", and it is also the proof
+            that a lane named for a family is never stolen from it.
+
+            The row strings below are typed as the generated table's own characters, and they are
+            the one literal statement of the grid in this section: part f paints a second machine
+            from those same sixteen characters, so the take, the cell seams and the table are three
+            readings of one claim rather than three claims that agree with each other.
+        */
+        GeneratorKit kit (sampleRate);
+
+        check (kit.kick.existsAsFile() && kit.clap.existsAsFile() && kit.hat.existsAsFile()
+                   && kit.openHat.existsAsFile() && kit.snare.existsAsFile(),
+               "the generator's five-file kit was written, so every refusal below is a refusal "
+               "about the shape of the ask and not about a missing wav",
+               "kick " + juce::String ((int) kit.kick.existsAsFile()) + " clap "
+                   + juce::String ((int) kit.clap.existsAsFile()) + " hat "
+                   + juce::String ((int) kit.hat.existsAsFile()) + " ohat "
+                   + juce::String ((int) kit.openHat.existsAsFile()) + " snare "
+                   + juce::String ((int) kit.snare.existsAsFile()));
+
+        /** The sixteen cells of one lane of one record, back as the template's own characters. */
+        auto rowSig = [] (const juce::String& record, int lane)
+        {
+            juce::String sig;
+
+            for (auto s = 0; s < Layout::numSteps; ++s)
+            {
+                const auto cell = storedCell (record, lane, s);
+                sig += cell.on == 0 ? '.'
+                     : cell.level >= 120 ? 'X'
+                     : cell.level >= 80  ? 'x'
+                     : cell.level >= 40  ? 'o' : '?';
+            }
+
+            return sig;
+        };
+
+        /** Everything a refusal is not allowed to move, captured in one place. */
+        struct Snapshot
+        {
+            juce::String census, grid, records, aims;
+            int changes = 0, gridChanges = 0, sourceChanges = 0, repaints = 0, actions = 0;
+        };
+
+        auto look = [] (GrooveboxProcessor& m, TreeCounter& counter, const int& repaints)
+        {
+            Snapshot s;
+            s.census = treeCensus (m);
+            s.grid = liveGrid (m);
+            s.records = recordCensus (m).joinIntoString (" ");
+            s.aims = selections (m);
+            s.changes = counter.changes;
+            s.gridChanges = counter.gridChanges;
+            s.sourceChanges = counter.sourceChanges;
+            s.repaints = repaints;
+            s.actions = m.getUndoManager().getNumActionsInCurrentTransaction();
+            return s;
+        };
+
+        /** One bar, so a render comparison has a length the transport cannot drift over. */
+        const int barSamples = stepSamples * Layout::numSteps;
+
+        auto play = [&] (GrooveboxProcessor& m, int total)
+        {
+            m.resetTransport();
+            m.setPlaying (true);
+            auto out = render (m, total, blockSize, sampleRate);
+            m.setPlaying (false);
+            return out;
+        };
+
+        //======================================================================
+        // a. which slot: a question about pointers, not about records
+        {
+            GrooveboxProcessor fresh;
+            fresh.prepareToPlay (sampleRate, blockSize);
+            clearAllSteps (fresh);
+            rearm (fresh);
+
+            check (fresh.firstUnpointedSlot() == 1,
+                   "a session that has never moved a dot offers slot 1, not slot 0 -- every lane "
+                   "points at 0, so 0 is exactly the slot the rule exists to refuse",
+                   "firstUnpointedSlot " + juce::String (fresh.firstUnpointedSlot()));
+
+            fresh.setChannelSlot (0, 1);
+
+            check (fresh.firstUnpointedSlot() == 2,
+                   "the answer follows the pointers one at a time: aim one lane at dot 2 and the "
+                   "offer moves to 3",
+                   "aims " + selections (fresh) + ", firstUnpointedSlot "
+                       + juce::String (fresh.firstUnpointedSlot()));
+
+            {
+                GrooveboxProcessor::SlotRowWrite wasThere[1];
+                wasThere[0].on[0] = true;
+                const int lane = 0;
+
+                check (fresh.writeSlotRows (2, &lane, wasThere, 1) && ! slotRecord (fresh, 2).isEmpty(),
+                       "the fixture puts a record in slot 2 while no lane points there, which is "
+                       "what makes the next line a claim about content rather than about emptiness",
+                       "slot 2 record length " + juce::String (slotRecord (fresh, 2).length()));
+
+                check (fresh.firstUnpointedSlot() == 2 && slotRecord (fresh, 3).isEmpty(),
+                       "a slot that already holds a pattern is still the target: the lowest "
+                       "unpointed slot wins even when it is not the lowest empty one",
+                       "firstUnpointedSlot " + juce::String (fresh.firstUnpointedSlot())
+                           + ", slot 3 record length " + juce::String (slotRecord (fresh, 3).length()));
+            }
+
+            for (auto c = 0; c < Layout::numChannels; ++c)
+                fresh.setChannelSlot (c, c % Layout::numPatternSlots);
+
+            check (fresh.firstUnpointedSlot() == -1,
+                   "twelve lanes over four dots can cover every slot, and then the answer is that "
+                   "there is no answer -- not a slot taken out from under a lane",
+                   "aims " + selections (fresh));
+        }
+
+        //======================================================================
+        // b. techno's first core onto a kit of four families and one spare lane
+        {
+            GrooveboxProcessor machine;
+            machine.prepareToPlay (sampleRate, blockSize);
+            clearAllSteps (machine);
+            rearm (machine);
+
+            check (kit.load (machine), "the kit's five files load onto lanes 0..4",
+                   "loadSampleIntoChannel refused one of them");
+
+            // Slot 1 starts full of something the take has to displace: the kick lane ON at
+            // every step. Without a disagreement here, "a take replaces rather than overdubs"
+            // is an empty slot compared against an empty slot.
+            {
+                GrooveboxProcessor::SlotRowWrite wasThere[1];
+
+                for (auto s = 0; s < Layout::numSteps; ++s)
+                    wasThere[0].on[(size_t) s] = true;
+
+                const int lane = 0;
+                machine.writeSlotRows (1, &lane, wasThere, 1);
+            }
+
+            // And a hand-drawn row in the slot every lane *is* looking at, so the live-grid
+            // comparison below is between two grids that have something in them.
+            for (auto s = 0; s < Layout::numSteps; s += 4)
+                machine.setStep (0, s, true);
+
+            TreeCounter counter;
+            machine.getValueTreeState().state.addListener (&counter);
+            int repaints = 0;
+            machine.onStateChanged = [&repaints] { ++repaints; };
+
+            const auto before = look (machine, counter, repaints);
+
+            machine.beginTransaction ("Generate Techno");
+            const auto take = machine.generateGenreTake (0);
+
+            check (take.applied
+                       && take.refusal == GrooveboxProcessor::GeneratedTake::Refusal::written
+                       && take.slot == 1,
+                   "the press is applied and lands on dot 2, the lowest slot no lane was pointing "
+                   "at -- which part a says is legal even though it already held a row",
+                   "applied " + juce::String ((int) take.applied) + " refusal "
+                       + juce::String ((int) take.refusal) + " slot " + juce::String (take.slot)
+                       + " | " + take.message);
+
+            check (take.coreIndex == 0 && take.rowsAsked == 5 && take.rowsPlaced == 4
+                       && take.rowsDropped == 1,
+                   "the first press is techno's first core: five rows asked, four placed, one hat "
+                   "row dropped because the only lane left is named for a family this core does "
+                   "not ask for",
+                   "core " + juce::String (take.coreIndex) + " asked " + juce::String (take.rowsAsked)
+                       + " placed " + juce::String (take.rowsPlaced) + " dropped "
+                       + juce::String (take.rowsDropped));
+
+            check (selections (machine) == before.aims,
+                   "no lane's pointer moved, so the take cannot change what the screen is playing",
+                   "aims " + selections (machine) + " was " + before.aims);
+
+            check (liveGrid (machine) == before.grid,
+                   "and the live grid is byte-for-byte the one it had, hand-drawn fours and all",
+                   "was " + juce::String (before.grid.length()) + " characters, now "
+                       + juce::String (liveGrid (machine).length()));
+
+            check (recordCensus (machine).joinIntoString (" ") == "pattern pattern1",
+                   "the session holds slot 0's and slot 1's records and no new name: the take wrote "
+                   "into the slot that was already open",
+                   "records: " + recordCensus (machine).joinIntoString (" "));
+
+            check (counter.gridChanges == before.gridChanges + 1
+                       && counter.sourceChanges == before.sourceChanges + 1
+                       && repaints == before.repaints + 1,
+                   "192 cells of one slot cost one property change and one repaint, which is the "
+                   "whole reason this goes through the seam and not the cell path -- plus one "
+                   "provenance write beside them, which is not a grid property and so buys no "
+                   "second repaint",
+                   "grid " + juce::String (counter.gridChanges - before.gridChanges) + " source "
+                       + juce::String (counter.sourceChanges - before.sourceChanges) + " repaints "
+                       + juce::String (repaints - before.repaints));
+
+            check (machine.slotSource (1) == "techno:0:0" && machine.slotSource (0).isEmpty(),
+                   "the dot a press wrote says where it came from, in the three facts the third "
+                   "contract names -- the genre's id, the core it rolled and the seed that rolled "
+                   "it -- and the dot nobody generated says nothing at all",
+                   "dot 2 reads \"" + machine.slotSource (1) + "\" and dot 1 reads \""
+                       + machine.slotSource (0) + "\"");
+
+            const auto rec = slotRecord (machine, 1);
+
+            check (rowSig (rec, 0) == "X...X...X...X...",
+                   "the kick lane holds the four-on-the-floor row, read out of the record rather "
+                   "than from the engine",
+                   "lane 0 reads " + rowSig (rec, 0));
+
+            check (rowSig (rec, 1) == "....X.......X...",
+                   "the clap lane holds the backbeat row",
+                   "lane 1 reads " + rowSig (rec, 1));
+
+            check (rowSig (rec, 2) == ".x.x.x.x.x.x.x.x",
+                   "the lane whose file says `hat` took the closed hat row",
+                   "lane 2 reads " + rowSig (rec, 2));
+
+            check (rowSig (rec, 3) == "......o...o.....",
+                   "and `ohat` -- also a hat by name, and the next unused one -- took the third hat "
+                   "row, which is the ordering rule rather than luck",
+                   "lane 3 reads " + rowSig (rec, 3));
+
+            check (storedCell (rec, 0, 0).level == (int) Layout::levelByte (GenrePatterns::fullVelocity)
+                       && storedCell (rec, 2, 1).level == (int) Layout::levelByte (GenrePatterns::pushVelocity)
+                       && storedCell (rec, 3, 6).level == (int) Layout::levelByte (GenrePatterns::ghostVelocity),
+                   "the three accents land on the rungs the table's own velocities quantise to -- "
+                   "127, 91 and 61 -- so the signatures above are reading a ladder and not a shape",
+                   "bytes " + juce::String (storedCell (rec, 0, 0).level) + ", "
+                       + juce::String (storedCell (rec, 2, 1).level) + ", "
+                       + juce::String (storedCell (rec, 3, 6).level));
+
+            check (storedCell (rec, 0, 1).on == 0 && storedCell (rec, 0, 1).level == 127,
+                   "a cell the row leaves off is stored OFF at FULL level -- and step 1 of this lane "
+                   "was ON when the press happened, so this one line carries both the replacement "
+                   "rule and the silence-versus-zero-level rule",
+                   "on " + juce::String (storedCell (rec, 0, 1).on) + " level "
+                       + juce::String (storedCell (rec, 0, 1).level));
+
+            auto untouched = 0;
+
+            for (auto c = 4; c < Layout::numChannels; ++c)
+                for (auto s = 0; s < Layout::numSteps; ++s)
+                {
+                    const auto cell = storedCell (rec, c, s);
+
+                    if (cell.on != 0 || cell.level != 127)
+                        ++untouched;
+                }
+
+            check (untouched == 0,
+                   "the spare snare lane and the seven lanes with no sample are written as neutral "
+                   "rows too, which is the other half of what makes a take a replacement for the "
+                   "slot rather than an overdub on whatever it held",
+                   "cells left non-neutral in lanes 4..11: " + juce::String (untouched));
+
+            auto notNeutral = 0;
+
+            for (auto c = 0; c < Layout::numChannels; ++c)
+                for (auto s = 0; s < Layout::numSteps; ++s)
+                {
+                    const auto cell = storedCell (rec, c, s);
+
+                    if (cell.chance != Layout::chanceLevels || cell.strikes != 1)
+                        ++notNeutral;
+                }
+
+            check (notNeutral == 0,
+                   "a take sets no probability and no strike count anywhere: a Plan has no analogue "
+                   "for either field, and the neutral byte in every one of the 192 cells is what says "
+                   "the generator did not invent one",
+                   "cells off neutral chance or strikes: " + juce::String (notNeutral));
+        }
+
+        //======================================================================
+        // c. a take is inaudible until a lane is aimed at it, and is then the take
+        {
+            GrooveboxProcessor machine;
+            machine.prepareToPlay (sampleRate, blockSize);
+            clearAllSteps (machine);
+            rearm (machine);
+            kit.load (machine);
+
+            machine.setStep (0, 0, true);
+            machine.setStep (2, 1, true);
+
+            const auto before = play (machine, barSamples);
+            const auto take = machine.generateGenreTake (0);
+            const auto during = play (machine, barSamples);
+
+            check (peakOf (before.left) > 0.0f,
+                   "precondition: the render the next line calls unchanged has sound in it, so "
+                   "bit-identity here is not two silences agreeing",
+                   "peak " + juce::String (peakOf (before.left), 6));
+
+            check (firstDifference (before.left, during.left, 0, barSamples) < 0
+                       && firstDifference (before.right, during.right, 0, barSamples) < 0,
+                   "writing a take into an unpointed slot changes no sample of the bar, on either "
+                   "channel -- it is a record nobody is playing yet",
+                   "first difference at " + juce::String (firstDifference (before.left, during.left, 0, barSamples))
+                       + " left, "
+                       + juce::String (firstDifference (before.right, during.right, 0, barSamples))
+                       + " right, peak after " + juce::String (peakOf (during.left), 6));
+
+            for (auto c = 0; c < Layout::numChannels; ++c)
+                machine.setChannelSlot (c, take.slot);
+
+            const auto after = play (machine, barSamples);
+
+            check (peakOf (after.left) > 0.0f
+                       && firstDifference (before.left, after.left, 0, barSamples) >= 0,
+                   "once every lane points at the dot the take went to, the bar both sounds and "
+                   "differs -- the only form in which this contract says a take is audible. Onset "
+                   "counting is deliberately absent: these clicks are 4,000 samples long, so their "
+                   "tails cross step boundaries and a count would measure the tail.",
+                   "peak " + juce::String (peakOf (after.left), 6) + ", first difference at "
+                       + juce::String (firstDifference (before.left, after.left, 0, barSamples)));
+        }
+
+        //======================================================================
+        // d. every way to be refused, each asked where nothing else could say no
+        {
+            /**
+                The four claims a refusal owes, asked of a machine that already holds a real gesture.
+
+                The census and live-grid comparisons work on a bare session -- a build that wrote
+                before it decided would add a record name and move cells -- but the fourth one does
+                not: with no action in the history, "the refusal performed nothing into the open
+                transaction" is an absence compared against an absence, and it passes on a build
+                that never had a transaction to spoil. So every arm draws a step first, and
+                `previousGestureStillUndoes` asks the question that step makes answerable.
+            */
+            auto refused = [&] (GrooveboxProcessor& m, TreeCounter& counter, const int& repaints,
+                               const Snapshot& before, const juce::String& arm, int genreIndex,
+                               GrooveboxProcessor::GeneratedTake::Refusal kind)
+            {
+                m.beginTransaction ("Generate " + arm);
+                const auto take = m.generateGenreTake (genreIndex);
+
+                check (take.refusal == kind && ! take.applied && take.slot == -1
+                           && take.genreIndex == genreIndex,
+                       "the " + arm + " press is refused by the guard it is aimed at, and names no "
+                       "slot as its target",
+                       "refusal " + juce::String ((int) take.refusal) + " applied "
+                           + juce::String ((int) take.applied) + " slot " + juce::String (take.slot)
+                           + " genre " + juce::String (take.genreIndex) + " | " + take.message);
+
+                check (treeCensus (m) == before.census && liveGrid (m) == before.grid
+                           && selections (m) == before.aims
+                           && recordCensus (m).joinIntoString (" ") == before.records,
+                       "and the " + arm + " refusal leaves the session where it found it: every "
+                       "property, all 192 live cells, every pointer, every record name",
+                       "census same " + juce::String ((int) (treeCensus (m) == before.census))
+                           + " grid same " + juce::String ((int) (liveGrid (m) == before.grid))
+                           + " aims " + selections (m) + " records "
+                           + recordCensus (m).joinIntoString (" "));
+
+                check (counter.changes == before.changes && repaints == before.repaints,
+                       "a refused " + arm + " press notifies the tree and the panel zero times",
+                       "changes " + juce::String (counter.changes - before.changes) + " repaints "
+                           + juce::String (repaints - before.repaints));
+
+                check (m.getUndoManager().canUndo()
+                           && m.getUndoManager().getNumActionsInCurrentTransaction() == 0,
+                       "the transaction the " + arm + " press opened holds no action, and the step "
+                       "drawn before the press is still in the history behind it -- both halves are "
+                       "needed, and they are not the same number. getNumActionsInCurrentTransaction "
+                       "answers 0 only while a transaction is open and nothing has been performed "
+                       "into it, so a refusal that wrote would report 1, and a press that never "
+                       "opened one would report the 1 action of the step drawn before it. Without "
+                       "the second half, the absence this check is about could not be told apart "
+                       "from the absence of a transaction at all.",
+                       "actions in the open transaction "
+                           + juce::String (m.getUndoManager().getNumActionsInCurrentTransaction())
+                           + ", canUndo " + juce::String ((int) m.getUndoManager().canUndo()));
+
+                return take;
+            };
+
+            /**
+                ...and the claim that a refusal does not seal the gesture behind it, asked once per
+                machine because the undo it performs is a change of state in its own right.
+
+                With nothing in the history the shape of this is invisible, which is why the arms
+                above all draw a step first: if an empty transaction could seal, Ctrl+Z after a
+                refusal would be a dead key, and the only way to see that is to have something to
+                undo.
+            */
+            auto previousGestureStillUndoes = [&] (GrooveboxProcessor& m, const juce::String& arm)
+            {
+                const auto undone = m.getUndoManager().undo();
+
+                check (undone && ! m.isStepOn (0, 3),
+                       "the gesture from before the refused " + arm + " press still undoes, so an "
+                       "empty transaction does not seal the one behind it",
+                       "undo returned " + juce::String ((int) undone) + ", step 0.3 now "
+                           + juce::String ((int) m.isStepOn (0, 3)));
+            };
+
+            /** The arm's fixture: whatever kit it needs, then one undoable gesture. */
+            auto gesture = [&] (GrooveboxProcessor& m, TreeCounter& counter, int& repaints,
+                               Snapshot& before)
+            {
+                m.getUndoManager().clearUndoHistory();
+                m.setStep (0, 3, true);
+
+                m.getValueTreeState().state.addListener (&counter);
+                m.onStateChanged = [&repaints] { ++repaints; };
+
+                before = look (m, counter, repaints);
+            };
+
+            {
+                GrooveboxProcessor m;
+                m.prepareToPlay (sampleRate, blockSize);
+                clearAllSteps (m);
+                rearm (m);
+                kit.load (m);
+
+                for (auto c = 0; c < Layout::numChannels; ++c)
+                    m.setChannelSlot (c, c % Layout::numPatternSlots);
+
+                TreeCounter counter;
+                int repaints = 0;
+                Snapshot before;
+                gesture (m, counter, repaints, before);
+
+                check (m.firstUnpointedSlot() == -1,
+                       "precondition: this arm's bank really is full, so the only thing left to "
+                       "refuse about the press below is the bank",
+                       "aims " + selections (m));
+
+                refused (m, counter, repaints, before, "bank full", 0,
+                         GrooveboxProcessor::GeneratedTake::Refusal::bankFull);
+
+                previousGestureStillUndoes (m, "bank full");
+            }
+
+            {
+                GrooveboxProcessor m;
+                m.prepareToPlay (sampleRate, blockSize);
+                clearAllSteps (m);
+                rearm (m);
+                kit.load (m);
+
+                TreeCounter counter;
+                int repaints = 0;
+                Snapshot before;
+                gesture (m, counter, repaints, before);
+
+                check (m.firstUnpointedSlot() == 1,
+                       "precondition: this arm has a free dot and a usable kit, so the index is the "
+                       "only reason the next two presses can say no",
+                       "firstUnpointedSlot " + juce::String (m.firstUnpointedSlot()));
+
+                // One guard, both edges of it: the index off the top of the table and the index
+                // off the bottom. An unsigned comparison would answer the second one differently,
+                // and a signed `>= 0 && < numGenres` is what this is testing rather than asserting.
+                const auto high = refused (m, counter, repaints, before, "genre one past the table",
+                                           GenrePatterns::numGenres,
+                                           GrooveboxProcessor::GeneratedTake::Refusal::unknownGenre);
+
+                const auto low = refused (m, counter, repaints, before, "genre minus one", -1,
+                                          GrooveboxProcessor::GeneratedTake::Refusal::unknownGenre);
+
+                check (high.rowsAsked == 0 && low.rowsAsked == 0,
+                       "and both index refusals happen before any plan is built, so a bad index "
+                       "cannot cost the machine a grid it then throws away",
+                       "asked high " + juce::String (high.rowsAsked) + " low "
+                           + juce::String (low.rowsAsked));
+
+                previousGestureStillUndoes (m, "out-of-range genre");
+            }
+
+            {
+                GrooveboxProcessor m;
+                m.prepareToPlay (sampleRate, blockSize);
+                clearAllSteps (m);
+                rearm (m);
+
+                juce::String error;
+                const auto loaded = m.loadSampleIntoChannel (0, kit.snare, error);
+
+                TreeCounter counter;
+                int repaints = 0;
+                Snapshot before;
+                gesture (m, counter, repaints, before);
+
+                check (loaded && m.firstUnpointedSlot() == 1,
+                       "precondition: this arm has one loaded lane, a free dot and a valid genre, so "
+                       "the only thing it lacks is a lane the table can use",
+                       "loaded " + juce::String ((int) loaded) + " " + error + ", firstUnpointedSlot "
+                           + juce::String (m.firstUnpointedSlot()));
+
+                const auto named = refused (m, counter, repaints, before, "kit named for a family the core lacks",
+                                            0, GrooveboxProcessor::GeneratedTake::Refusal::noLanes);
+
+                check (named.rowsAsked == 5 && named.rowsPlaced == 0 && named.rowsDropped == 5,
+                       "a lane named Snare is not handed over to a hat row: every row of the core is "
+                       "asked and none is placed, which is the rule that a named lane is the user's "
+                       "decision rather than free real estate",
+                       "asked " + juce::String (named.rowsAsked) + " placed "
+                           + juce::String (named.rowsPlaced) + " dropped "
+                           + juce::String (named.rowsDropped));
+
+                previousGestureStillUndoes (m, "kit named for a family the core lacks");
+            }
+
+            {
+                GrooveboxProcessor m;
+                m.prepareToPlay (sampleRate, blockSize);
+                clearAllSteps (m);
+                rearm (m);
+
+                TreeCounter counter;
+                int repaints = 0;
+                Snapshot before;
+                gesture (m, counter, repaints, before);
+
+                check (m.firstUnpointedSlot() == 1,
+                       "precondition: this arm is a fresh session with nothing loaded, so the press "
+                       "below is refused by the empty kit and by nothing else",
+                       "firstUnpointedSlot " + juce::String (m.firstUnpointedSlot()));
+
+                refused (m, counter, repaints, before, "nothing loaded at all", 0,
+                         GrooveboxProcessor::GeneratedTake::Refusal::noLanes);
+
+                previousGestureStillUndoes (m, "nothing loaded at all");
+            }
+        }
+
+        //======================================================================
+        // e. which variant: a counter of its own, not the Seed parameter
+        {
+            GrooveboxProcessor m;
+            m.prepareToPlay (sampleRate, blockSize);
+            clearAllSteps (m);
+            rearm (m);
+            kit.load (m);
+
+            /**
+                Four presses, and the shape of the target rather than the count of the takes.
+
+                A press writes the lowest dot that no lane points at, and a press moves no pointer,
+                so the dots only advance when the user moves the lanes onto the take just written.
+                Each press below therefore states which dots are pointed at before it, and the
+                fourth is the shape without a re-aim: it goes back into the dot it just wrote and
+                replaces it. That is the sharp edge, and the tooltip is what tells the user where
+                the take actually went.
+            */
+            const auto pointLanes = [] (GrooveboxProcessor& p, int dots)
+            {
+                for (auto c = 0; c < Layout::numChannels; ++c)
+                    p.setChannelSlot (c, c % dots);
+            };
+
+            const auto t1 = m.generateGenreTake (0);   // all twelve lanes still on dot 1
+            pointLanes (m, 2);                         // dots 1 and 2 are the pointed ones
+            const auto t2 = m.generateGenreTake (0);
+            pointLanes (m, 3);                         // dots 1, 2 and 3
+            const auto t3 = m.generateGenreTake (0);
+            const auto t4 = m.generateGenreTake (0);   // and here, nothing moves
+
+            check (t1.applied && t1.coreIndex == 0 && t1.slot == 1,
+                   "the first press is the documented pattern: core 0, the first core the table "
+                   "carries, into dot 2",
+                   "core " + juce::String (t1.coreIndex) + " slot " + juce::String (t1.slot));
+
+            check (t2.applied && t2.coreIndex == 1 && t2.slot == 2 && t2.rowsAsked == 6
+                       && t2.rowsPlaced == 4 && t2.rowsDropped == 2,
+                   "with dots 1 and 2 pointed at, the second press is core 1 -- a different "
+                   "variant -- into dot 3, six rows asked, and it loses both a second kick row and "
+                   "a hat row because the kit has one lane per family it needs and a snare it "
+                   "cannot use",
+                   "core " + juce::String (t2.coreIndex) + " slot " + juce::String (t2.slot)
+                       + " asked " + juce::String (t2.rowsAsked) + " placed "
+                       + juce::String (t2.rowsPlaced) + " dropped " + juce::String (t2.rowsDropped));
+
+            check (t3.applied && t3.coreIndex == 2 && t3.slot == 3 && t3.rowsAsked == 5,
+                   "and the third is core 2 into dot 4, so three presses over three pointed "
+                   "dots give three different grids in three different dots",
+                   "core " + juce::String (t3.coreIndex) + " slot " + juce::String (t3.slot)
+                       + " asked " + juce::String (t3.rowsAsked));
+
+            check (t4.applied && t4.slot == 3 && t4.coreIndex == 2,
+                   "a fourth press taken without a re-aim goes back into dot 4 and replaces the "
+                   "third take: the target is chosen by pointers and a press moves none, so the "
+                   "bank's limit is not about how many takes were written but about how many dots "
+                   "are pointed away from. The sharp edge is real, and the tooltip line below is "
+                   "what tells the user where the take actually went.",
+                   "applied " + juce::String ((int) t4.applied) + " slot " + juce::String (t4.slot)
+                       + " core " + juce::String (t4.coreIndex));
+
+            check (t4.message.contains ("dot 4"),
+                   "and the line the button hands to its tooltip names the dot it actually wrote, "
+                   "because a comment that says the UI shows something is a gate",
+                   "message: " + t4.message);
+
+            {
+                GrooveboxProcessor f;
+                f.prepareToPlay (sampleRate, blockSize);
+                clearAllSteps (f);
+                rearm (f);
+                kit.load (f);
+
+                const auto u1 = f.generateGenreTake (0);
+                const auto refusedHere = f.generateGenreTake (GenrePatterns::numGenres);
+                const auto u2 = f.generateGenreTake (0);
+
+                check (u1.applied && ! refusedHere.applied && u2.coreIndex == t2.coreIndex
+                           && u2.coreIndex == 1,
+                       "a press that was refused does not advance the variant counter: this machine "
+                       "asked for the same second core as the one above with a refusal wedged "
+                       "between its two presses, and got the same core",
+                       "here " + juce::String (u2.coreIndex) + " there " + juce::String (t2.coreIndex));
+            }
+
+            {
+                GrooveboxProcessor s;
+                s.prepareToPlay (sampleRate, blockSize);
+                clearAllSteps (s);
+                rearm (s);
+                kit.load (s);
+
+                s.setSeed (777);
+                const auto seeded = s.generateGenreTake (0);
+
+                check (seeded.coreIndex == 0 && s.getSeed() == 777,
+                       "the Seed parameter is not this counter and this counter is not the Seed "
+                       "parameter: a rolled seed still gets the documented first core on the first "
+                       "press, and the press leaves the seed exactly where the host put it",
+                       "core " + juce::String (seeded.coreIndex) + ", seed now "
+                           + juce::String (s.getSeed()));
+            }
+        }
+
+        //======================================================================
+        // f. the take is the grid: one statement, two doors, and a save in the middle
+        {
+            GrooveboxProcessor maker, cells;
+
+            for (GrooveboxProcessor* m : { &maker, &cells })
+            {
+                m->prepareToPlay (sampleRate, blockSize);
+                clearAllSteps (*m);
+                rearm (*m);
+                kit.load (*m);
+            }
+
+            const auto take = maker.generateGenreTake (0);
+
+            /**
+                The same four rows, painted through the per-cell seams instead.
+
+                Painted from the literals rather than read back out of the take's record, because
+                a comparison that derives its own input from the thing it is checking agrees with
+                anything. The literals are also what part b pinned to the table, so this line
+                joins the generator to the cell path through a third, independent statement.
+            */
+            struct Drawn { int lane; const char* row; };
+
+            const Drawn drawn[] =
+            {
+                { 0, "X...X...X...X..." },
+                { 1, "....X.......X..." },
+                { 2, ".x.x.x.x.x.x.x.x" },
+                { 3, "......o...o....." },
+            };
+
+            for (const auto& d : drawn)
+                for (auto s = 0; s < Layout::numSteps; ++s)
+                {
+                    const auto level = GenrePatterns::velocityFor (GenrePatterns::accentFor (d.row[s]));
+
+                    if (level > 0.0f)
+                    {
+                        cells.setStep (d.lane, s, true);
+                        cells.setStepVelocity (d.lane, s, level);
+                    }
+                }
+
+            check (slotRecord (cells, 0) == slotRecord (maker, take.slot),
+                   "one grid, two doors: the record the seam wrote into an unpointed slot is "
+                   "byte-identical to the record the cell seams write into a pointed one for the "
+                   "same sixteen characters -- 192 cells, including the eight lanes neither path "
+                   "puts anything on",
+                   "seam " + juce::String (slotRecord (maker, take.slot).length())
+                       + " characters, cells " + juce::String (slotRecord (cells, 0).length()));
+
+            for (auto c = 0; c < Layout::numChannels; ++c)
+                maker.setChannelSlot (c, take.slot);
+
+            const auto fromCells = play (cells, barSamples);
+            const auto fromTake = play (maker, barSamples);
+
+            check (peakOf (fromCells.left) > 0.0f,
+                   "precondition: the grid this section calls identical is audible, so bit-identity "
+                   "is not two silences agreeing",
+                   "peak " + juce::String (peakOf (fromCells.left), 6));
+
+            check (firstDifference (fromCells.left, fromTake.left, 0, barSamples) < 0
+                       && firstDifference (fromCells.right, fromTake.right, 0, barSamples) < 0,
+                   "and the two machines render the same bits -- the take is exactly the grid a "
+                   "user would paint by hand, with nothing extra in the timing, the level or the "
+                   "probability",
+                   "first difference at "
+                       + juce::String (firstDifference (fromCells.left, fromTake.left, 0, barSamples))
+                       + " left, "
+                       + juce::String (firstDifference (fromCells.right, fromTake.right, 0, barSamples))
+                       + " right");
+
+            juce::MemoryBlock saved;
+            maker.getStateInformation (saved);
+
+            GrooveboxProcessor loaded;
+            loaded.prepareToPlay (sampleRate, blockSize);
+            loaded.setStateInformation (saved.getData(), (int) saved.getSize());
+
+            for (auto c = 0; c < Layout::numChannels; ++c)
+                loaded.setChannelSlot (c, take.slot);
+
+            const auto fromSaved = play (loaded, barSamples);
+
+            check (slotRecord (loaded, take.slot) == slotRecord (maker, take.slot),
+                   "the take survives a save and a load as the same bytes, so nothing about it is "
+                   "state the codec does not carry",
+                   "saved " + juce::String (slotRecord (maker, take.slot).length())
+                       + " loaded " + juce::String (slotRecord (loaded, take.slot).length()));
+
+            check (loaded.slotSource (take.slot) == maker.slotSource (take.slot)
+                       && loaded.slotSource (take.slot).startsWith ("techno:"),
+                   "and so does the claim about where it came from: the provenance is state on the "
+                   "tree rather than a memory of this session's presses, which is the half of the "
+                   "third contract that says *saved* and not *in-memory* -- a reopened set can still "
+                   "answer which row of the table a dot is, and answers it with the id, not the "
+                   "label a rename could move",
+                   "saved \"" + maker.slotSource (take.slot) + "\" loaded \""
+                       + loaded.slotSource (take.slot) + "\"");
+
+            /**
+                The other half of the same sentence, on its own machine.
+
+                `loaded` already has every lane aimed at the take's dot, so a press here would
+                land on dot 1 and the reader would have to work out which of the two facts that
+                tests. A fresh processor handed the same bytes has the state and nothing else.
+            */
+            GrooveboxProcessor reopened;
+            reopened.prepareToPlay (sampleRate, blockSize);
+            reopened.setStateInformation (saved.getData(), (int) saved.getSize());
+
+            const auto afterLoad = reopened.generateGenreTake (0);
+
+            check (afterLoad.applied && reopened.slotSource (afterLoad.slot) == "techno:0:0",
+                   "the running counter is not what the file carries: a session saved after three "
+                   "presses reopens and deals the documented first variant again, because what is "
+                   "saved beside a dot is the number that *one* take was rolled from. That is why "
+                   "*Reroll* keeps meaning one thing, and why the seed is not a parameter",
+                   "a press on the reopened set went to dot " + juce::String (afterLoad.slot + 1)
+                       + " and reads \"" + reopened.slotSource (afterLoad.slot) + "\"");
+
+            /**
+                What the round trip does and does not change.
+
+                A level reaches the engine as a float and is stored as a 7-bit byte, so the number
+                that comes back is `byte / 127` -- the same float for a level already on that
+                ladder, and up to half a rung away for one that is not. Full velocity is 1.0 =
+                127/127, so the kick and the clap rows survive exactly; the table's push and ghost
+                rungs are 0.72 and 0.48, whose rungs are 91/127 = 0.716535 and 61/127 = 0.480315,
+                so the hat rows come back a hair off. "It renders the same" is therefore false as
+                written and true as attributed -- and the attributed form is the stronger gate,
+                because it says which samples moved and why, and would go red on a codec that
+                changed a level for a reason it could not name.
+
+                Two preconditions hold the attribution up, and both are asked rather than assumed
+                below: a click ends inside its own step window, and the session opens straight, so
+                a difference inside one window belongs to that window's own cells.
+
+                The chance field has a snap rule for exactly this -- `Layout::chanceFromByte`,
+                whose own comment says a value that reaches the engine unrounded is a screen that
+                lies about the file. The level field has no snap, so a set sounds a hair off from
+                itself after a reload, and that is a product question rather than this door's: it
+                goes to NEXT-STEPS as a numbered item in the docs pass, not into a tolerance here.
+            */
+            const auto rungOf = [] (float level)
+            {
+                return (float) Layout::levelByte (level) / 127.0f;
+            };
+
+            auto offLattice = [&] (GrooveboxProcessor& p, int step)
+            {
+                for (auto c = 0; c < Layout::numChannels; ++c)
+                {
+                    const auto v = p.getStepVelocity (c, step);
+
+                    if (p.isStepOn (c, step) && v != rungOf (v))
+                        return true;
+                }
+
+                return false;
+            };
+
+            int quietSteps = 0, movedSteps = 0, unexplained = 0, silentRungs = 0;
+
+            for (auto st = 0; st < Layout::numSteps; ++st)
+            {
+                const size_t base = (size_t) st * (size_t) stepSamples;
+                const size_t last = (size_t) juce::jmin ((long long) fromTake.left.size(),
+                                                         (long long) (base + (size_t) stepSamples));
+                int nd = 0;
+
+                for (size_t i = base; i < last; ++i)
+                    if (fromTake.left[i] != fromSaved.left[i] || fromTake.right[i] != fromSaved.right[i])
+                        ++nd;
+
+                const auto moved = offLattice (maker, st);
+
+                quietSteps    += nd == 0;
+                movedSteps    += nd > 0;
+                unexplained   += nd > 0 && ! moved;
+                silentRungs   += nd == 0 && moved;
+            }
+
+            check (GeneratorKit::clickLength < stepSamples && maker.getSwing() == 0.0f,
+                   "preconditions for the two claims below: a click ends inside its own step, and "
+                   "the session opens straight, so a sample that moved did so because of the cells "
+                   "of its own step window and not because of a neighbour's tail",
+                   "click " + juce::String (GeneratorKit::clickLength) + " samples against a step of "
+                       + juce::String (stepSamples) + ", swing " + juce::String (maker.getSwing(), 6));
+
+            check (quietSteps > 0 && movedSteps > 0,
+                   "precondition: the round trip leaves some steps exactly alone and moves others, "
+                   "so the attribution below has two different states to sort rather than one "
+                   "uniform answer -- which is what makes the byte width the reason and not a "
+                   "guess",
+                   "quiet steps " + juce::String (quietSteps) + ", moved steps "
+                       + juce::String (movedSteps) + " of " + juce::String (Layout::numSteps));
+
+            check (unexplained == 0 && silentRungs == 0,
+                   "every step whose cells are all on the 127-ladder kept every bit, and every "
+                   "step that moved holds a cell whose float is not its own rung -- so the reload "
+                   "changed the spelling of a level and nothing else about the take",
+                   "unexplained " + juce::String (unexplained) + ", silent rungs "
+                       + juce::String (silentRungs) + " | the hat at 2.1 was "
+                       + juce::String (maker.getStepVelocity (2, 1), 9) + " and came back "
+                       + juce::String (loaded.getStepVelocity (2, 1), 9) + " (byte "
+                       + juce::String ((int) Layout::levelByte (maker.getStepVelocity (2, 1)))
+                       + ", rung " + juce::String (rungOf (maker.getStepVelocity (2, 1)), 9) + ")");
+
+            check (std::abs (loaded.getStepVelocity (2, 1) - maker.getStepVelocity (2, 1)) <= 0.5f / 127.0f
+                       && Layout::levelByte (loaded.getStepVelocity (2, 1))
+                            == Layout::levelByte (maker.getStepVelocity (2, 1))
+                       && loaded.getStepVelocity (0, 0) == maker.getStepVelocity (0, 0),
+                   "and the size of the move is the codec's own width rather than an opinion: half "
+                   "a rung is 0.00394 of full scale, the reloaded level is inside it, it encodes "
+                   "back to the byte it came from, and a level already on the ladder is untouched",
+                   "delta " + juce::String (std::abs (loaded.getStepVelocity (2, 1)
+                                                     - maker.getStepVelocity (2, 1)), 9)
+                       + " against a ceiling of " + juce::String (0.5f / 127.0f, 9));
+
+            juce::MemoryBlock second;
+            loaded.getStateInformation (second);
+
+            GrooveboxProcessor reloaded;
+            reloaded.prepareToPlay (sampleRate, blockSize);
+            reloaded.setStateInformation (second.getData(), (int) second.getSize());
+
+            for (auto c = 0; c < Layout::numChannels; ++c)
+                reloaded.setChannelSlot (c, take.slot);
+
+            const auto fromSecond = play (reloaded, barSamples);
+
+            check (firstDifference (fromSaved.left, fromSecond.left, 0, barSamples) < 0
+                       && firstDifference (fromSaved.right, fromSecond.right, 0, barSamples) < 0,
+                   "a second round trip changes nothing at all: the first one snapped the float "
+                   "onto the ladder the byte holds, which is a one-time move, so this is not a "
+                   "drift that accumulates every time the set is opened",
+                   "first difference at "
+                       + juce::String (firstDifference (fromSaved.left, fromSecond.left, 0, barSamples))
+                       + " left, "
+                       + juce::String (firstDifference (fromSaved.right, fromSecond.right, 0, barSamples))
+                       + " right");
+        }
+
+        //======================================================================
+        // g. one transaction, one undo
+        {
+            GrooveboxProcessor machine;
+            machine.prepareToPlay (sampleRate, blockSize);
+            clearAllSteps (machine);
+            rearm (machine);
+            kit.load (machine);
+
+            machine.getUndoManager().clearUndoHistory();
+
+            const auto censusBefore = treeCensus (machine);
+            const auto gridBefore = liveGrid (machine);
+
+            machine.beginTransaction ("Generate Techno");
+            const auto take = machine.generateGenreTake (0);
+            const auto wrote = slotRecord (machine, take.slot);
+
+            check (take.applied && ! wrote.isEmpty() && treeCensus (machine) != censusBefore,
+                   "the press put a record where the session held none",
+                   "record length " + juce::String (wrote.length()) + ", census changed "
+                       + juce::String ((int) (treeCensus (machine) != censusBefore)));
+
+            check (machine.getUndoManager().undo() && slotRecord (machine, take.slot).isEmpty()
+                       && treeCensus (machine) == censusBefore,
+                   "one Ctrl+Z takes the whole take back: the slot holds nothing again, so the "
+                   "bank's sparseness rule means the record itself left rather than going quiet",
+                   "undo said " + juce::String ((int) (slotRecord (machine, take.slot).isEmpty()))
+                       + ", census back " + juce::String ((int) (treeCensus (machine) == censusBefore)));
+
+            check (machine.slotSource (take.slot).isEmpty(),
+                   "and the undo took the provenance with the record: the click owns the "
+                   "transaction, so the claim and the grid it describes land in one ActionSet and "
+                   "one Ctrl+Z answers for both -- an undo that left a dot claiming a genre it no "
+                   "longer holds is a session that goes on lying after the edit is gone",
+                   "dot " + juce::String (take.slot + 1) + " reads \""
+                       + machine.slotSource (take.slot) + "\" after the undo");
+
+            check (liveGrid (machine) == gridBefore,
+                   "and the live grid never moved, so the undo of a take has no audible half",
+                   "was " + juce::String (gridBefore.length()) + " characters, now "
+                       + juce::String (liveGrid (machine).length()));
+
+            check (machine.getUndoManager().redo() && slotRecord (machine, take.slot) == wrote,
+                   "redo puts the identical take back",
+                   "record length after redo " + juce::String (slotRecord (machine, take.slot).length())
+                       + ", was " + juce::String (wrote.length()));
+
+            check (machine.slotSource (take.slot) == "techno:0:0",
+                   "and redo brings the claim back with it, so an undo/redo round trip costs no "
+                   "provenance -- which is only true because the two writes share one history "
+                   "entry: were the claim a second step, redoing once would show a grid it does "
+                   "not name",
+                   "dot " + juce::String (take.slot + 1) + " reads \""
+                       + machine.slotSource (take.slot) + "\" after the redo");
+        }
+
+        //======================================================================
+        // h. the claim leaves with the record, and stays while anything holds
+        {
+            GrooveboxProcessor machine;
+            machine.prepareToPlay (sampleRate, blockSize);
+            clearAllSteps (machine);
+            rearm (machine);
+            kit.load (machine);
+
+            const auto take = machine.generateGenreTake (0);
+
+            check (take.applied && machine.slotSource (take.slot) == "techno:0:0",
+                   "the fixture starts with a dot holding both a record and the claim about it: "
+                   "the two lines below are about a removal, not about a property that was never "
+                   "written -- which is the same absence-vs-never-was trap [35] parts a and f had "
+                   "to be built to avoid",
+                   "applied " + juce::String ((int) take.applied) + ", dot "
+                       + juce::String (take.slot + 1) + " reads \""
+                       + machine.slotSource (take.slot) + "\"");
+
+            // The user's own door first, and the reason it cannot finish the job is the point:
+            // `cellSaysAnything` asks about all four fields, so a dot whose accents outlive its
+            // own cells going quiet still holds a record. That makes the line below a control
+            // on the removal rather than a second way to write it.
+            for (auto c = 0; c < Layout::numChannels; ++c)
+                machine.setChannelSlot (c, take.slot);
+
+            clearAllSteps (machine);
+
+            int lit = 0;
+            for (auto c = 0; c < Layout::numChannels; ++c)
+                for (auto s = 0; s < Layout::numSteps; ++s)
+                    lit += machine.isStepOn (c, s) ? 1 : 0;
+
+            check (lit == 0 && ! slotRecord (machine, take.slot).isEmpty()
+                       && machine.slotSource (take.slot) == "techno:0:0",
+                   "every cell of the dot is off and the dot keeps both its record and its claim, "
+                   "across 192 pushes: the removal is the sparseness rule firing on a slot that "
+                   "says nothing in any field, not an erase that runs beside every edit",
+                   "lit cells " + juce::String (lit) + ", record length "
+                       + juce::String (slotRecord (machine, take.slot).length())
+                       + ", claim reads \"" + machine.slotSource (take.slot) + "\"");
+
+            // The door that can actually return a slot to the state a missing record means.
+            const int lanes[] = { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11 };
+            GrooveboxProcessor::SlotRowWrite neutral [Layout::numChannels];
+            machine.writeSlotRows (take.slot, lanes, neutral, Layout::numChannels);
+
+            check (slotRecord (machine, take.slot).isEmpty()
+                       && machine.slotSource (take.slot).isEmpty()
+                       && recordCensus (machine).joinIntoString (" ") == "pattern",
+                   "and the moment the slot stops saying anything in any of the four the dot stops "
+                   "claiming a genre: record and provenance leave in the same push, so an empty dot "
+                   "never carries a name into a save -- which is the half of the contract that "
+                   "makes the new property cost nothing, rather than merely not be read",
+                   "record length " + juce::String (slotRecord (machine, take.slot).length())
+                       + ", claim reads \"" + machine.slotSource (take.slot)
+                       + "\", records: " + recordCensus (machine).joinIntoString (" "));
+        }
+
+        kit.remove();
     }
 
     //======================================================================

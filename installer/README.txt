@@ -244,6 +244,53 @@ The marks need room: they appear when a row is at least 27 px tall and its name
 column at least 89 px wide, and every window size this editor allows satisfies both.
 
 
+Generated takes
+---------------
+
+The "Generate" button in the top bar writes a complete drum pattern for you. It opens a
+list of 29 genres -- Techno, House, Trap, Amapiano and the rest -- and picking one fills
+all twelve channels with that genre's grid. Closing the list without picking writes nothing.
+
+Three things about where the pattern goes are worth knowing before you press it:
+
+  it lands in a slot, not in the grid you are looking at -- specifically the
+  lowest-numbered slot that no channel is pointing at, filled for all twelve channels
+  at once.
+
+  it moves no pointer, so it arrives silent. Your channels keep playing what they were
+  playing, and you hear the new pattern when you click the slot mark for it. The
+  button's tooltip becomes the report and names the slot it actually wrote, because
+  the ring on the grid has not moved there to show you.
+
+  pressing it twice with nothing aimed in between writes the same slot twice, and the
+  second pattern replaces the first. Four slots means four presses give you one
+  pattern, not four, until you point a channel at what you got.
+
+One Ctrl+Z takes the whole grid back.
+
+A press replaces rather than overdubs: every channel of that slot is written, including
+the ones the genre had no row for, so an older pattern in that slot does not leave
+pieces behind. It sets when each hit lands and how loud, and leaves probability at 100%
+and strike count at one, so Mutate, Humanize and Touch mean the same thing over a
+generated grid as over one you drew yourself.
+
+It refuses instead of guessing, in two ways that cost you nothing. If every slot is
+pointed at by some channel there is nowhere silent to write, and it says so without
+touching the grid. And if your kit has no channel a row can land on -- a row goes to a
+channel that holds a sample AND whose name says what it is, Kick, Snare, Clap or Hat --
+it tells you how many rows the genre asked for and how many it found.
+
+Pressing the same genre again deals a different version of it: each genre carries four
+arrangements of the same idea, and the first press of a session gives you the documented
+one rather than a roll. The running counter is not the Seed knob and a set file does not
+carry it, so an old project reopens dealing its variants from the top again -- what the
+file keeps is the number each generated slot was rolled from, beside its grid.
+
+Generate does not change your tempo or your swing. The menu lists genre names only, and
+a press writes the grid and nothing else, so 132 with a shuffle on it is still two knobs
+away.
+
+
 Levels
 ------
 
@@ -263,9 +310,13 @@ In a host, every continuous control is a normal plugin parameter -- levels, pitc
 pitch drop, envelopes, mutes, choke groups, swing, swing grid, tempo, the master
 trim, the Variation knob, the Humanize and Touch faders and the seed -- so you can
 automate them, and the panel moves to follow what you drew. The pattern itself is
-not a parameter; it is saved with the project. A session saved by an older build
-opens with any parameter it did not have at that build's default, not at whatever
-was live when you saved it.
+not a parameter; it is saved with the project. Neither is a generated take: the host
+cannot record a press of Generate. The grid that landed is the record, and a dot a
+press wrote also keeps the three facts behind it in the same save -- the genre,
+which of that genre's four versions it is, and the number that rolled it. Nothing on
+screen reads those back yet; they are there so a pattern can be traced to its origin,
+not so it can be re-rolled. A session saved by an older build opens with any parameter
+it did not have at that build's default, not at whatever was live when you saved it.
 
 
 Size and limits

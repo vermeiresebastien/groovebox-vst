@@ -4,7 +4,10 @@
 // Kept free of JUCE on purpose: the whole decision is pure data, so Tests\PatternPlanTest.cpp
 // compiles it with cl alone and the rules can be argued about by running them. The plugin side
 // supplies LaneInfo (does this lane hold a sample, what is it called) and applies the resulting
-// grid through the processor's existing setStep / setStepVelocity path.
+// grid through `GrooveboxProcessor::generateGenreTake`, which hands the twelve rows to
+// `writeSlotRows` as one bulk write into one slot -- not through the per-cell `setStep` and
+// `setStepVelocity` seams, because those resolve the target slot from the lane's own pointer and
+// would therefore overwrite whatever the user is currently hearing.
 //
 // The rule the user picked is "roles onto lanes that have a sample". Concretely, for one core of
 // one genre:
