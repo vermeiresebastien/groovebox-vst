@@ -2013,6 +2013,9 @@ numbers for the next verification: **465 smoke / 651 layout / 85 planner checks,
 sentence: **546 smoke / 675 layout / 85 planner checks, 0 problems, guard OK**, and the same
 `4BC3AA231178C071`. Program Files is behind the tree by two `Source/`-changing commits after the `3c3f059` —
 export — `ba7c953` and `8e49944` — and closing that gap is the owner's install step.)*
+*(Both of those counts are records now, not state: the gap closed on 2026-11-18 when the `be65cfd` export was
+installed, and the receipt — with the five-commit span it closed and the hashes it matched — is the
+**Installed.** paragraph at the foot of this file.)*
 
 **Still open, and whose.** Item 14 stayed with the owner: `PatternPlanner.h` and `GenrePatterns.h` had
 no UI or state caller, only the planner suite — the three planner/panel contracts were decisions, not work to
@@ -2420,7 +2423,11 @@ with 0 problems, `GUARD OK: the parameter path is allocation-free` and `100% tes
 `out/verify-14a.console.txt`, with the per-suite logs beside it. Scope is part of the claim: that
 proves the *sources*, not the deliverable. `launch/` was not touched and no setup was built, so
 Program Files stays behind the tree by two `Source/`-changing commits after the `3c3f059` export, and closing
-that gap is the owner's install step. This paragraph then lands as a docs-only commit on top of the
+that gap is the owner's install step. *(That step ran on 2026-11-18, and the gap had grown since this
+sentence counted it: three `Source/`-changing commits — `ba7c953`, `8e49944` and the ship `be65cfd` itself —
+across five that touch any compiled input, `cad30ae` and `0003757` being test-only and build-only. The
+**Installed.** paragraph at the foot of this file has the receipt, and Program Files now equals the tree
+rather than trailing it.)* This paragraph then lands as a docs-only commit on top of the
 tree that run was made in, touching no compiled input, so by the rule in `AGENTS.md` it is not owed
 a rebuild either.
 
@@ -2733,9 +2740,25 @@ built from `be65cfd` and hash-matched to its artefact tree per file (`out\hashce
 standalone `4b8dce27…`, the bundle binary `4b4b38f8…` and `moduleinfo.json` `5eaecb37…` each equal in both
 places — and `moduleinfo.json` is where the version bump shows up, reading `"Version": "0.2.0"` where the
 `3c3f059` export read `0.1.0`. `Groovebox Setup 0.2.0.exe` (5,088,908 bytes, `71033be0…`) compiled from
-that folder, and its own version resource reads `0.2.0`. **Program Files still holds the `3c3f059`
-export** — bundle `98643a14…`, moduleinfo `e7c65365…`, byte-equal to the `launch/` that preceded this build
-— until the one elevation click lands; five `Source/`-changing commits separate `3c3f059` from `be65cfd`.
+that folder, and its own version resource reads `0.2.0`.
+
+**Installed.** One elevation click, and Setup's own log says so (`out\install-be65cfd.log`, runner
+`out\run-install-14b.ps1`, `SETUP EXIT: 0` read off the process the runner returned): `Administrative
+install mode: Yes`, `Install mode root key: HKEY_LOCAL_MACHINE`, `64-bit install mode: Yes`,
+`Installation process succeeded.`, four files installed and seven log lines of destination — the bundle
+to `C:\Program Files\Common Files\VST3\Groovebox.vst3\` and nothing else in any VST3 folder, the
+standalone and the README to the app folder, three values under `HKLM\SOFTWARE\Skeer\Groovebox` and no
+`HKCU` key at all. Every installed file is hash-equal to the folder it came from, README included
+(`out\hashcensus-installed-be65cfd.txt`): that last equality is what proves the payload is the copy this
+phase re-wrote, since the README is a tracked source rather than a build output. The uninstall entry
+reads `0.2.0` under the product's own GUID, the HKLM `Version` value reads `0.2.0`, and a recursive search
+of `AppData`, both `Program Files` trees and `ProgramData` finds exactly one `Groovebox.vst3` directory on
+the machine. What is **not** verified is a host loading it, and the plan for this step expected the wrong
+evidence: Live's scan file (`grep -F`, not a regex — backslashes are quoted in there) lists the machine
+VST3 folder and has **zero** Groovebox lines, because its mtime is 2026-11-15 and Live has not rescanned
+since the product was first installed. "The scan DB will list one Groovebox" was written into the handover
+as a check; what it actually checks is that the folder is scanned, and a rescan is his call in his host,
+not something this lane can manufacture.
 
 **This entry is the last word in this file, so two older records are now behind it.** The 6.7 receipt's
 census of `AGENTS.md` and `NEXT-STEPS.md` — 11/11 and 9/9 — describes the tree as it stood at *that*

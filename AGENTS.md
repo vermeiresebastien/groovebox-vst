@@ -18,18 +18,31 @@ It is fully gitignored and nothing in it is authored in place.
 
 - Verify an export by **SHA-256 against the artefact tree**, never by timestamp or size:
   `copy_if_different` leaves an old mtime on a file that exported correctly, and rebuilds
-  often coincide on size. Export shipped 2026-11-16 from `3c3f059`: `Groovebox.exe
-  0309ABCD...`, bundle binary `98643A14...` -- equal in `launch/` and in Program Files, as are
-  `moduleinfo.json` and the payload `README.txt` (`C98EFC6C...`, hash-matched against
-  `installer/README.txt` rather than against a copy of itself). It replaces the `b603107` export
-  (`Groovebox.exe A3948E47...`, bundle `CF3F8318...`), which was the installed build until then
-  and stays true as a record of it -- and whose only surviving bytes are now at
-  `D:\Projects\tools\groovebox-b603107-build-2026-11-16` with a `FROM.txt`, both prefixes re-checked
-  after the copy. They were found sitting in a reused verification worktree, which is where the next
-  reader would have met them as if they belonged to it.
+  often coincide on size. Export shipped 2026-11-18 from `be65cfd` and installed the same day:
+  `Groovebox.exe` `4B8DCE27...`, bundle binary `4B4B38F8...` -- equal in `launch/`, in the
+  artefact tree and in Program Files, as are `moduleinfo.json` (`5EAECB37...`, the first one to
+  advertise `0.2.0`) and the payload `README.txt` (`5FAE5418...`, hash-matched against
+  `installer/README.txt` rather than against a copy of itself, which is what makes that last pair
+  a check on the *document* and not on the build). It replaces the `3c3f059` export
+  (`Groovebox.exe A3948E47...` was `b603107`; `3c3f059` was `0309ABCD...` and bundle `98643A14...`),
+  which was the installed build for two days and stays true as a record of it -- **but its loose
+  bytes are gone**: `launch/` was rebuilt over them and Program Files was written over them, both by
+  design, and a sweep of `out/`, `D:\Projects\tools` and both `Program Files` trees finds no file
+  hashing to that bundle. It is recoverable rather than lost -- the payload sits inside the archived
+  installer at `D:\Projects\tools\groovebox-setup-0.1.0-build-2026-11-16`, whose `7797B73F...` was
+  re-checked against its own `FROM.txt` while writing this -- but recovery needs an extractor that is
+  not installed, so the rule below is the cheap fix, not the archive.
+  **Snapshot before you rebuild:** the next ship copies `launch/` to `out/launch-pre-<ship>` *before*
+  running the `launch` target whenever the outgoing export has no such folder, because `launch/` and
+  Program Files are the only two loose copies of a build and both are overwritten by design. The
+  four `launch-pre-*` archives show the pattern working; it lapsed at `3c3f059`, whose bytes survived
+  only inside its setup exe.
   `moduleinfo.json` is **not** build identity: one 1,404-byte file, `E7C65365...`, came out of four
   different builds (04:06, 12:40, 16:55 and the installed `3c3f059`), because it carries the version
   metadata rather than the code -- so it proves the payload is complete, never which build shipped.
+  The version-bump check that used that fact has now been spent and passed: the rebuilt bundle's
+  metadata reads `0.2.0`, so a stale `0.1.0` there would have meant a bundle older than the `project`
+  line it was configured from.
 - **A rebuild is not the install, and the difference is four bytes on identical sources.** Measured
   at the cheapest target in the tree (the std-only planner suite, ~1 s): `touch` one test file --
   content unchanged -- relink, and the two exes differ in exactly 4 of 198,144 bytes, at `0x108`
@@ -977,8 +990,11 @@ on purpose: see the two bolded rules below.
   `ISCC installer\Groovebox.iss` exits **2** at `Groovebox.iss:42` (`AppVersion={#MyAppVersion}`) and
   writes no exe, so a hand-run compile either carries the declared number or fails loudly. The
   bundle's own `moduleinfo.json` has a `"Version"` field generated from the same `project` line, so
-  after a bump a rebuilt bundle must read the new value there -- it says `0.1.0` in the `3c3f059`
-  export still in `launch/`, which is what makes it a version check and not an identity one.
+  after a bump a rebuilt bundle must read the new value there -- it read `0.1.0` in the superseded
+  `3c3f059` export, which is what makes it a version check and not an identity one, and the check has
+  since been run against the `be65cfd` build: `0.2.0` in the bundle's metadata, in the setup's own
+  version resource and in the `Version` value under `HKLM\SOFTWARE\Skeer\Groovebox`. Three places,
+  one number -- and the uninstall registry entry is the fourth, also `0.2.0`.
 - **`CloseApplications=no`** ([installer/Groovebox.iss:80](installer/Groovebox.iss)).
   With `yes` -- and the house default filter `*.exe,*.vst3` -- a silent install that
   finds the bundle locked force-quits the host holding it, which on this machine means
@@ -1063,6 +1079,13 @@ on purpose: see the two bolded rules below.
   not assumed -- and `Documents\VST3` is genuinely not scanned, which is what makes an
   orphan there harmless to a Live rescan. Do not cite a `Live 12 Suite\...\PluginManager\
   PluginScanDb.ldb` path; that file does not exist.
+  **Installing does not touch that file, and no number in it may be quoted as proof of an install.**
+  Re-measured after the 2026-11-18 ship: the Groovebox line count is still zero and the file's own mtime
+  is still 2026-11-15, because Live has not rescanned since the product existed on this machine. So an
+  install is proven by Setup's log plus a per-file hash against `launch/` -- and "a host has loaded it"
+  is a *different* claim, still un-run, that only a rescan in the owner's own session can answer. A ship
+  step that expected the scan file to list the bundle was asking a cache for a fact about a program that
+  has not been opened.
 
 ## Commit log: a subject is an identity, and a count is a snapshot
 
