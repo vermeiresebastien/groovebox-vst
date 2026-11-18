@@ -2721,6 +2721,22 @@ the file it was about to break -- 012b31bba4c9b97d for the table, 91a541e32457d6
 exit 0` and the green re-run sit at the foot of the log, so the restore is proven by the run rather
 than asserted by this paragraph. The green smoke output itself is `out/smoke-14b-final.txt`.
 
+**Ship.** The tree above is `be65cfd`, and it is the commit the artefacts came from. Verified in its own
+detached worktree rather than in the one that wrote it: `tools/verify-sha.ps1` with the SHA, the tag and
+the previous ship as the range, logging to `out\verify-be65cfd.txt` — `DIRTY FILES: 0`, `NAMED BY: master`,
+three suites built **per target** in a cold tree, each exe stamped after its own 25/25/3 inputs with
+`stale=0`, and 628 / 698 / 86 with zero failure lines, then `ctest` 4/4 after the builds because a replay
+alone proves nothing about the binaries. The same run's own arithmetic is what made the export and the
+package owed rather than optional: **9 compiled inputs and 1 payload input** changed since `ecab5a9`, and a
+payload input means the installed tree and the setup are older than the copy they carry. `launch` was then
+built from `be65cfd` and hash-matched to its artefact tree per file (`out\hashcensus-be65cfd.txt`): the
+standalone `4b8dce27…`, the bundle binary `4b4b38f8…` and `moduleinfo.json` `5eaecb37…` each equal in both
+places — and `moduleinfo.json` is where the version bump shows up, reading `"Version": "0.2.0"` where the
+`3c3f059` export read `0.1.0`. `Groovebox Setup 0.2.0.exe` (5,088,908 bytes, `71033be0…`) compiled from
+that folder, and its own version resource reads `0.2.0`. **Program Files still holds the `3c3f059`
+export** — bundle `98643a14…`, moduleinfo `e7c65365…`, byte-equal to the `launch/` that preceded this build
+— until the one elevation click lands; five `Source/`-changing commits separate `3c3f059` from `be65cfd`.
+
 **This entry is the last word in this file, so two older records are now behind it.** The 6.7 receipt's
 census of `AGENTS.md` and `NEXT-STEPS.md` — 11/11 and 9/9 — describes the tree as it stood at *that*
 commit, and `AGENTS.md`'s "Last green run" line carries 628/698/86 from this one; a re-census takes the
