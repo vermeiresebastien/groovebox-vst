@@ -2773,3 +2773,19 @@ shuffle on it stays two knobs away. No sorting of 29 names into families — tha
 classification of 533 rows nothing else in the build agrees with. No roll on the first press: core 0 is the
 documented pattern, and the running counter is not the Seed parameter and is deliberately not saved,
 because a second dice the host cannot see would redefine what the first one means.
+
+**Retired after the ship: the verification worktrees (2026-11-18).** Seven `out/wt-*` trees are
+gone, about 6 GB read off `df` either side, and one stays -- `out/wt-verify`, because
+`tools/README.md` documents it as the reused default for the detached gate rather than as scratch.
+What made this a census and not a delete: 93 `out/...` paths are cited across the five tracked
+docs, 36 of them do not resolve in this repo's own `out/`, and 32 of those resolved *only* inside
+`out/wt-44/out/` -- among them a run this file's 6.7 receipt quotes for the strip-plan gate and
+the four pre-promotion citation tools whose hashes that receipt prints as the source of a
+byte-identical copy. The bytes went to `D:\Projects\tools\groovebox-worktree-evidence-2026-11-18`
+with a `FROM.txt` that names which side of which comparison each group is; 692 copied files were
+SHA-256-compared with their originals before a single `git worktree remove` ran, and every claim
+re-measures from the archive alone with the sources deleted. Kept: the cold-tree test exes,
+because the 4,222 / 4,784 / 4 partition cannot be re-derived without two fresh configures.
+Not kept: the 580 MB clone inside that evidence folder, which no doc cites and which this repo
+already documents how to rebuild. The `lane-44` branch outlived its worktree, at 0 commits
+outside `master`.

@@ -64,7 +64,11 @@ It is fully gitignored and nothing in it is authored in place.
   side identified in `out/planbuild/ab-4222-labelled.txt` with its worktree HEAD, exe sha and COFF stamp
   beside that tree's own newest compiled input -- both fresh, both 8,739,840 bytes -- gives smoke
   (`363ca899fec4180c` vs `ae18b104fa748c1a`) **4,222** and layout **4,784**, and the **std-only planner
-  of those same two trees its documented 4** (`out/planbuild/relink-probe.txt`). Stamp-zeroing the smoke
+  of those same two trees its documented 4** (`out/planbuild/relink-probe.txt`). Those three
+  worktree directories were retired on 2026-11-18, and the exes that carry these numbers -- six for
+  the cold pair, one for the relink side -- are the only copies left, at
+  `D:\Projects\tools\groovebox-worktree-evidence-2026-11-18`, where `cmp -l` over the archived pair
+  re-measures 4,222, 4,784 and 4 without a rebuild. Stamp-zeroing the smoke
   pair leaves it different (`f1481f572d667059` vs `37807f8026b4ac69`), so this is not the clock
   difference grown larger -- and the planner's 4 across the very same pair of directories is the arm
   that proves it: a docs-only pair *does* reproduce the relink number when nothing but the clocks is
@@ -837,7 +841,9 @@ because an exemption list needs a provenance exactly like a hash does.
   hazard this section records is the loud direction: absent pins re-report exempt citations as
   `UNPINNED miss` (measured 22 on a correct tree). The quiet direction is worse because the gate
   still prints 0. Measured with the same docs and the two `cite-pin.txt` files that existed *then* --
-  main `out/` carried 17 range entries, the working set in `out/wt-44/out/` carried 19 -- run over
+  main `out/` carried 17 range entries, the working set in `out/wt-44/out/` carried 19 (that
+  worktree was retired on 2026-11-18 and the 19-entry list itself is archived beside the prefix
+  `a2a9e2c2`, so the contrast stays re-runnable) -- run over
   **this** tree's docs: stale pins give `checked 20, judged 60, pinned 31, miss 0`, current pins give
   `checked 21, judged 58, pinned 31, miss 1`, and the one extra check is a genuine defect --
   NEXT-STEPS.md line 114 cites PluginProcessor.h lines 333-338 for the `parameterChanged` sentence
@@ -1148,6 +1154,29 @@ on purpose: see the two bolded rules below.
   `D:\Projects\tools\groovebox-documents-vst3-2026-11-14` with a `FROM.txt`, both files
   SHA-256-matched and `cmp -s` exit 0 before the original was removed. Check what else shares
   the folder first -- `SKULPT.vst3` lives in `Documents\VST3` too, and is not ours to touch.
+- **A worktree under `out/` is only scratch if nothing cites into it -- census before removing.**
+  Done 2026-11-18: seven of the nine `out/wt-*` trees retired (about 6 GB, read off `df` either
+  side), and `out/wt-verify` kept because `tools/README.md` names it as `tools/verify-sha.ps1`'s
+  reused default. The census that made removal safe: extract every `out/...` token out of the five
+  tracked docs -- 93 of them -- and test each against the main `out/`. Thirty-six did not resolve
+  there, and **32 of those existed only inside `out/wt-44/out/`**, among them the `56-T.txt` that
+  this file cites as the proof of the strip-plan gate and the four pre-promotion citation-tooling
+  files whose sha256 prefixes `NEXT-STEPS.md` quotes for the byte-identical promotion. Deleting on
+  the assumption that anything gitignored is disposable would have been discovered by the next
+  reader, not by me. Bytes went to `D:\Projects\tools\groovebox-worktree-evidence-2026-11-18`
+  with a `FROM.txt` naming, for each group, which side of which comparison it is, and 692 copied
+  files were SHA-256-compared against their source before any `git worktree remove` ran (0
+  mismatches). Two rules fell out. (1) **Archive the unreproducible and say why the rest is not
+  archived**: the 580 MB `clone-cad30ae/` was left behind, because no doc cites it and the
+  documented clone command rebuilds every byte of it, while the cold-tree test exes were copied,
+  because with the two directories gone the 4,222 / 4,784 / 4 partition needs two fresh
+  configures to re-measure -- and `cmp -l` over the archived copies returns exactly those three
+  numbers, which is the archive proving itself from one folder. (2) **A hash quoted in prose is a
+  promise that some byte still exists to match it**: the relink bullet's `3aa8c869f169eb8c...` is
+  one side of a pair whose other side was already destroyed by the experiment that produced the
+  claim, so what survives is half a gate, and `FROM.txt` says that rather than implying more.
+  The `lane-44` branch outlived its worktree, as it should -- `git rev-list --count
+  master..lane-44` is 0, so the removal took no commit with it.
 - Scratch that must not be tracked goes in `out/` (gitignored). `out\test\` holds the
   staged installer experiment -- `Groovebox-test.iss` retargets every `DestDir` under
   `out\test\stage\` so the payload could be proven without touching the system -- and
