@@ -14,6 +14,9 @@
 
     Build:  cmake --build build --config Release --target GrooveboxLayoutTest
     Run:    build\GrooveboxLayoutTest_artefacts\Release\GrooveboxLayoutTest.exe
+    Shots:  ...GrooveboxLayoutTest.exe --shots docs\images   (writes the README
+            pictures from the product's own painters, after every section above;
+            without the flag nothing in that path runs and the counts are unchanged)
 */
 
 #include "PluginEditor.h"
@@ -22,6 +25,8 @@
 #include "StepGridComponent.h"
 
 #include <cstdio>
+#include <cstring>
+#include <utility>
 #include <vector>
 
 using namespace gb;
@@ -529,13 +534,722 @@ std::vector<float> renderChannel (GrooveboxProcessor& processor, int totalSample
     return out;
 }
 
+//==============================================================================
+// Screenshots.
+//
+// `--shots <dir>` is the only way any of this runs, so the plain suite -- and the check
+// count the CTest gate reads -- is untouched by it. The point of putting the camera in
+// this binary rather than beside it is that every picture is then made by the same
+// painters the pixel checks in this file already argue about: nothing is photographed,
+// mocked up or composited, and a control that does not draw itself draws nothing here.
+//
+// `Component::createComponentSnapshot` is the call that makes that honest. It walks
+// `paint`, `paintOverChildren` and the children recursively, so sliders, labels and
+// buttons come out; `shell->paint (g)` -- which is what the wordmark check above uses,
+// and is right for it, because the divider is drawn by the editor itself -- would answer
+// with the background and no control at all. The area is taken in the component's own
+// coordinates, so a crop of the grid is `stepGrid->createComponentSnapshot` with a
+// grid-local rectangle, and the scale factor is a genuine 2x render rather than an
+// upscale of a 1x one.
+//
+// The session the pictures show is armed through the processor's public API, and the
+// grid comes from the generator rather than from hand-poked cells, so a screenshot cannot
+// display a pattern the product would not write itself.
+//
+// The processor is built as the standalone, not as the plugin, because the two faces of
+// the bar differ by a live transport: the wrapper kind is what `TransportBar::refresh`
+// reads to decide whether Play works. The face is then asserted before the first pixel
+// is written, so a picture of the wrong wrapper is a red run rather than a download page.
+//==============================================================================
+
+/**
+    Writes one render and gates it the way a render has to be gated: that it came back
+    at the size the component reports, and that it is not one flat colour.
+
+    The second half is the one that matters. A snapshot of a component tree that was
+    never laid out, or a `Graphics` still holding its cached context, is a *valid* image
+    of nothing -- it writes a PNG, `writeImageTo` says true, and the README gets a black
+    rectangle. So the corner pixel is the reference and a sampled count of the ones that
+    differ from it is the evidence, printed whether the check passes or fails.
+
+    The write is gated as a structure and not as a size, because a size only ever grows.
+    `File::createOutputStream()` is documented at juce_File.h:703 as handing back a stream
+    "initially positioned at the end of the file": on a file that already exists it
+    *appends*. Four runs into one folder therefore stacked four whole PNGs in every file,
+    and a decoder stops at the first IEND -- so what displayed was the oldest render, from
+    before the fix that these four runs were making. Hence: delete, then write, then read
+    back and ask how many images are in there.
+*/
+/** Why this byte buffer is not exactly one PNG, or empty when it is.
+
+    Asked as a structure and not as a size, because a size only grows: an appended second
+    image leaves a bigger file that still decodes. A reader stops at the first IEND, so a
+    file holding two PNGs *displays* -- and displays whichever was written first, which is
+    how four runs of this binary kept photographing the pre-fix panel. The patterns matched
+    are the exact 8-byte signature and the exact 12-byte IEND chunk (length 0, the type, its
+    CRC), because a compressed IDAT can contain the four ASCII bytes "IEND" by accident and
+    a gate that fires on noise is a gate that gets widened. */
+juce::String pngStructureProblem (const juce::MemoryBlock& blob)
+{
+    static const unsigned char signature[] = { 0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a };
+    static const unsigned char iendChunk[] = { 0x00, 0x00, 0x00, 0x00,
+                                               'I', 'E', 'N', 'D',
+                                               0xae, 0x42, 0x60, 0x82 };
+
+    const auto* p = static_cast<const unsigned char*> (blob.getData());
+    const auto n = (size_t) blob.getSize();
+
+    int headers = 0, iends = 0;
+    size_t firstIend = 0;
+
+    for (size_t i = 0; i + 8 <= n; ++i)
+    {
+        if (std::memcmp (p + i, signature, 8) == 0)
+            ++headers;
+
+        if (i + 12 <= n && std::memcmp (p + i, iendChunk, 12) == 0)
+        {
+            if (iends == 0)
+                firstIend = i;
+
+            ++iends;
+        }
+    }
+
+    if (headers != 1 || iends != 1)
+        return "the file holds " + juce::String (headers) + " PNG signatures and "
+                 + juce::String (iends) + " IEND chunks, expected one image";
+
+    if (firstIend + 12 != n)
+        return "the image ends at byte " + juce::String ((long long) (firstIend + 12))
+                 + " of " + juce::String ((long long) n);
+
+    return {};
+}
+
+void writeShot (const juce::File& directory,
+                const juce::String& name,
+                juce::Component& source,
+                juce::Rectangle<int> area,
+                float scale)
+{
+    ++checked;
+
+    const auto visible = area.getIntersection (source.getLocalBounds());
+    const auto wantedW = juce::roundToInt ((float) visible.getWidth() * scale);
+    const auto wantedH = juce::roundToInt ((float) visible.getHeight() * scale);
+
+    juce::String issue;
+    int sampled = 0, moved = 0, seeThrough = 0;
+
+    if (visible.isEmpty())
+    {
+        issue = "the crop is empty";
+    }
+    else
+    {
+        const auto image = source.createComponentSnapshot (area, true, scale);
+
+        if (image.isNull())
+            issue = "no image came back";
+        else if (image.getWidth() != wantedW || image.getHeight() != wantedH)
+            issue = "size " + juce::String (image.getWidth()) + "x"
+                      + juce::String (image.getHeight()) + ", asked for "
+                      + juce::String (wantedW) + "x" + juce::String (wantedH);
+        else
+        {
+            const auto corner = image.getPixelAt (0, 0);
+
+            // Every fourth pixel: 1,890 x 880 sampled through getPixelAt at full
+            // density is 1.6 million colour conversions per shot, and a flat render
+            // shows itself in the first few thousand.
+            for (int y = 0; y < image.getHeight(); y += 4)
+                for (int x = 0; x < image.getWidth(); x += 4)
+                {
+                    ++sampled;
+                    moved += image.getPixelAt (x, y) != corner;
+                }
+
+            const auto percent = sampled > 0 ? 100.0 * (double) moved / (double) sampled : 0.0;
+
+            if (percent < 2.0)
+                issue = "flat: " + juce::String (moved) + " of " + juce::String (sampled)
+                          + " sampled pixels differ from the corner ("
+                          + juce::String (percent, 1) + "%)";
+
+            // Opaque at the edges, because a picture of a control is a picture of the
+            // panel behind it. TransportBar::paint draws captions and a bottom rule and
+            // never fills a background -- the editor does that -- so a crop taken from
+            // the bar itself is a rectangle of floating labels on alpha 0. On a page with
+            // a white ground that reads as a broken build, and the flatness sample above
+            // cannot see it: transparent pixels differ from the corner like any others.
+            if (issue.isEmpty())
+            {
+                const int w = image.getWidth(), h = image.getHeight();
+                const juce::Point<int> edges[] = { { 1, 1 }, { w - 2, 1 }, { 1, h - 2 },
+                                                   { w - 2, h - 2 }, { w / 2, h / 2 } };
+
+                for (const auto& point : edges)
+                    if (image.getPixelAt (point.x, point.y).getAlpha() < 250)
+                        ++seeThrough;
+
+                if (seeThrough > 0)
+                    issue = juce::String (seeThrough)
+                              + " of 5 probe points are transparent -- this component paints no"
+                                " background of its own, so shoot it through the editor";
+            }
+        }
+
+        if (issue.isEmpty())
+        {
+            const auto file = directory.getChildFile (name + ".png");
+
+            // JUCE 8 has no static ImageFileFormat::writeImageTo any more, and a format
+            // object that is asked to write to a stream it cannot open is the difference
+            // between a shot and a shot that was reported.
+            // Deleted first, for the reason in the block comment above: an append would
+            // leave the previous render as the one that displays.
+            if (file.existsAsFile() && ! file.deleteFile())
+                issue = "the older shot file is still there: " + file.getFullPathName();
+
+            std::unique_ptr<juce::FileOutputStream> out;
+
+            if (issue.isEmpty())
+                out = file.createOutputStream();
+
+            juce::PNGImageFormat png;
+
+            // Only if nothing is wrong yet: a failed delete leaves a null stream, and
+            // reporting "could not be opened" over it would name the wrong cause.
+            if (out == nullptr && issue.isEmpty())
+                issue = "the PNG file could not be opened for writing";
+            else if (! png.writeImageToStream (image, *out))
+                issue = "the PNG encoder refused it";
+            else
+            {
+                // JUCE 8's OutputStream::flush returns void, so the bytes on disk are the
+                // evidence that the flush happened -- which is the check that would have
+                // caught a truncated PNG anyway.
+                out->flush();
+
+                // Read it back and ask what is *in* it, not how big it got: the size went
+                // up on every broken run, and that was the false green.
+                if (! file.existsAsFile())
+                    issue = "no PNG on disk afterwards [" + file.getFullPathName() + "]";
+                else
+                {
+                    juce::MemoryBlock written;
+                    juce::FileInputStream in (file);
+
+                    if (! in.openedOk())
+                        issue = "the PNG that came back could not be opened for reading";
+                    else
+                    {
+                        in.readIntoMemoryBlock (written);
+                        issue = pngStructureProblem (written);
+
+                        if (issue.isEmpty() && written.getSize() < 1024)
+                            issue = "one PNG, but only " + juce::String ((int) written.getSize())
+                                      + " bytes of it";
+                    }
+                }
+            }
+        }
+    }
+
+    expect (issue.isEmpty(),
+            "shot " + name + " at " + juce::String (wantedW) + "x" + juce::String (wantedH),
+            issue.isEmpty() ? juce::String (moved) + " of " + juce::String (sampled)
+                              + " sampled pixels differ from the corner"
+                            : issue);
+}
+
+/** Union of two rectangles, skipping an empty one so a missing control cannot poison it. */
+juce::Rectangle<int> unionOf (juce::Rectangle<int> a, juce::Rectangle<int> b)
+{
+    if (a.isEmpty())
+        return b;
+    if (b.isEmpty())
+        return a;
+    return a.getUnion (b);
+}
+
+/** How many visible Labels anywhere below `root` carry exactly this text. Used to prove
+    a caption is *gone*: `isVisible()` on the bar's own child is not enough, because a
+    component can be hidden by an ancestor and still answer true for itself. */
+int countVisibleLabels (juce::Component& root, const juce::String& text)
+{
+    int found = 0;
+
+    for (int i = 0; i < root.getNumChildComponents(); ++i)
+    {
+        auto* child = root.getChildComponent (i);
+        if (child == nullptr)
+            continue;
+
+        if (auto* label = dynamic_cast<juce::Label*> (child))
+            if (child->isVisible() && label->getText() == text)
+                ++found;
+
+        found += countVisibleLabels (*child, text);
+    }
+
+    return found;
+}
+
+/** Counts the code points above 0x7F in every visible Label below `root`, and how many of
+    them are not `expected`.
+
+    A caption written as `"\xe2\x80\x93"` reaches a `juce::String` through
+    `CharPointer_ASCII` (juce_String.cpp:307), so each UTF-8 byte becomes its own code point
+    and the label paints mojibake while every text comparison still "looks like" an en dash.
+    Asked as code points, the difference is a number. `totalOut` is what keeps the check from
+    being vacuous: zero non-ASCII captions is not a pass, it is the caption not being there. */
+int countForeignCodePoints (juce::Component& root, unsigned expected, int& totalOut)
+{
+    int wrong = 0;
+
+    for (int i = 0; i < root.getNumChildComponents(); ++i)
+    {
+        auto* child = root.getChildComponent (i);
+        if (child == nullptr)
+            continue;
+
+        if (auto* label = dynamic_cast<juce::Label*> (child))
+        {
+            if (! child->isVisible())
+                continue;
+
+            const auto text = label->getText();
+
+            for (int c = 0; c < text.length(); ++c)
+            {
+                const auto ch = (unsigned) text[c];
+
+                if (ch < 0x80u)
+                    continue;
+
+                ++totalOut;
+                wrong += (ch == expected) ? 0 : 1;
+            }
+        }
+
+        wrong += countForeignCodePoints (*child, expected, totalOut);
+    }
+
+    return wrong;
+}
+
+void captureShots (GrooveboxProcessor& processor,
+                   juce::AudioProcessorEditor& editor,
+                   TransportBar* transportBar,
+                   StepGridComponent* stepGrid,
+                   ChannelStrip* strip,
+                   const juce::File& directory,
+                   int preferredWidth,
+                   int preferredHeight)
+{
+    std::printf ("\n-- screenshots -> %s --\n", directory.getFullPathName().toRawUTF8());
+
+    if (transportBar == nullptr || stepGrid == nullptr)
+    {
+        expect (false, "shots: the bar and the grid are both needed to render anything",
+                juce::String (transportBar == nullptr ? "no TransportBar" : "bar ok")
+                    + ", " + (stepGrid == nullptr ? "no StepGridComponent" : "grid ok"));
+        return;
+    }
+
+    expect (directory.exists() || directory.createDirectory(),
+            "shots: the output folder is there", directory.getFullPathName());
+
+    //==============================================================================
+    // Controls, asked by name. The identity rule of this file applies to the camera too:
+    // a crop aimed at "the button whose text is Velocity" would aim at the reset button
+    // the moment the overlay changes what that word is.
+    const auto namedButton = [transportBar] (const juce::String& name)
+    {
+        for (int i = 0; i < transportBar->getNumChildComponents(); ++i)
+            if (auto* button = dynamic_cast<juce::TextButton*> (transportBar->getChildComponent (i)))
+                if (button->getName() == name && button->isVisible())
+                    return button;
+
+        return static_cast<juce::TextButton*> (nullptr);
+    };
+
+    auto* velocityButton = namedButton ("Velocity");
+    auto* chanceButton   = namedButton ("Chance");
+    auto* ratchetButton  = namedButton ("Ratchet");
+
+    const auto closeOverlays = [&]
+    {
+        for (auto* button : { velocityButton, chanceButton, ratchetButton })
+            if (button != nullptr)
+                button->setToggleState (false, juce::sendNotificationSync);
+    };
+
+    const auto openOverlay = [&] (juce::TextButton* button)
+    {
+        closeOverlays();
+
+        if (button != nullptr)
+            button->setToggleState (true, juce::sendNotificationSync);
+    };
+
+    //==============================================================================
+    // One session, armed the way the product arms itself.
+    const auto fixture = makeClickWav ("shots", 4000, 44100.0);
+    juce::String loadError;
+    int loadFailures = 0;
+
+    for (int channel = 0; channel < Layout::numChannels; ++channel)
+        loadFailures += ! processor.loadSampleIntoChannel (channel, fixture, loadError);
+
+    expect (loadFailures == 0,
+            "shots: every lane can sound, so a meter reading is the mix and not an empty lane",
+            juce::String (loadFailures) + " of " + juce::String (Layout::numChannels)
+                + " lanes refused the fixture: " + loadError);
+
+    processor.resetTransport();
+    closeOverlays();
+
+    for (int channel = 0; channel < Layout::numChannels; ++channel)
+    {
+        processor.setChannelSlot (channel, 0);
+
+        for (int step = 0; step < Layout::numSteps; ++step)
+            processor.setStep (channel, step, false);
+    }
+
+    // Three presses, because that is what the bank looks like after a user has asked for
+    // takes: three filled dots and the grid showing the newest. The fourth press of a
+    // session like this is refused with the bank full, which is the documented ceiling --
+    // and the reason the lanes have to be pointed below: a take goes to a slot nobody is
+    // playing, exactly so that Generate cannot clobber the visible pattern, and `handleGenreChosen`
+    // does not switch them either. What switches them is the click on the dot, which is
+    // `setChannelSlot` and is the only way a user gets to see what was just written.
+    int takesWritten = 0, cellsMarked = 0, newestSlot = 0;
+
+    for (int press = 0; press < 3; ++press)
+    {
+        processor.beginTransaction ("shots: generate");
+        const auto take = processor.generateGenreTake (0);
+
+        if (take.applied)
+        {
+            ++takesWritten;
+            newestSlot = take.slot;
+        }
+        else
+            std::printf ("  note press %d wrote nothing: %s\n", press + 1, take.message.toRawUTF8());
+    }
+
+    for (int channel = 0; channel < Layout::numChannels; ++channel)
+        processor.setChannelSlot (channel, newestSlot);
+
+    expect (takesWritten == 3,
+            "shots: the grid is a generated take, and the bank has the three dots that says so",
+            juce::String (takesWritten) + " of 3 presses wrote a slot, every lane now on dot "
+                + juce::String (newestSlot + 1));
+
+    // Marks and a half-open probability, on cells the generator actually lit, so the
+    // resting marks and the notch appear where a user would have put them.
+    for (int channel = 0; channel < Layout::numChannels && cellsMarked < 3; ++channel)
+    {
+        for (int step = 0; step < Layout::numSteps && cellsMarked < 3; ++step)
+        {
+            if (! processor.isStepOn (channel, step))
+                continue;
+
+            switch (cellsMarked)
+            {
+                case 0: processor.setStepRatchet (channel, step, 4); break;
+                case 1: processor.setStepRatchet (channel, step, 2); break;
+                default: processor.setStepChance (channel, step, 0.5f); break;
+            }
+
+            ++cellsMarked;
+        }
+    }
+
+    expect (cellsMarked == 3,
+            "shots: two strike counts and one probability are on lit cells, so the resting "
+            "marks have something to report",
+            juce::String (cellsMarked) + " cells carry them");
+
+    // The precondition the hero shot actually needs: that the slot on screen has hits in
+    // it, and has them in more than one lane. A snapshot of an empty grid is a perfectly
+    // good image of nothing, and a not-one-flat-colour check passes on the lane names
+    // alone. The bar is the genre table's own, not a number typed here: techno's densest
+    // row is 10 of 16 and its rows land on four or five lanes, so "at least three lanes
+    // and at least one hit per lane" is the degenerate case being ruled out, and the
+    // count printed is what a reader can compare against `Source/GenrePatterns.h`.
+    int litCells = 0, litLanes = 0;
+
+    for (int channel = 0; channel < Layout::numChannels; ++channel)
+    {
+        int inLane = 0;
+
+        for (int step = 0; step < Layout::numSteps; ++step)
+            inLane += processor.isStepOn (channel, step);
+
+        litCells += inLane;
+        litLanes += inLane > 0;
+    }
+
+    expect (litCells >= litLanes && litLanes >= 3,
+            "shots: the slot the lanes are pointed at holds a pattern worth photographing",
+            juce::String (litCells) + " lit cells across " + juce::String (litLanes)
+                + " lanes of " + juce::String (Layout::numChannels));
+
+    processor.setChannelEvolveBars (0, 8);
+    processor.setChannelEvolveBars (2, 2);
+    processor.setChannelChokeGroup (1, 1);
+    processor.setChannelPitch (2, 5);
+    processor.setChannelPitchDrop (0, 4);
+    processor.setChannelAttack (0, 0.15f);
+    processor.setChannelDecay (0, 0.55f);
+    processor.setChannelSustain (0, 0.3f);
+    processor.setChannelRelease (0, 0.4f);
+
+    processor.setSwing (0.58f);
+    processor.setMutate (0.35f);
+    processor.setHumanize (0.3f);
+    processor.setTouch (0.4f);
+    processor.setManualTempo (132.0);
+    processor.setMasterGainDb (-2.0f);
+
+    //==============================================================================
+    // Prepared here, after the globals, and not by the caller: MasterBus moves its trim
+    // through a 20 ms one-pole that is only told where to sit in `setSampleRate`, so a
+    // prepare before line 843 leaves the meter climbing from unity for the first frames
+    // of every shot. The same ordering is what the level gate in this file argues about.
+    processor.prepareToPlay (44100.0, 512);
+
+    //==============================================================================
+    // Playing, so the playhead, the meter and the peak hold are live in the hero shot.
+    // A render of a little over a bar at this tempo, through processBlock -- the meter
+    // reads what the bus actually summed at the trim above, nothing is written to it.
+    processor.setPlaying (true);
+    renderChannel (processor, 44100, 512);
+    transportBar->refresh();
+    strip->refresh();
+
+    //==============================================================================
+    // The face gate. TransportBar's comment promises "the real transport button" to a
+    // standalone build, and nothing else in this file states which face is being
+    // rendered -- so the camera asserts it before it shoots. Without this the pictures
+    // showed the plugin-in-a-host face: a disabled Play and the caption "Host
+    // transport", which is a true statement about a VST3 and a false one about the app
+    // on the download page. The tempo is asked of `getCurrentTempo`, the same call the
+    // label's own painter reads, and it only reaches 132 because a processBlock ran.
+    {
+        juce::TextButton* play = nullptr;
+
+        for (int i = 0; i < transportBar->getNumChildComponents(); ++i)
+            if (auto* button = dynamic_cast<juce::TextButton*> (transportBar->getChildComponent (i)))
+                if (button->getName() == "Play" && button->isVisible())
+                    play = button;
+
+        const auto shownTempo = processor.getCurrentTempo();
+
+        expect (play != nullptr && play->isEnabled()
+                    && countVisibleLabels (editor, "Host transport") == 0
+                    && shownTempo > 131.5 && shownTempo < 132.5,
+                "shots: the panel is photographed in the standalone face, transport live",
+                juce::String (play != nullptr ? (play->isEnabled() ? "Play enabled" : "Play disabled")
+                                              : "no Play button found")
+                    + ", host caption labels " + juce::String (countVisibleLabels (editor, "Host transport"))
+                    + ", tempo readout " + juce::String (shownTempo, 3));
+    }
+
+    const auto floorW = editor.getConstrainer() != nullptr ? editor.getConstrainer()->getMinimumWidth()  : preferredWidth;
+    const auto floorH = editor.getConstrainer() != nullptr ? editor.getConstrainer()->getMinimumHeight() : preferredHeight;
+
+    //==============================================================================
+    // The full panel, twice: at the size a session opens at, and at the floor the
+    // constrainer enforces, which is where the bar goes to two lines.
+    editor.setSize (preferredWidth, preferredHeight);
+    writeShot (directory, "01-editor-default", editor, editor.getLocalBounds(), 1.0f);
+
+    editor.setSize (floorW, floorH);
+    writeShot (directory, "02-editor-floor", editor, editor.getLocalBounds(), 1.0f);
+
+    editor.setSize (preferredWidth, preferredHeight);
+
+    //==============================================================================
+    // Crops of the components that carry the features, taken while the overlays are shut,
+    // then one per overlay so the same cells are seen through each of the three editors.
+    const auto gridLocal = stepGrid->getLocalBounds();
+    auto rowsFor = [stepGrid] (int from, int to)
+    {
+        juce::Rectangle<int> box;
+
+        for (int channel = from; channel <= to; ++channel)
+            box = unionOf (box, stepGrid->getRowBounds (channel));
+
+        return box;
+    };
+
+    closeOverlays();
+    writeShot (directory, "03-grid-resting", *stepGrid, rowsFor (0, 5), 1.0f);
+
+    auto bank = juce::Rectangle<int>();
+
+    for (int channel = 0; channel < 4; ++channel)
+    {
+        bank = unionOf (bank, stepGrid->getBankStripBounds (channel));
+
+        for (int slot = 0; slot < Layout::numPatternSlots; ++slot)
+            bank = unionOf (bank, stepGrid->getSlotDotBounds (channel, slot));
+
+        bank = unionOf (bank, stepGrid->getSlotCopyBounds (channel));
+        bank = unionOf (bank, stepGrid->getEvolveChipBounds (channel));
+    }
+
+    if (! bank.isEmpty())
+        writeShot (directory, "04-bank-strip", *stepGrid, bank.expanded (4), 2.0f);
+    else
+        expect (false, "shot 04-bank-strip has a strip to crop",
+                "getBankStripBounds came back empty at " + asText (gridLocal) + " -- no bank at this size");
+
+    struct OverlayShot { const char* name; juce::TextButton* button; };
+
+    for (const auto& shot : { OverlayShot { "velocity", velocityButton },
+                              OverlayShot { "chance",   chanceButton },
+                              OverlayShot { "ratchet",  ratchetButton } })
+    {
+        openOverlay (shot.button);
+        writeShot (directory, "05-overlay-" + juce::String (shot.name),
+                   *stepGrid, rowsFor (0, 5), 1.0f);
+    }
+
+    closeOverlays();
+
+    auto toggles = juce::Rectangle<int>();
+
+    for (auto* button : { velocityButton, chanceButton, ratchetButton, namedButton ("ResetValues") })
+        if (button != nullptr)
+            toggles = unionOf (toggles, button->getBounds());
+
+    if (! toggles.isEmpty())
+    {
+        // The toggle cluster, through the editor: `toggles` is bar-local, so it is
+        // translated into the source's space before it is used as a crop.
+        writeShot (directory, "06-bar-toggles-shut", editor,
+                   toggles.expanded (6).translated (transportBar->getX(), transportBar->getY()), 2.0f);
+        openOverlay (velocityButton);
+        writeShot (directory, "07-bar-toggles-velocity", editor,
+                   toggles.expanded (6).translated (transportBar->getX(), transportBar->getY()), 2.0f);
+        closeOverlays();
+    }
+    else
+        expect (false, "shot 06 and 07 have the toggle group to crop",
+                "none of Velocity, Chance, Ratchet, ResetValues is visible in the bar");
+
+    // Through the editor, and in the editor's coordinates: `getBounds()` is the bar's
+    // rect in its parent, which is the space the snapshot source paints in.
+    writeShot (directory, "08-transport-bar", editor, transportBar->getBounds(), 1.0f);
+
+    if (strip != nullptr)
+    {
+        strip->refresh();
+
+        // Two gates, because a lane strip is a perfectly good picture of the wrong lane.
+        // The camera is handed the first ChannelStrip child, which is lane 0 only because
+        // PluginEditor adds them in channel order -- and the armed A/D/S/R only reach the
+        // render through `ChannelStrip::refresh` -> `EnvelopeControls::setValue`, so a shot
+        // of lane 12 comes out showing the factory defaults and nothing says so. The
+        // envelope is asked of the display's own store, beside the model value that
+        // `refresh` just read, rather than of a number typed here.
+        const auto laneName = processor.getChannelName (0);
+        const auto shownName = countVisibleLabels (*strip, laneName);
+
+        expect (shownName == 1,
+                "shot 09 photographs the lane the envelope was armed on",
+                "lane 0 is named \"" + laneName + "\", found " + juce::String (shownName)
+                    + " of that label in the strip under the camera");
+
+        EnvelopeControls* envelope = nullptr;
+
+        for (int i = 0; i < strip->getNumChildComponents(); ++i)
+            if (auto* found = dynamic_cast<EnvelopeControls*> (strip->getChildComponent (i)))
+                envelope = found;
+
+        const auto armed = processor.getChannelSustain (0);
+        const auto held = envelope != nullptr ? envelope->getValue (EnvelopeStage::sustain) : -1.0f;
+
+        expect (envelope != nullptr && std::abs (held - armed) < 1.0e-4f,
+                "shot 09's envelope rows carry the model value, not the default",
+                envelope == nullptr ? "no EnvelopeControls child in the strip"
+                                    : "row holds " + juce::String (held, 3) + ", lane 0 armed to "
+                                        + juce::String (armed, 3));
+
+        writeShot (directory, "09-lane-strip", editor, strip->getBounds(), 1.5f);
+
+        // The pitch-drop caption is the panel's only readout built from a non-ASCII escape,
+        // and it is the one place where the two spellings of the same bytes are invisible to
+        // a text comparison. Both branches are asked, on the lane the camera just shot: lane
+        // 0 is armed with a drop, and zeroing it takes the label to the en dash. Run after
+        // the write, because the second arm changes what the first arm photographed.
+        {
+            int total = 0;
+            const auto wrong = countForeignCodePoints (*strip, 0x2193u, total);
+
+            expect (total == 1 && wrong == 0,
+                    "shot 09's drop caption is the down arrow, not its UTF-8 bytes",
+                    juce::String (total) + " non-ASCII code point(s) in the strip's captions, "
+                        + juce::String (wrong) + " of them not U+2193");
+
+            processor.setChannelPitchDrop (0, 0);
+            strip->refresh();
+
+            int dashTotal = 0;
+            const auto dashWrong = countForeignCodePoints (*strip, 0x2013u, dashTotal);
+
+            expect (dashTotal == 1 && dashWrong == 0,
+                    "the no-drop caption is one en dash, not three bytes wearing one",
+                    juce::String (dashTotal) + " non-ASCII code point(s), "
+                        + juce::String (dashWrong) + " of them not U+2013");
+        }
+    }
+    else
+        expect (false, "shot 09 has a lane strip to render", "no ChannelStrip was found in the editor");
+
+    //==============================================================================
+    // Back to a stopped, closed panel. The shots ran last, so nothing downstream can be
+    // affected -- but a session left playing would be a lie about what this binary does
+    // when it is run without the flag.
+    processor.setPlaying (false);
+    closeOverlays();
+    editor.setSize (preferredWidth, preferredHeight);
+}
+
 } // namespace
 
-int main()
+int main (int argc, char** argv)
 {
     juce::ScopedJuceInitialiser_GUI juceInit;
 
     std::printf ("Groovebox editor layout and wiring check\n");
+
+    // --shots <dir>: render the README pictures after every section has run. Nothing
+    // here is a check unless the flag is on the command line, which is what keeps the
+    // plain suite's count -- and therefore the CTest gate's -- exactly what it was.
+    juce::String shotsPath;
+    int unknown = 0;
+
+    for (int i = 1; i < argc; ++i)
+    {
+        const juce::String arg (argv[i]);
+
+        if (arg == "--shots" && i + 1 < argc)
+            shotsPath = argv[++i];
+        else
+            ++unknown;
+    }
+
+    if (unknown > 0)
+        std::printf ("  note %d argument(s) this binary does not read\n", unknown);
 
     GrooveboxProcessor processor;
     processor.prepareToPlay (44100.0, 512);
@@ -1743,10 +2457,16 @@ int main()
                 else if (kind == "drop")
                 {
                     // Both halves: the fader has to be where the host put it, and so
-                    // does the number the user actually reads.
+                    // does the number the user actually reads. Asked as code points, not
+                    // as `"\xe2\x86\x93" "5"` -- an expectation written in the same bare
+                    // bytes as the defect agrees with it, which is exactly what this line
+                    // did while the label carried U+00E2 U+0086 U+0093 instead of U+2193.
+                    const auto caption = dropLabel->getText();
                     ok = std::abs (dropSlider->getValue() - (double) c.value) < 0.01
-                           && dropLabel->getText() == juce::String ("\xe2\x86\x93" "5");
-                    detail = "\"" + dropLabel->getText() + "\" at "
+                           && caption.length() == 2
+                           && (unsigned) caption[0] == 0x2193u
+                           && (unsigned) caption[1] == '5';
+                    detail = "\"" + caption + "\" at "
                                 + juce::String (dropSlider->getValue(), 1);
                 }
                 else if (kind == "attack")
@@ -5111,6 +5831,50 @@ int main()
                 processor.setStep (channel, step, false);
 
         drainVoices();
+    }
+
+    if (shotsPath.isNotEmpty())
+    {
+        // The face of the deliverable. A GrooveboxProcessor built the way the rest of
+        // this suite builds it reports itself host-driven, and the bar answers that
+        // honestly: disabled Play, disabled tempo steppers, and the caption
+        // "Host transport". So a render taken from the suite's own processor is a
+        // picture of the plugin inside a host, not of the app we ship. The standalone
+        // declares its kind to the base class *before* the constructor runs -- the
+        // seam at juce_CreatePluginFilter.h:42 -- and asking for the same kind here is
+        // what makes the picture the shipped build rather than the other wrapper.
+        std::unique_ptr<GrooveboxProcessor> shotProcessor;
+        juce::AudioProcessor::setTypeOfNextNewPlugin (juce::AudioProcessor::wrapperType_Standalone);
+        shotProcessor = std::make_unique<GrooveboxProcessor>();
+        juce::AudioProcessor::setTypeOfNextNewPlugin (juce::AudioProcessor::wrapperType_Undefined);
+
+        std::unique_ptr<juce::AudioProcessorEditor> shotEditor (shotProcessor->createEditor());
+
+        if (shotEditor == nullptr)
+        {
+            std::printf ("FAIL: the standalone-faced editor was not created\n");
+            return 1;
+        }
+
+        shotEditor->setSize (preferredWidth, preferredHeight);
+
+        TransportBar* shotBar = nullptr;
+        StepGridComponent* shotGrid = nullptr;
+        ChannelStrip* shotStrip = nullptr;
+
+        for (int i = 0; i < shotEditor->getNumChildComponents(); ++i)
+        {
+            auto* child = shotEditor->getChildComponent (i);
+            if (dynamic_cast<TransportBar*> (child) != nullptr)      shotBar   = dynamic_cast<TransportBar*> (child);
+            if (dynamic_cast<StepGridComponent*> (child) != nullptr) shotGrid  = dynamic_cast<StepGridComponent*> (child);
+            // The first, not the last: the editor adds one strip per channel in order, so
+            // child 0 is the lane the shots arming writes. captureShots asserts it.
+            if (dynamic_cast<ChannelStrip*> (child) != nullptr && shotStrip == nullptr)
+                shotStrip = dynamic_cast<ChannelStrip*> (child);
+        }
+
+        captureShots (*shotProcessor, *shotEditor, shotBar, shotGrid, shotStrip,
+                      juce::File (shotsPath).getFullPathName(), preferredWidth, preferredHeight);
     }
 
     std::printf ("\n%s  %d checks, %d problems\n",

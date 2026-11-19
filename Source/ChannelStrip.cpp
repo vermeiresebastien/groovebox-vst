@@ -221,8 +221,12 @@ void ChannelStrip::syncAutomatableControls()
 
     const auto drop = processor.getChannelPitchDrop (channel);
     dropSlider.setValue ((double) drop, juce::dontSendNotification);
-    dropValueLabel.setText (drop > 0 ? "\xe2\x86\x93" + juce::String (drop)
-                                     : juce::String ("\xe2\x80\x93"),   // en dash: no drop
+    // `String (const char*)` reads its bytes through CharPointer_ASCII (juce_String.cpp:307),
+    // so a UTF-8 escape passed bare becomes one code point per byte and paints as mojibake.
+    // The arrows in the header above already wrap them; these two did not.
+    dropValueLabel.setText (drop > 0 ? juce::String (juce::CharPointer_UTF8 ("\xe2\x86\x93"))
+                                          + juce::String (drop)
+                                     : juce::String (juce::CharPointer_UTF8 ("\xe2\x80\x93")),
                             juce::dontSendNotification);
 
     envelope.setValue (EnvelopeStage::attack,  processor.getChannelAttack (channel));
