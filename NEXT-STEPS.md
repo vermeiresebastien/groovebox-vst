@@ -2940,13 +2940,24 @@ promotion. Evidence in `out/clone-run-7c35c29/` (logs, ~150 KB); the 445 MB clon
 went away afterwards, because unlike the worktree exes it is reproducible by the command this
 section names, which is the same test the archive rule applies to everything else.
 
-**Still open on the way to "published".** Nothing has been *released* yet: no GitHub Release,
-and the repo's About field still describes a subset of what the plugin does. The annotated tag
-is the next thing written after this section -- `v0.2.1` on the commit that carries this licence,
-with the tag message stating the proof that its compiled inputs are byte-identical to `bef0699`,
-which is the commit the installed binaries were built from. A tag on the docs commit rather than
-on `bef0699` is the honest choice precisely because the payload docs came after the code: the
-tree it names is the one whose *whole* content matches what the setup carries.
+**Published, in that order, and the published bytes re-hashed.** The annotated tag went on the
+licence commit -- `v0.2.1` on the tree whose compiled inputs are byte-identical to `bef0699` while
+its payload documents are the ones the setup carries, which is why the tag sits on the docs commit
+rather than on the code one. A GitHub Release was then published from that tag with
+`Groovebox Setup 0.2.1.exe` attached, and the asset was downloaded back off GitHub and hashed:
+`2e0dce61...`, 5,110,054 bytes, equal to the file in `launch/` that the install receipt names --
+the only way an "it is published" sentence is worth writing. The repo's About field now carries a
+description that names the capability set instead of a subset, with nine topics
+(`vst3`, `juce`, `audio-plugin`, `drum-machine`, `step-sequencer`, `agpl-3`, `windows`, `dsp`,
+`cpp`), and GitHub's own licence detection reads **AGPL-3.0** off the new `LICENSE`.
+
 The bump-the-version question was settled the other way on purpose -- 0.2.1 was installed on one
 machine for six hours and never conveyed to anybody, so refreshing that package with its licence
-is a correction and not a second release.
+was a correction rather than a second release. That reasoning expired the moment the release went
+out: **from now on 0.2.1 is conveyed**, and anything that changes the payload becomes 0.2.2.
+
+Still open, none of it blocking: `homepage` on the repo is empty (`skeer.audio` is the publisher
+URL inside the installer, but nothing was verified about what that domain currently serves, so no
+homepage was claimed); the build remains unsigned, deliberately; and item **5.1**'s
+default-synthesized kit is the next feature, which would also give a first-run user something to
+hear without dragging samples in.

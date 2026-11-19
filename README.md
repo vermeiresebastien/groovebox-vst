@@ -8,10 +8,12 @@ sample you drag onto its row, and which also plays from MIDI notes.
 
 **Version 0.2.1** — Windows x64, JUCE 8.0.4 / C++17, shipped as a VST3 instrument and a
 standalone executable with its own transport. Licensed **AGPL-3.0-or-later** (see
-[Licence](#licence)); the build is not code-signed and no samples ship with it. There is no
-published binary yet: the repo is the source, and `cmake --build` plus
-`installer\build-installer.ps1` produce the standalone and the setup file in `launch\`,
-which is what the [Building](#building) and
+[Licence](#licence)); the build is not code-signed and no samples ship with it. The
+[release of `v0.2.1`](https://github.com/vermeiresebastien/groovebox-vst/releases/tag/v0.2.1)
+carries the Windows installer — unsigned, so SmartScreen warns once, with the setup's SHA-256
+printed in the notes — and that package is the same one this page describes. The repository is
+its corresponding source: `cmake --build` plus `installer\build-installer.ps1` produce the
+standalone and the setup file in `launch\`, which is what the [Building](#building) and
 [Installing](#installing) sections walk through. Everything on this page describes the build
 that is actually installed on the author's machine, and every picture is that build's own
 output.
