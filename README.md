@@ -1,8 +1,104 @@
 # Groovebox
 
+![The Groovebox editor: a transport bar across the top, sixteen steps by twelve lanes in the middle, and a channel strip for every lane along the bottom](docs/images/01-editor-default.png)
+
 A VST3 / standalone drum machine built from the drum page of **Earworm Studio**
 (`earworm-studio/index.html`): a 16-step sequencer where each drum channel is a
 sample you drag onto its row, and which also plays from MIDI notes.
+
+**Version 0.2.1** — Windows x64, JUCE 8.0.4 / C++17, shipped as a VST3 instrument and a
+standalone executable with its own transport. There is no published binary yet: the repo is
+the source, and `cmake --build` plus `installer\build-installer.ps1` produce the standalone
+and the setup file in `launch\`, which is what the [Building](#building) and
+[Installing](#installing) sections walk through. Everything on this page describes the build
+that is actually installed on the author's machine, and every picture is that build's own
+output.
+
+## At a glance
+
+| | |
+|---|---|
+| Grid | 16 steps × 12 drum lanes, four pattern takes per lane, and a lane can rotate through the ones it holds every 1, 2, 4 or 8 bars |
+| Sound | Drag a sample onto any lane row, or use that lane's sound button to browse: `.wav`, `.wave`, `.aif`, `.aiff`, `.aifc`, `.mp3`, `.ogg`, `.oga`, `.opus`, `.m4a`, `.aac` and `.flac` all load |
+| Per hit | Its own velocity, its own probability of firing, and a strike count of 1 to 8 with three choke groups per lane |
+| Per lane | Pitch −36 to +12 semitones, a pitch drop of 0 to 12 semitones that glides down onto the note over 30 ms, a full attack-decay-sustain-release envelope, level and mute |
+| Groove | Swing 0 to 100 % on a 1/8 or a 1/16 grid, *Humanize* (late only, never past a quarter of a step), *Touch* (never more than a quarter of a step's own level), a seed, and a generator over a 29-genre table |
+| Output | Per-lane faders, a −24 to +6 dB master trim, a peak bar with a tick for the true peak between the samples, and a clip latch — and deliberately no limiter |
+| Host | 116 automatable parameters (8 global plus 9 for each lane); MIDI notes C1 to B1 play the twelve lanes with velocity; the panel follows what the host drew |
+| Proof | 628 timing and DSP checks, 698 layout checks and 86 pattern-planner checks, all run headless and tracked by CTest |
+
+## Screenshots
+
+These are not mockups. `GrooveboxLayoutTest.exe --shots docs\images` renders the real editor
+headless and writes these files, so a picture cannot drift away from a build, and the last
+image is the same window captured off the desktop rather than drawn by the test — it matches
+the renders control for control, which is what makes the renders worth publishing.
+
+One thing to know before you read the strips: the rendered shots load every lane with the
+harness's own synthetic click fixture, so a sound button reads `click-shots` where your
+session would read `Load sample...`, and the levels and envelope numbers shown are the ones
+the harness armed to make each control legible in a picture. The live capture is the app
+with nothing loaded, which is why it looks bare.
+
+### The panel, and the smallest window it takes
+
+![The editor at its default window, showing a generated take across the grid](docs/images/01-editor-default.png)
+
+![The same editor at its minimum size — 1298 × 695](docs/images/02-editor-floor.png)
+
+The floor is derived, not typed: 1298 px comes from the transport bar's own wrap point and
+695 px from what the twelve strips and the grid band need at that width, so the two limits
+cannot disagree with each other. It is a *window* floor. A 1366 × 768 laptop leaves roughly
+730 px of usable height, so 695 fits a window on that screen; that sentence says nothing
+about the plugin maximised inside a DAW's own chrome, which has less room than the screen
+does. See [Layout](#layout).
+
+### The grid, and the three overlays
+
+![A lane row at rest: sixteen empty steps, the bank's four slot marks in the label column](docs/images/03-grid-resting.png)
+
+![The Velocity overlay: a bar rises from the bottom of each step showing how hard it hits](docs/images/05-overlay-velocity.png)
+
+![The Chance overlay: a step whose corner is cut can be dropped by the machine](docs/images/05-overlay-chance.png)
+
+![The Ratchet overlay: a tick count inside each step, one to eight strikes](docs/images/05-overlay-ratchet.png)
+
+Each overlay is a mode of the same grid, not a second panel: the bar in the top row picks
+which field a drag writes, and only one of the three can be lit at a time. The three
+features are documented under [Step velocity](#step-velocity), [Step probability, and the
+take](#step-probability-and-the-take) and [How many times a hit
+fires](#how-many-times-a-hit-fires).
+
+### The pattern bank in a lane's label column
+
+![The bank strip: four marks per lane, a copy mark, and the rotate chip](docs/images/04-bank-strip.png)
+
+Four takes per lane, which one the lane is pointed at, and whether it walks them on a
+period — [Four patterns per channel](#four-patterns-per-channel).
+
+### The transport bar, and one channel strip
+
+![The transport bar: tempo, swing, the grid choice, the three overlay buttons, and the master trim with its meter](docs/images/08-transport-bar.png)
+
+![The bar with every overlay shut](docs/images/06-bar-toggles-shut.png)
+
+![The bar with Velocity lit](docs/images/07-bar-toggles-velocity.png)
+
+![One channel strip, armed: pitch, drop, level, the four envelope stages and the choke group](docs/images/09-lane-strip.png)
+
+The strip is rendered at one and a half times its on-screen size so the captions are
+readable in a picture. The envelope numbers in it are the ones the harness armed, and the
+drop reads `↓4` — four semitones above the note, gliding down onto it.
+[The envelope](#the-envelope) and [Mix, headroom and the
+meter](#mix-headroom-and-the-meter) cover both controls.
+
+### The same window, captured live
+
+![The standalone running on the desktop, with nothing loaded](docs/images/10-live-standalone.png)
+
+Captured off the desktop rather than drawn by the test, at the window the standalone opens
+with. Every control sits where the render above says it sits, which is the evidence that the
+renders on this page are the product and not a picture of the test harness.
 
 ## What it does
 
@@ -11,7 +107,7 @@ sample you drag onto its row, and which also plays from MIDI notes.
 | Step grid | 16 steps per bar, 12 drum channels, painted in the channel's own colour |
 | **MIDI input** | **Play the channels from a keyboard or pads: the channels answer C1 upwards, with velocity** |
 | **Step velocity** | **Every step has its own velocity. Hit *Velocity* in the top bar and drag up or down inside a step to set how hard it hits** |
-| Sample loading | Drag a `.wav` / `.aiff` / `.mp3` / `.flac` / `.ogg` onto any channel **row**, or click the channel's sound button to browse |
+| Sample loading | Drag an audio file onto any channel **row**, or click the channel's sound button to browse. Twelve extensions load: `.wav` `.wave` `.aif` `.aiff` `.aifc` `.mp3` `.ogg` `.oga` `.opus` `.m4a` `.aac` `.flac` |
 | Per-channel pitch | −36 to +12 semitones, with `-12` / `+12` octave buttons |
 | **Pitch drop** | **0–12 semitones per channel: the hit starts that far above the note and glides down onto it over 30 ms — kick bloom you cannot get from Live's sample page. It is a parameter like the rest, never something the plugin decides for you** |
 | **ADSR per channel** | **Attack, Decay, Sustain and Release for every channel, so a hit can be tightened or turned into a sustained sound** |
@@ -939,6 +1035,18 @@ that:
 build-new\GrooveboxLayoutTest_artefacts\Release\GrooveboxLayoutTest.exe
 ```
 
+The same executable has one other mode, and it is what put the pictures at the top of this
+file:
+
+```powershell
+build-new\GrooveboxLayoutTest_artefacts\Release\GrooveboxLayoutTest.exe --shots docs\images
+```
+
+It renders the real editor into PNGs headless — the same components running the same
+`paint`, with no window server involved — and it is idempotent, so two runs on one build
+write the same bytes. None of it runs without the flag, which is what keeps the plain
+suite's printed count free of screenshot bookkeeping.
+
 It reports the bounds of every control, flags any with no size or outside their
 parent, and drives the level fader with synthetic mouse events to confirm the
 change actually reaches the processor. It also goes the other way: it writes a
@@ -1183,10 +1291,23 @@ Notes on the design:
   that landed *is* the record. The menu is one flat list of the 29 names in the table: sorting
   them into families would be a second classification of the same rows that nothing else in the
   build agrees with, and the genre's own name is the thing being chosen.
+- Which genre a take came from is reported in the **Generate button's tooltip** and nowhere on
+  the face of the panel. The session stores the provenance, so it survives a save and a reload,
+  but the tooltip is written by the press and reset to the button's explanation when the bar is
+  built again — reopen the set and the grid still holds the take, while the name it came from is
+  on screen nowhere.
 - *Humanize* is timing only, and late only: it cannot start a hit ahead of its step.
 - *Touch* is level only, and it is a deviation, not a redraw: it cannot turn a rest into
   a hit, cannot strike a step more than a quarter of its own level above or below what
   you wrote, and does not move a hit in time.
+- Two readouts are cut off by their own field width, at every window size the app opens at.
+  The four pitch stepper buttons are fourteen pixels wide, so `-12` and `+12` do not fit
+  their captions and paint as a smudge; `-` and `+` survive because they are one character.
+  The tooltips name each button, and the value box between them shows where the pitch is.
+  An envelope stage loses its ` ms` unit as soon as the number reaches three digits, because
+  the field is sized for `90 ms` and not for `188 ms` — and 188 ms is a lane's default decay,
+  so a fresh session shows `D 188`. Neither is a wrong number; both are a width chosen before
+  the values that now have to live in it.
 - No per-channel pan, and no group or submix routing.
 - The loaded-sample registry is capped at `SampleStore::maxSamples` per session;
   past that, a load reports an error instead of growing the list.

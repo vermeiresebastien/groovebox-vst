@@ -2789,3 +2789,82 @@ because the 4,222 / 4,784 / 4 partition cannot be re-derived without two fresh c
 Not kept: the 580 MB clone inside that evidence folder, which no doc cites and which this repo
 already documents how to rebuild. The `lane-44` branch outlived its worktree, at 0 commits
 outside `master`.
+
+## 0.2.1: the caption fix, the ship it cost, and the pictures that found it
+
+**The front page asked for screenshots, and the screenshots found a shipped defect.** The
+`--shots` path in the layout suite renders the real editor headless; the first crop of the
+lane-strip picture showed a lane whose envelope numbers were all factory values, which was
+the harness photographing the wrong strip, and the same picture showed the pitch-drop caption
+painted as three characters where the product means one. The first was a test bug and is now
+gated (lane identity, and the model value read back off the control before the file is
+written). The second was the product: `juce::String` built from a bare UTF-8 string literal
+reads its bytes through `CharPointer_ASCII`, so `"\xe2\x80\x93"` became three code points and
+the en dash arrived as mojibake -- silent in Release, because only a `jassert` complains.
+Fixed in `Source/ChannelStrip.cpp` by wrapping the literal the way the header's arrows above
+it already did, and gated by code point rather than by glyph: the caption must hold exactly
+one non-ASCII code point and it must be `U+2193`, and the no-drop branch must hold one
+`U+2013`. The gate that had been certifying the bug was the automation check, whose own
+expectation was written in the defect's byte form.
+
+**A user-visible UI defect is worth a version, and the owner ruled it so: 0.2.1.** Built from
+`bef0699` with the compiled inputs clean, gated at 628 smoke / 698 layout / 86 planner checks
+with 0 problems and `ctest` 4/4, and `launch/` snapshotted to `out/launch-pre-bef0699` with a
+`FROM.txt` and four files SHA-256-matched *before* the `launch` target ran over it -- the
+snapshot rule that lapsed at `3c3f059`, honoured here, which is why the outgoing 0.2.0 bytes
+still exist. Packaged as `Groovebox Setup 0.2.1.exe` (5,087,885 bytes, `c22b7f9c…`), the
+superseded 0.2.0 setup removed after its own hash was matched.
+
+**Installed, and the receipt is the same shape as the one below it.** Setup's log
+(`out/install-021.log`) closes `Installation process succeeded` with `Administrative install
+mode: Yes` and `Install mode root key: HKEY_LOCAL_MACHINE`. Per file, installed against
+`launch/`: standalone `f5abfabb…`, bundle binary `49dab016…`, `moduleinfo.json` `40f81ec9…`
+reading `"Version": "0.2.1"`, and the payload `README.txt` `5fae5418…` equal to
+`installer/README.txt` -- the same number the 0.2.0 record carries, which is the document
+check doing its job: the build moved and the document did not. One destination: no Groovebox
+bundle in `Documents\VST3` or `%LOCALAPPDATA%\Programs\Common\VST3`. Four version places, all
+`0.2.1`: bundle metadata, the setup's `FileVersion` and `ProductVersion` resources, the HKLM
+`Version` value, and the uninstall entry's `DisplayVersion`.
+
+**The pictures are now the front page, and they say what they are.** Eleven PNGs under
+`docs/images/`, tracked, written by `GrooveboxLayoutTest.exe --shots docs\images` -- a command
+now documented in the README's Verifying section rather than only in the test's usage line.
+The gallery states the fixture out loud: those strips are loaded with the harness's own
+synthetic click (`click-shots.wav`, written beside the test exe), so a sound button reads
+`click-shots` where a user's session reads `Load sample...`. The `## What it does` table's
+sample row was wrong in the understating direction and is fixed: the drop filter accepts
+twelve extensions, not the five it listed.
+
+**A live capture is the only thing that could have caught the next two defects, because it is
+the only check that asks a real window.** `PrintWindow` with `PW_RENDERFULLCONTENT` on the
+standalone's own window -- 1892 × 908, `visible=True`, 157 distinct colours over 68,418
+sampled pixels -- and it agrees with the headless render control for control. That agreement
+is what makes the renders publishable; the disagreements are product, not pipeline:
+
+- **The four pitch steppers are 14 px wide** (`smallButton` in `Source/ChannelStrip.cpp`), so
+  `-12` and `+12` cannot fit their own captions and paint as a smudge at every window size the
+  app opens at. `-` and `+` survive on being one character. The tooltips name them and the
+  value box shows the result, so it is legible-but-ugly, not broken.
+- **An envelope stage loses its ` ms` unit at three digits**, because the value field is sized
+  for `90 ms` and not for `188 ms` -- and 188 ms is a lane's *default* decay, so every fresh
+  session shows `D 188`. The number is right; the unit is clipped.
+
+Both are now in the README's Known limitations, stated as widths rather than as mysteries.
+Neither was fixed in this cycle, and that was a decision rather than an oversight: each one is
+a layout constant, and this repo's own history says what moving a layout constant does -- the
+wrap point, `oneRowWidth`, the editor floor and the fit claims all move with it, and the
+gates around them are the most-swept in the tree. A fix there belongs in a lane that can
+re-price `Layout::stripPlan` and the floor in the same pass, not in a docs-and-screenshots
+push that would have had to re-ship twice.
+
+**One pointer in this file is false, and it is the kind that survives a grep.** A paragraph
+above says "the README's limitations row says plainly that nothing on screen shows it yet",
+about the generated take's provenance. Neither `README.md` nor `installer/README.txt` contains
+a provenance limitation -- `grep -in provenance` returns nothing in either -- so the
+*attribution* is invented, and the fact it attributed was itself too strong: the genre *is*
+reported, in the Generate button's tooltip, which `handleGenreChosen` overwrites with the
+generator's own sentence ("`<name>` take written to dot N"), and which the constructor sets
+back to the explanation on the next build of the bar. So what is missing is a face-of-panel
+report and anything that survives a reload, not a report. The row the sentence pointed at now
+exists in the README's Known limitations, written from `TransportBar.cpp` and
+`PluginProcessor.cpp` rather than from the sentence.

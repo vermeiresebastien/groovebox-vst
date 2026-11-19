@@ -18,7 +18,19 @@ It is fully gitignored and nothing in it is authored in place.
 
 - Verify an export by **SHA-256 against the artefact tree**, never by timestamp or size:
   `copy_if_different` leaves an old mtime on a file that exported correctly, and rebuilds
-  often coincide on size. Export shipped 2026-11-18 from `be65cfd` and installed the same day:
+  often coincide on size. **Current export: shipped 2026-11-19 from `bef0699` at `0.2.1` and
+  installed the same afternoon** -- `Groovebox.exe` `f5abfabb...` (7,169,536 B), bundle binary
+  `49dab016...`, `moduleinfo.json` `40f81ec9...` reading `"Version": "0.2.1"`, and the payload
+  `README.txt` `5fae5418...` -- the first three equal in `launch/`, in the artefact tree and in
+  Program Files, the last equal to `installer/README.txt`, which is the document check described
+  below and not a build check. Setup's own log closes `Installation process succeeded` with
+  `Administrative install mode: Yes` and `Install mode root key: HKEY_LOCAL_MACHINE`, both retired
+  per-user destinations are still empty of the bundle, and `0.2.1` reads in all four version
+  places: the bundle metadata, the setup's own `FileVersion` and `ProductVersion` resources, the
+  HKLM `Version` value and the uninstall entry's `DisplayVersion`. The setup is
+  `Groovebox Setup 0.2.1.exe` (5,087,885 B, `c22b7f9c...`). The outgoing export it replaced --
+  still true as a record of what shipped, no longer what is installed:
+  export shipped 2026-11-18 from `be65cfd` and installed the same day:
   `Groovebox.exe` `4B8DCE27...`, bundle binary `4B4B38F8...` -- equal in `launch/`, in the
   artefact tree and in Program Files, as are `moduleinfo.json` (`5EAECB37...`, the first one to
   advertise `0.2.0`) and the payload `README.txt` (`5FAE5418...`, hash-matched against
@@ -35,14 +47,19 @@ It is fully gitignored and nothing in it is authored in place.
   **Snapshot before you rebuild:** the next ship copies `launch/` to `out/launch-pre-<ship>` *before*
   running the `launch` target whenever the outgoing export has no such folder, because `launch/` and
   Program Files are the only two loose copies of a build and both are overwritten by design. The
-  four `launch-pre-*` archives show the pattern working; it lapsed at `3c3f059`, whose bytes survived
-  only inside its setup exe.
+  `launch-pre-*` archives show the pattern working -- five of them now, the newest
+  `out/launch-pre-bef0699`, which is the `be65cfd` export kept with a `FROM.txt` and its four
+  files SHA-256-matched before the `launch` target ran over them; it lapsed at `3c3f059`, whose
+  bytes survived only inside its setup exe.
   `moduleinfo.json` is **not** build identity: one 1,404-byte file, `E7C65365...`, came out of four
-  different builds (04:06, 12:40, 16:55 and the installed `3c3f059`), because it carries the version
+  different builds (04:06, 12:40, 16:55 and the then-installed `3c3f059`), because it carries the version
   metadata rather than the code -- so it proves the payload is complete, never which build shipped.
-  The version-bump check that used that fact has now been spent and passed: the rebuilt bundle's
-  metadata reads `0.2.0`, so a stale `0.1.0` there would have meant a bundle older than the `project`
-  line it was configured from.
+  The version-bump check that used that fact has been spent twice and passed twice: the rebuilt
+  bundle's metadata read `0.2.0` at `be65cfd` and reads `0.2.1` at `bef0699`, so a stale value there
+  would have meant a bundle older than the `project` line it was configured from. Both files are
+  1,404 bytes and their hashes differ (`5eaecb37...` against `40f81ec9...`, re-checked against the
+  archived copy in `out/launch-pre-bef0699`), which is the same lesson one level down: the length is
+  the schema, the bytes are the version.
 - **A rebuild is not the install, and the difference is four bytes on identical sources.** Measured
   at the cheapest target in the tree (the std-only planner suite, ~1 s): `touch` one test file --
   content unchanged -- relink, and the two exes differ in exactly 4 of 198,144 bytes, at `0x108`
@@ -998,9 +1015,11 @@ on purpose: see the two bolded rules below.
   bundle's own `moduleinfo.json` has a `"Version"` field generated from the same `project` line, so
   after a bump a rebuilt bundle must read the new value there -- it read `0.1.0` in the superseded
   `3c3f059` export, which is what makes it a version check and not an identity one, and the check has
-  since been run against the `be65cfd` build: `0.2.0` in the bundle's metadata, in the setup's own
+  since been run twice more: against the `be65cfd` build it read `0.2.0`, and against the `bef0699`
+  build on 2026-11-19 it reads `0.2.1` -- in the bundle's metadata, in the setup's own
   version resource and in the `Version` value under `HKLM\SOFTWARE\Skeer\Groovebox`. Three places,
-  one number -- and the uninstall registry entry is the fourth, also `0.2.0`.
+  one number -- and the uninstall registry entry is the fourth, also `0.2.1` at the same reading,
+  taken from `DisplayVersion` under the key the `AppId` above builds.
 - **`CloseApplications=no`** ([installer/Groovebox.iss:80](installer/Groovebox.iss)).
   With `yes` -- and the house default filter `*.exe,*.vst3` -- a silent install that
   finds the bundle locked force-quits the host holding it, which on this machine means
