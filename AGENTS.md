@@ -1166,6 +1166,15 @@ on purpose: see the two bolded rules below.
   whose manifest's first word is "Outgoing", quoted later as a current census. Housekeeping already
   says to archive rather than delete; the other half is that a superseded number needs its
   supersession written where the next reader will find it, in the same sentence.
+- **A claim about external state names the call that answers it, because another call on the same
+  service can answer `null` in the same minute.** Measured at the `v0.2.1` publish:
+  `gh api repos/<owner>/<repo>` returns `"license": "AGPL-3.0"` and `"visibility": "PUBLIC"`, while
+  `.../community/profile` returns `license: null` **and** `readme: null` for a repo that has a README,
+  and `gh repo view --json licenseInfo` returns null as well. Those are lazily-populated caches, not
+  disagreements about the product -- but a future reader who checks the lazy one concludes the *sentence*
+  is the lie, which is the failure the `grep -n launch` bullet above is about, one system out. So a
+  published-state claim says which endpoint was asked, and quotes a second field from the same call that
+  is self-evidently true (`visibility`) as the control that distinguishes a stale cache from a real no.
 - **A docs commit after a verified SHA is judged by what its diff can still invalidate.** Run
   `git diff --name-only <verified-sha>..HEAD` and split the paths into **compiled inputs** (`Source/`,
   `Tests/`, `CMakeLists.txt`, `external/`) and **payload inputs** (`installer/`). An empty compiled set

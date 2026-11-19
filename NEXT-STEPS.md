@@ -2951,6 +2951,15 @@ description that names the capability set instead of a subset, with nine topics
 (`vst3`, `juce`, `audio-plugin`, `drum-machine`, `step-sequencer`, `agpl-3`, `windows`, `dsp`,
 `cpp`), and GitHub's own licence detection reads **AGPL-3.0** off the new `LICENSE`.
 
+That last claim names its reader, because two of the three endpoints answer `null` and neither is a
+finding: `gh api repos/<owner>/<repo>` returns `"license": "AGPL-3.0"` and `"visibility": "PUBLIC"`,
+while `.../community/profile` on the same minute returns `license: null` *and* `readme: null` -- a
+sentence about a repository that demonstrably has a README -- and `gh repo view --json licenseInfo`
+returns null too. Detection is a lazily-run job on the cached endpoints and an eager field on the repo
+object, so the repo object is the one to quote and the nulls are its own staleness, not a disagreement
+about the licence. Measured here 2026-11-19 at 18:00Z, one minute after the push that published the
+About metadata.
+
 The bump-the-version question was settled the other way on purpose -- 0.2.1 was installed on one
 machine for six hours and never conveyed to anybody, so refreshing that package with its licence
 was a correction rather than a second release. That reasoning expired the moment the release went
