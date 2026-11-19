@@ -2868,3 +2868,63 @@ back to the explanation on the next build of the bar. So what is missing is a fa
 report and anything that survives a reload, not a report. The row the sentence pointed at now
 exists in the README's Known limitations, written from `TransportBar.cpp` and
 `PluginProcessor.cpp` rather than from the sentence.
+
+## Public licence: AGPL-3.0-or-later, and the four places one text now has to agree with
+
+The repo was published with **no licence of any kind** -- a grep for `AGPL`, `GPL`,
+`licence` and `license` across the tracked files came back with zero hits, which means every
+reader's default was "all rights reserved" and every build they made of it was infringing.
+It is now AGPL-3.0-or-later, Copyright (c) 2026 Skeer Audio (the publisher string the
+installer already uses, which is where the name came from rather than from a guess).
+
+**Why AGPL and not MIT.** The constraint is not taste, it is JUCE: its modules are
+dual-licensed AGPLv3 *or* the commercial JUCE 8 licence, and this app links them. A permissive
+grant on Groovebox's own files would not have changed what the combined binary may be conveyed
+under, so it would have bought a nicer-looking badge and left the obligation exactly where it
+was. Taking the AGPL option is the one choice that makes distributing the setup lawful without
+spending money, which is the same reason the build is unsigned. If the owner ever buys a JUCE
+licence, that is a different decision to make in the open -- it does not retroactively change
+what this repository granted to anyone who already took the copy.
+
+**What landed.** `LICENSE` (the 34,523-byte FSF text, verbatim, fetched from gnu.org rather
+than retyped); `THIRD_PARTY_NOTICES.md`; a `## Licence` section in the README plus a pointer in
+its opening paragraph; a `Licence` section in the payload's `README.txt`; and the installer
+hooked to it -- `LicenseFile=` for the wizard page, and a `[Files]` line installing
+`LICENSE.txt` beside the executable, unconditional, because the grant is not an optional task.
+
+**The `.gitattributes` file is new, and it is one line.** `/LICENSE text eol=lf`, nothing else.
+The reason is that this file became a *product artefact*: under the repo's `core.autocrlf=true`,
+an unconstrained checkout would write CRLF into the copy that gets packed into the setup, so the
+installed licence's bytes would depend on whose git config made the clone. Pinning it makes the
+payload reproducible. Nothing else is matched by that pattern, which `git check-attr` says in
+four lines -- README and `installer/README.txt` still come back `unspecified`, so no existing
+file renormalised and the diff stayed surgical.
+
+**Four places, one text.** `out/lic/agpl-3.0.txt` (the fetch), the repo `LICENSE`, the installed
+`C:\Program Files\Skeer Audio\Groovebox\LICENSE.txt` and what the setup compressed all hash to
+the same `0d96a4ff...`. The repackage moved no code: exe `f5abfabb...` and bundle `49dab016...`
+are the same hashes the afternoon install verified, because `installer/` is a payload input and
+not a compiled one -- so this cost a repackage and one UAC click, not a rebuild or a re-gate.
+
+**The gate that failed first.** Proving `LICENSE.txt` was in the package by grepping the setup
+exe returns zero hits -- *on the new package and on the archived old one alike*, since `[Files]`
+names sit in the compressed block. The control made that legible. Positive evidence is ISCC's
+own `Compressing: ...installer\..\LICENSE` line, the log's `Dest filename: ...\LICENSE.txt`, and
+the installed file's hash.
+
+**Deliberately not done.** No per-file SPDX headers. They would be nice, and they are also an
+edit to every file in `Source/` and `Tests/`, which are compiled inputs -- a re-gate, a re-export
+and a third install click to add a comment. The LICENSE file plus the README section is a
+complete notice under the licence's own terms. Revisit if the tree ever gets a contributor who
+needs the header convention, and pay for it inside a change that is recompiling anyway.
+
+**Still open on the way to "published".** Nothing has been *released* yet: no GitHub Release,
+and the repo's About field still describes a subset of what the plugin does. The annotated tag
+is the next thing written after this section -- `v0.2.1` on the commit that carries this licence,
+with the tag message stating the proof that its compiled inputs are byte-identical to `bef0699`,
+which is the commit the installed binaries were built from. A tag on the docs commit rather than
+on `bef0699` is the honest choice precisely because the payload docs came after the code: the
+tree it names is the one whose *whole* content matches what the setup carries.
+The bump-the-version question was settled the other way on purpose -- 0.2.1 was installed on one
+machine for six hours and never conveyed to anybody, so refreshing that package with its licence
+is a correction and not a second release.

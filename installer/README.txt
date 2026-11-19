@@ -338,3 +338,26 @@ HKLM\Software\Skeer\Groovebox, and the uninstaller removes it -- along with ever
 copy of the plugin it installed.
 
 This build is not code-signed, so Windows may warn when the installer starts.
+
+
+Licence
+-------
+
+Groovebox is free software: the GNU Affero General Public Licence, version 3 or (at your
+option) any later version. The copy the wizard showed you is installed beside this file as
+LICENSE.txt, and the source is https://github.com/vermeiresebastien/groovebox-vst
+
+Two things follow, and they are the practical ones. If you pass a changed Groovebox to anyone
+else -- a VST3 inside your own bundle, an installer of your own -- you give them the source of
+that changed version under the same licence. And if you run a changed version as something
+people use over a network, they get that source too, even though nothing was installed on
+their machine; that half is the reason this is the Affero version.
+
+Your music is not caught up in any of it. Patterns, audio you render and samples you load are
+yours; the licence governs the code.
+
+The plugin is built on JUCE 8, which offers the same two paths it always has: AGPLv3, the one
+this project takes, or a commercial licence from the company that owns it. The Steinberg VST3
+headers the plugin format compiles against come with their own terms, and the audio codecs
+linked into the executable are individually permissive. THIRD_PARTY_NOTICES.md in the source
+names all of them. No samples ship with Groovebox, and no licence for any is needed.

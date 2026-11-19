@@ -70,6 +70,10 @@ Compression=lzma2/max
 SolidCompression=yes
 WizardStyle=modern
 SetupLogging=yes
+; The AGPL text, on a wizard page and (see [Files]) installed beside the executable. A
+; binary is conveyed with its licence, not merely pointing at a repository the recipient
+; would have to already know about.
+LicenseFile=..\LICENSE
 ; Do NOT let Setup close running applications to get at a file. With "yes", a silent
 ; install that finds its target locked force-quits whatever holds it -- and on a machine
 ; where a host has the plugin loaded, that host is Ableton Live, unsaved set and all.
@@ -95,6 +99,9 @@ Source: "{#Deliverables}\{#Vst3Bundle}\*"; DestDir: "{commonpf64}\Common Files\V
 ; The standalone, so the kit can be played without a host.
 Source: "{#Deliverables}\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
 Source: "README.txt"; DestDir: "{app}"; Flags: ignoreversion
+; The licence, as a product file. Not conditioned and not a task: it is not optional with
+; respect to the grant the rest of this package relies on.
+Source: "..\LICENSE"; DestDir: "{app}"; DestName: "LICENSE.txt"; Flags: ignoreversion
 
 [Registry]
 ; HKLM, not HKCU: an elevated setup writing per-user keys leaves the next non-elevated

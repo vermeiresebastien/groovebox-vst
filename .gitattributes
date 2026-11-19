@@ -1,0 +1,5 @@
+# The licence text is installed verbatim as a product file (it goes into the setup
+# payload as LICENSE.txt, beside the executable), so its bytes have to be reproducible
+# from a fresh clone rather than depend on whose core.autocrlf made the checkout.
+# Only this file is pinned; the markdown docs stay on the repo's usual normalisation.
+/LICENSE text eol=lf

@@ -18,17 +18,31 @@ It is fully gitignored and nothing in it is authored in place.
 
 - Verify an export by **SHA-256 against the artefact tree**, never by timestamp or size:
   `copy_if_different` leaves an old mtime on a file that exported correctly, and rebuilds
-  often coincide on size. **Current export: shipped 2026-11-19 from `bef0699` at `0.2.1` and
-  installed the same afternoon** -- `Groovebox.exe` `f5abfabb...` (7,169,536 B), bundle binary
+  often coincide on size. **Current export: shipped 2026-11-19 from `bef0699` at `0.2.1`,
+  installed that afternoon and re-installed that evening once the payload carried a licence** --
+  `Groovebox.exe` `f5abfabb...` (7,169,536 B), bundle binary
   `49dab016...`, `moduleinfo.json` `40f81ec9...` reading `"Version": "0.2.1"`, and the payload
-  `README.txt` `5fae5418...` -- the first three equal in `launch/`, in the artefact tree and in
-  Program Files, the last equal to `installer/README.txt`, which is the document check described
-  below and not a build check. Setup's own log closes `Installation process succeeded` with
+  documents `README.txt` `54295c90...` plus `LICENSE.txt` `0d96a4ff...` -- the first three equal
+  in `launch/`, in the artefact tree and in
+  Program Files, the last two equal to `installer/README.txt` and to the repo `LICENSE`, which is
+  in turn byte-equal to the FSF's own text, so the licence is one document in four places and not
+  four paraphrases. That pair is the document check described
+  below and not a build check, and no binary moved for it: the evening repackaging had
+  `installer/` and a root text file as its only inputs, which is why the exe and bundle hashes
+  above are the same ones the afternoon install verified. `5fae5418...` is the `README.txt` of
+  that first package -- true of what went in at 15:10, superseded by the Licence section written
+  into the payload document afterwards. Setup's own log closes `Installation process succeeded` with
   `Administrative install mode: Yes` and `Install mode root key: HKEY_LOCAL_MACHINE`, both retired
   per-user destinations are still empty of the bundle, and `0.2.1` reads in all four version
   places: the bundle metadata, the setup's own `FileVersion` and `ProductVersion` resources, the
   HKLM `Version` value and the uninstall entry's `DisplayVersion`. The setup is
-  `Groovebox Setup 0.2.1.exe` (5,087,885 B, `c22b7f9c...`). The outgoing export it replaced --
+  `Groovebox Setup 0.2.1.exe` (5,110,054 B, `2e0dce61...`); the package it replaced -- same
+  binaries, no licence, 5,087,885 B and `c22b7f9c...` -- is archived in `out/setup-0.2.1-precite/`
+  with a `FROM.txt`, its hash re-read from the copy rather than retyped from memory. Note what
+  *cannot* prove this: grepping the setup exe for `LICENSE.txt` returns **zero hits in both the
+  new and the archived package**, because `[Files]` names live in the compressed block -- so the
+  positive evidence is ISCC's own `Compressing: ...installer\..\LICENSE` line and the installed
+  file's hash, and a negative there is the reader's test failing, not the payload missing. The outgoing export it replaced --
   still true as a record of what shipped, no longer what is installed:
   export shipped 2026-11-18 from `be65cfd` and installed the same day:
   `Groovebox.exe` `4B8DCE27...`, bundle binary `4B4B38F8...` -- equal in `launch/`, in the
@@ -1020,7 +1034,7 @@ on purpose: see the two bolded rules below.
   version resource and in the `Version` value under `HKLM\SOFTWARE\Skeer\Groovebox`. Three places,
   one number -- and the uninstall registry entry is the fourth, also `0.2.1` at the same reading,
   taken from `DisplayVersion` under the key the `AppId` above builds.
-- **`CloseApplications=no`** ([installer/Groovebox.iss:80](installer/Groovebox.iss)).
+- **`CloseApplications=no`** ([installer/Groovebox.iss:84](installer/Groovebox.iss)).
   With `yes` -- and the house default filter `*.exe,*.vst3` -- a silent install that
   finds the bundle locked force-quits the host holding it, which on this machine means
   Ableton Live with an unsaved set. Failing to write a locked file, with the README

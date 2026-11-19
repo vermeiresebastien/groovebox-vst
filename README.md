@@ -7,9 +7,11 @@ A VST3 / standalone drum machine built from the drum page of **Earworm Studio**
 sample you drag onto its row, and which also plays from MIDI notes.
 
 **Version 0.2.1** — Windows x64, JUCE 8.0.4 / C++17, shipped as a VST3 instrument and a
-standalone executable with its own transport. There is no published binary yet: the repo is
-the source, and `cmake --build` plus `installer\build-installer.ps1` produce the standalone
-and the setup file in `launch\`, which is what the [Building](#building) and
+standalone executable with its own transport. Licensed **AGPL-3.0-or-later** (see
+[Licence](#licence)); the build is not code-signed and no samples ship with it. There is no
+published binary yet: the repo is the source, and `cmake --build` plus
+`installer\build-installer.ps1` produce the standalone and the setup file in `launch\`,
+which is what the [Building](#building) and
 [Installing](#installing) sections walk through. Everything on this page describes the build
 that is actually installed on the author's machine, and every picture is that build's own
 output.
@@ -1311,3 +1313,42 @@ Notes on the design:
 - No per-channel pan, and no group or submix routing.
 - The loaded-sample registry is capped at `SampleStore::maxSamples` per session;
   past that, a load reports an error instead of growing the list.
+
+## Licence
+
+Copyright (c) 2026 Skeer Audio. **Groovebox is free software under the GNU Affero General
+Public License, version 3 or (at your option) any later version** — `AGPL-3.0-or-later`.
+The full text is in `LICENSE` at the root of this repository, verbatim from the FSF; the
+installer also shows that page during setup and installs a copy beside the executable, so a
+binary conveys its terms rather than merely pointing at a repo.
+
+You may run it, read it, change it, and give copies to anyone. Two obligations come with the
+last two, and they are worth understanding before you build on it:
+
+- **Distribute a changed Groovebox and you distribute its source** — under the same licence,
+  to the same people. That includes a VST3 tucked inside your own bundle, and it includes a
+  re-skinned build offered as a product.
+- **AGPL is the version that closes the service hole.** If you run a modified Groovebox and
+  let people interact with it over a network, those people are entitled to the source of the
+  version they are talking to, even though nothing was ever "distributed" in the old sense.
+  For a plugin sitting on a desktop, that clause usually reaches nobody. For a browser-based
+  drum toy built from this engine, it reaches your users.
+
+Nothing about the *music* is licensed by any of this. Patterns, rendered audio and samples you
+load are yours; the licence governs the code, and the repository ships no sound content for it
+to govern.
+
+The reason this project is AGPL rather than MIT is the framework it is built on. JUCE's
+modules are dual-licensed under AGPLv3 or a commercial JUCE licence, and Groovebox takes the
+AGPL option, so any build conveyed from it stays under the same terms. `external/` is
+gitignored and JUCE is cloned at configure time, so this repository redistributes none of it.
+If you hold a commercial JUCE 8 licence, you may build and convey under that instead; the
+choice is yours and it does not change what this repository grants anybody else. The VST3
+headers that the plugin format is compiled against bring Steinberg's own licence, and the
+codecs linked into the binary are individually permissive — all of it is itemised in
+`THIRD_PARTY_NOTICES.md`, which also gives the two commands that measure the codec versions
+in the shipped file rather than quoting them from here.
+
+One thing this licence does not buy you: a signature. The setup is deliberately unsigned
+(see [Installing](#installing)), so SmartScreen will warn once on a machine that has never
+seen this publisher.
