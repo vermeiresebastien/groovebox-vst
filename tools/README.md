@@ -1,7 +1,8 @@
-# `tools/` -- the harnesses that check the docs' pointers
+# `tools/` -- the harnesses that check the docs' pointers, and the trees they were run in
 
-These five files are the citation gate described in `AGENTS.md` ("Doc citations: a line number is a
-claim about one tree"). They live here rather than in `out/` because `out/` is gitignored, so a fresh
+These six files are the citation gate described in `AGENTS.md` ("Doc citations: a line number is a
+claim about one tree") plus the two verifiers that replay a named commit or a fresh clone. They live
+here rather than in `out/` because `out/` is gitignored, so a fresh
 clone inherited the rules with no way to run them -- and, worse, the exemption list that decides the
 verdict was a `git clean -xdf` away. NEXT-STEPS item **6.7**, shape (b): tracked, and **not** wired
 into CTest.
@@ -68,3 +69,21 @@ never costs a worktree build.
 
 It is suites-only. Its own log line says so, and that sentence is the check: the file must contain
 zero hits for `--target launch`, `Groovebox.exe` and `vst3`.
+
+## `verify-clone.ps1` -- the same chain from a tree that has never been seen
+
+`tools/verify-clone.ps1 [-Sha <sha>] [-Generator <cmake generator>]` answers the question a
+worktree cannot: does the **tracked file set alone** build and pass? It `git clone --no-hardlinks`
+over `file://`, checks the SHA out detached, inventories what the clone actually holds, configures
+(which is where `external/JUCE` gets fetched, since `external/` is gitignored), builds the three
+suites **per target**, refuses any exe newer-input-than-its-own-stamp, and only then replays
+`ctest`. It **refuses** a destination that already exists -- a reused folder is not a clone -- so a
+second run needs `-Dest` or the previous clone deleted. Scope, in its own banner: suites plus
+ctest, no plugin target, `launch/` untouched.
+
+The defaults name the shipped verdicts (628 / 698 / 86 checks, 0 problems, the `[28]` fingerprint
+`4BC3AA231178C071`), and the run prints the verdict lines it read rather than a count derived from
+them, because a green summary beside an empty evidence field is the failure mode this script was
+born fixing. For a public AGPL repository this is also the completeness proof behind the licence:
+"corresponding source" means somebody else can reach the same numbers from `git clone`, and this is
+the command that shows it. Takes a few minutes, most of it the JUCE clone and three cold builds.

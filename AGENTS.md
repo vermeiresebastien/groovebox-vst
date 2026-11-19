@@ -801,7 +801,10 @@ gate. The two are not interchangeable and neither alone is the whole check; run 
 - **A gate's red line can be about the gate, and its evidence field can be empty on a green run.**
   The from-nothing check that item **6.7** implies -- `git clone --no-hardlinks file://…`, `checkout
   --detach <sha>`, configure (it fetches JUCE), the three suites built per target, `ctest` after them --
-  is now written, as `out/verify-clone.ps1`. Its first run printed `FAILED: clone` on a clone that had
+  is now written, as `tools/verify-clone.ps1` -- promoted out of gitignored `out/` on 2026-11-19,
+  which is the fix for the complaint this bullet's own item makes: the copy that ran first is gone
+  and the doc named only that path, so for three days the from-nothing gate was a sentence in a
+  published repository that no clone could execute. Its first run printed `FAILED: clone` on a clone that had
   succeeded: the `Run` helper both *printed* its status and *returned* the code, so the caller held an
   array whose first element was a sentence, and `if ($rc -ne 0)` compared that array with 0 and got the
   sentence back -- truthy. Nothing after stage 1 ran, so the verdict described the verifier. Two more of

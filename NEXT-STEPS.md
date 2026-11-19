@@ -2918,6 +2918,28 @@ and a third install click to add a comment. The LICENSE file plus the README sec
 complete notice under the licence's own terms. Revisit if the tree ever gets a contributor who
 needs the header convention, and pay for it inside a change that is recompiling anyway.
 
+**A licence that cannot be built is worth nothing, so the from-nothing gate ran -- and the
+harness had to be promoted before it could.** The clone check this file and `AGENTS.md` both
+cite as written was `out/verify-clone.ps1`, in gitignored scratch, and it was not there: the
+worktree retirement took it to `D:\Projects\tools\groovebox-worktree-evidence-2026-11-18\wt-44-out\`
+exactly as the house rule intends, which left three doc pointers naming a path that no clone and
+no clean checkout can execute -- item **6.7**'s own complaint, reproduced by the very gate written
+to answer it. It is now `tools/verify-clone.ps1`, tracked, with every path resolved from
+`$PSScriptRoot` and the generator a parameter, and the current check counts in it (628 / 698 / 86).
+
+Run at `7c35c29`, in a folder that had never existed and refusing any that had: 58 tracked files,
+`out` / `external` / `build` / `build-new` / `launch` all reported `present : False` on arrival,
+`-- Cloning JUCE 8.0.4 into external/JUCE ...` then `Configuring done (40.0s)`, three suites built
+per target, freshness `stale=0` on each exe against its own input list, and CTest `100% tests
+passed out of 4` with the three verdict lines copied out of the log rather than summarised. The
+`[28]` fingerprint came back `4BC3AA231178C071`, which is the point where "the public source is
+complete" stops being a licence-lawyer's claim and becomes a build that reproduces the shipped
+engine bit for bit. Note the recursion the inventory prints: that clone's `tools/` list names five
+files and not the script doing the listing, because it was run from a commit made before the
+promotion. Evidence in `out/clone-run-7c35c29/` (logs, ~150 KB); the 445 MB clone tree
+went away afterwards, because unlike the worktree exes it is reproducible by the command this
+section names, which is the same test the archive rule applies to everything else.
+
 **Still open on the way to "published".** Nothing has been *released* yet: no GitHub Release,
 and the repo's About field still describes a subset of what the plugin does. The annotated tag
 is the next thing written after this section -- `v0.2.1` on the commit that carries this licence,

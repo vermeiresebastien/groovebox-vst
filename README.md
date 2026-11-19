@@ -27,7 +27,7 @@ output.
 | Groove | Swing 0 to 100 % on a 1/8 or a 1/16 grid, *Humanize* (late only, never past a quarter of a step), *Touch* (never more than a quarter of a step's own level), a seed, and a generator over a 29-genre table |
 | Output | Per-lane faders, a −24 to +6 dB master trim, a peak bar with a tick for the true peak between the samples, and a clip latch — and deliberately no limiter |
 | Host | 116 automatable parameters (8 global plus 9 for each lane); MIDI notes C1 to B1 play the twelve lanes with velocity; the panel follows what the host drew |
-| Proof | 628 timing and DSP checks, 698 layout checks and 86 pattern-planner checks, all run headless and tracked by CTest |
+| Proof | 628 timing and DSP checks, 698 layout checks and 86 pattern-planner checks, all run headless and tracked by CTest — and re-run from a bare `git clone` by `tools/verify-clone.ps1` |
 
 ## Screenshots
 
@@ -897,7 +897,15 @@ the line the suite prints last and demands a problem count of 0, so a run that p
 nothing (a walk that ran zero checks) and a run that prints one problem both fail the
 tracked path even at exit 0. `ctest` replays, it does not build, so without the line
 above a defect in a header can leave four green tests sitting on a binary that was
-never rebuilt. The executables can also be run on their own, as below, and that is
+never rebuilt. `tools/verify-clone.ps1` makes the fresh-clone sentence executable: it
+`git clone --no-hardlinks` over `file://`, configures (the step that fetches JUCE, since
+`external/` is gitignored on purpose), builds the three suites per target and replays
+CTest — in a directory that has never existed before, refusing to run if the destination
+is already there, because a reused tree proves nothing about a clone. That is also what
+"the source is complete" means under this project's licence: somebody else reaches these
+same numbers from `git clone`.
+
+The executables can also be run on their own, as below, and that is
 what the harness does while it works.
 
 `GrooveboxSmokeTest` drives the real processor and checks the parts that are easy
