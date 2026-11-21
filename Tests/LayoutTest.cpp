@@ -21,6 +21,7 @@
 
 #include "PluginEditor.h"
 #include "ChannelStrip.h"
+#include "LookAndFeel.h"
 #include "TransportBar.h"
 #include "StepGridComponent.h"
 
@@ -5831,6 +5832,322 @@ int main (int argc, char** argv)
                 processor.setStep (channel, step, false);
 
         drainVoices();
+    }
+
+    // --------------------------------------------- envelope value text meets its own column
+    //
+    // A row is letter + value + track, and the value column was a typed 26 px while
+    // `formatEnvelopeValue` answers "1000 ms" -- a clipped number on the four most-dragged
+    // controls in the strip. The bound is asked of the two things that decide it, the column the
+    // control reserves and the widest string the formatter can produce, never of a number copied
+    // into this file. The extra width comes off the track: `boundsFor` spans the whole component,
+    // so the editor floor and `oneRowWidth` do not move -- which is what the last check here is
+    // the gate for, because a column that buys more than it needs spends the slider instead.
+    {
+        EnvelopeControls* env = nullptr;
+
+        for (int i = 0; env == nullptr && anyStrip != nullptr
+                        && i < anyStrip->getNumChildComponents(); ++i)
+            env = dynamic_cast<EnvelopeControls*> (anyStrip->getChildComponent (i));
+
+        expect (env != nullptr,
+                "the strip carries the envelope control these widths are asked of",
+                env != nullptr ? "found" : "no EnvelopeControls child in the strip");
+
+        const EnvelopeStage stages[] = { EnvelopeStage::attack, EnvelopeStage::decay,
+                                         EnvelopeStage::sustain, EnvelopeStage::release };
+
+        // The sweep is the sampler here, and it has to be fine: the string that sets the width on
+        // three of the four stages is the ms branch's ceiling, printed for the normalised values
+        // whose seconds land in [0.9995, 1.0) -- on release (4 s) about 1.3e-4 of the travel. A
+        // 4001-point ladder, 2.5e-4 apart, walks straight past it and reported "100 ms" as the
+        // widest thing release could say. Step is 5e-6, and the evidence prints how many points
+        // landed there, so a future stage range that narrows the window below one step shows up as
+        // `x0 sweep points` rather than as a silently lenient bound.
+        //
+        // Layout is only measured for strings within one character of the best so far: a 200001
+        // point sweep cannot afford a text layout per point, and shorter means fewer glyphs.
+        int widest[4] = {};
+
+        for (size_t s = 0; s < 4; ++s)
+        {
+            const auto stage = stages[s];
+            auto worst = 0, hits = 0, chars = -1;
+            juce::String worstText;
+
+            for (int k = 0; k <= 200000; ++k)
+            {
+                const auto text = GrooveboxProcessor::formatEnvelopeValue ((float) k / 200000.0f, stage);
+
+                if (chars >= 0 && text.length() < chars - 1)
+                    continue;
+
+                const auto w = (int) std::ceil (juce::TextLayout::getStringWidth (EnvelopeControls::valueFont(),
+                                                                                 text));
+
+                if (w > worst)
+                {
+                    worst = w;
+                    worstText = text;
+                    chars = text.length();
+                    hits = 1;
+                }
+                else if (w == worst)
+                {
+                    ++hits;
+                }
+            }
+
+            widest[s] = worst;
+
+            expect (worst <= EnvelopeControls::valueColumnWidth (stage),
+                    "the envelope value column fits the widest text its stage can produce",
+                    juce::String (worst) + " px of \"" + worstText + "\" (x" + juce::String (hits)
+                        + " sweep points) against a column of "
+                        + juce::String (EnvelopeControls::valueColumnWidth (stage)) + " px (stage "
+                        + juce::String ((int) s) + ")");
+        }
+
+        // The other side, and it is the one that prices the fix: the column may not be wider than
+        // the sweep can justify, because every pixel of it comes off the track on all twelve
+        // strips. One px of slack for the rounding the two sides do independently.
+        for (size_t s = 0; s < 4; ++s)
+            expect (EnvelopeControls::valueColumnWidth (stages[s]) <= widest[s] + 1,
+                    "and it buys no more than the widest string needs, so the cost stays on the "
+                    "slider and not on the panel",
+                    "column of " + juce::String (EnvelopeControls::valueColumnWidth (stages[s]))
+                        + " px against a widest string of " + juce::String (widest[s]) + " px (stage "
+                        + juce::String ((int) s) + ")");
+
+        // The width is bought from the track, so the track has to survive the purchase at the
+        // narrowest editor the window can be resized to. `paint` skips the track below 4 px, which
+        // is the failure this asks about -- an envelope row that shows a number and no slider.
+        {
+            const auto wasW = editor->getWidth();
+            const auto wasH = editor->getHeight();
+            const auto minW = editor->getConstrainer() != nullptr
+                                ? editor->getConstrainer()->getMinimumWidth() : wasW;
+            const auto minH = editor->getConstrainer() != nullptr
+                                ? editor->getConstrainer()->getMinimumHeight() : wasH;
+
+            editor->setSize (minW, minH);
+
+            auto narrowest = env != nullptr ? env->getWidth() : 0;
+            auto needed = 0;
+
+            for (const auto stage : stages)
+                needed = juce::jmax (needed, EnvelopeControls::reservedWidth (stage));
+
+            expect (env != nullptr && narrowest - needed >= 4,
+                    "and the track still has room at the editor's own floor, so buying the value "
+                    "column spends the slider and not the layout",
+                    "envelope control " + juce::String (narrowest) + " px at "
+                        + juce::String (minW) + " x " + juce::String (minH)
+                        + ", " + juce::String (needed) + " of it reserved, so the track is "
+                        + juce::String (narrowest - needed) + " px (paint drops it under 4)");
+
+            editor->setSize (wasW, wasH);
+        }
+    }
+
+    // ------------------------------------------- the narrow strip captions fit their own boxes
+    //
+    // The pitch row is four 14 px steppers around a readout and the shift pair is two 18 px
+    // arrows: that is the whole 77 px of a strip, with no slack, because the strip's width is what
+    // pays for the editor floor. So the only free axis is the caption — and a caption that does not
+    // fit is not clipped away: `drawButtonText` hands it to `drawFittedText`, whose fifth argument is
+    // `minimumHorizontalScale` (0.9 here) and whose own doc in `juce_GraphicsContext.h` says that
+    // once that squash floor is spent it crams in what fits and puts an ellipsis at the end. That is
+    // a reason to expect a lossy fallback, not evidence about which pixels survive, so what the
+    // octave pair did was measured instead: at a 14 x 20 px stepper each of "-12" and "+12" puts ink
+    // on the button — the blank-box line below is green for both — and the two pictures are the same
+    // 280 px. Nothing in this section leans on the doc; the renders carry it.
+    // Three questions, each with a different way to fail:
+    // the arithmetic of the string against the area the painter uses, one render per caption
+    // against a blank box of the same size, and one render per same-row pair so that "they differ"
+    // cannot be satisfied by two identical elisions. The controls are found by name, not by
+    // caption — the caption IS the thing under test, and `ChannelStrip` names them for that reason.
+    {
+        const juce::String names[] = { "PitchDown12", "PitchDown", "PitchUp", "PitchUp12",
+                                       "ShiftLeft", "ShiftRight" };
+
+        gb::GrooveboxLookAndFeel laf;
+        juce::Array<juce::TextButton*> narrow;
+
+        for (const auto& wanted : names)
+        {
+            juce::TextButton* found = nullptr;
+
+            for (int i = 0; anyStrip != nullptr && found == nullptr
+                            && i < anyStrip->getNumChildComponents(); ++i)
+            {
+                auto* button = dynamic_cast<juce::TextButton*> (anyStrip->getChildComponent (i));
+
+                // `isVisible` is part of the match: a control disappears from the panel by not
+                // being shown, and a name lookup that finds a hidden twin measures nothing. This
+                // is the editor's own visibility flag, not `isShowing` — the harness never puts
+                // the window on the desktop, so `isShowing` is false for every control here and a
+                // gate built on it would report the six as missing on a correct build.
+                if (button != nullptr && button->getName() == wanted && button->isVisible())
+                    found = button;
+            }
+
+            expect (found != nullptr,
+                    "the six narrow strip controls are there to be measured, by the name the strip "
+                    "gives them",
+                    wanted + (found != nullptr ? ": found" : ": no shown button of that name"));
+
+            if (found != nullptr)
+                narrow.add (found);
+        }
+
+        auto captionOf = [&narrow] (const juce::String& name)
+        {
+            for (auto* button : narrow)
+                if (button->getName() == name)
+                    return button->getButtonText();
+
+            return juce::String();
+        };
+
+        auto widthOf = [&narrow] (const juce::String& name)
+        {
+            for (auto* button : narrow)
+                if (button->getName() == name)
+                    return button->getWidth();
+
+            return 0;
+        };
+
+        // The type is the look-and-feel's decision and the box is the strip's, so this asks one
+        // side about the other instead of asking a predicate what it just answered. The area is the
+        // painter's own inset, not the button: a caption can clear the full width and still be
+        // elided inside the inset, which is what the renders below are for.
+        for (auto* button : narrow)
+        {
+            const auto font   = laf.getTextButtonFont (*button, button->getHeight());
+            const auto needed = (int) std::ceil (juce::TextLayout::getStringWidth (font,
+                                                                                  button->getButtonText()));
+            const auto inset  = gb::GrooveboxLookAndFeel::captionInset (button->getWidth());
+            const auto area   = button->getWidth() - 2 * inset;
+
+            expect (needed <= area,
+                    "a narrow caption is no wider than the area its button is drawn into",
+                    "\"" + button->getButtonText() + "\" (" + button->getName() + ") wants "
+                        + juce::String (needed) + " px at " + juce::String (font.getHeight(), 1)
+                        + " px of type out of " + juce::String (area) + " px ("
+                        + juce::String (button->getWidth()) + " less two "
+                        + juce::String (inset) + " px insets)");
+        }
+
+        auto renderCaption = [&laf] (const juce::String& caption, int width, int height)
+        {
+            juce::TextButton probe (caption);
+            probe.setLookAndFeel (&laf);
+            probe.setSize (width, height);
+
+            juce::Image image (juce::Image::ARGB, juce::jmax (1, width), juce::jmax (1, height), true);
+            juce::Graphics g (image);
+            probe.paintButton (g, false, false);
+            return image;
+        };
+
+        // Ink, at the geometry the editor actually laid the strip out at. The control is the same
+        // box with no caption: whatever differs is the caption.
+        for (auto* button : narrow)
+        {
+            const auto own   = renderCaption (button->getButtonText(), button->getWidth(),
+                                              button->getHeight());
+            const auto blank = renderCaption ({}, button->getWidth(), button->getHeight());
+            const auto inked = compareImages (own, blank, own.getBounds());
+
+            expect (inked.pixels > 0,
+                    "and each caption reaches the screen: the same box with no caption at all paints "
+                    "differently",
+                    button->getName() + " \"" + button->getButtonText() + "\" at "
+                        + juce::String (button->getWidth()) + " x "
+                        + juce::String (button->getHeight()) + ": " + juce::String (inked.pixels)
+                        + " inked px of "
+                        + juce::String (button->getWidth() * button->getHeight()));
+        }
+
+        // Uniqueness, at every row height the strip plan can hand out, because a caption that fits
+        // at the roomy stage can still be elided at the tight one and two ellipses are one picture.
+        juce::Array<int> pitchHeights, shiftHeights;
+
+        const int rooms[] = { gb::Layout::stripFullRoom, gb::Layout::stripTightRoom,
+                              gb::Layout::stripFloorRoom, gb::Layout::stripBareRoom,
+                              gb::Layout::stripHardRoom };
+
+        for (const auto room : rooms)
+        {
+            const auto plan = gb::Layout::stripPlan (room);
+            pitchHeights.addIfNotAlreadyThere (plan.pitchRow);
+            shiftHeights.addIfNotAlreadyThere (plan.clearRow);
+        }
+
+        auto collidesIn = [&] (const juce::StringArray& row, int width, int height)
+        {
+            // A row measured in a box of no width is not a pair of captions. The width comes from
+            // one of the six controls, so a control the strip failed to name takes the width with
+            // it -- and two renders of an empty box are trivially the same picture, which would
+            // credit this check with catching a missing control. The discovery line above owns
+            // that failure and has already gone red; this returns nothing rather than echoing it.
+            if (width <= 0 || height <= 0)
+                return juce::String();
+
+            for (int i = 0; i < row.size(); ++i)
+            {
+                if (captionOf (row[i]).isEmpty())
+                    continue;
+
+                for (int j = i + 1; j < row.size(); ++j)
+                {
+                    if (captionOf (row[j]).isEmpty())
+                        continue;
+
+                    const auto a = renderCaption (captionOf (row[i]), width, height);
+                    const auto b = renderCaption (captionOf (row[j]), width, height);
+
+                    if (compareImages (a, b, a.getBounds()).pixels == 0)
+                        return row[i] + " and " + row[j] + " painted the same "
+                                 + juce::String (width * height) + " px";
+                }
+            }
+
+            return juce::String();
+        };
+
+        const auto pitchWidth = widthOf ("PitchDown12");
+        const auto shiftWidth = widthOf ("ShiftLeft");
+
+        const juce::StringArray pitchRow = { "PitchDown12", "PitchDown", "PitchUp", "PitchUp12" };
+        const juce::StringArray shiftRow = { "ShiftLeft", "ShiftRight" };
+
+        for (const auto height : pitchHeights)
+        {
+            const auto clash = collidesIn (pitchRow, pitchWidth, height);
+
+            expect (clash.isEmpty(),
+                    "the four pitch captions paint four different pictures at every row height the "
+                    "strip plan reaches, so no two of them are one elision",
+                    clash.isEmpty() ? juce::String (pitchWidth) + " x " + juce::String (height)
+                                      + " px: all four unique"
+                                    : clash + " at " + juce::String (pitchWidth) + " x "
+                                        + juce::String (height) + " px");
+        }
+
+        for (const auto height : shiftHeights)
+        {
+            const auto clash = collidesIn (shiftRow, shiftWidth, height);
+
+            expect (clash.isEmpty(),
+                    "and the same for the two shift arrows",
+                    clash.isEmpty() ? juce::String (shiftWidth) + " x " + juce::String (height)
+                                      + " px: both unique"
+                                    : clash + " at " + juce::String (shiftWidth) + " x "
+                                        + juce::String (height) + " px");
+        }
     }
 
     if (shotsPath.isNotEmpty())

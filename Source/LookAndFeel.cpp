@@ -70,6 +70,11 @@ void GrooveboxLookAndFeel::drawButtonBackground (juce::Graphics& g,
     }
 }
 
+int GrooveboxLookAndFeel::captionInset (int buttonWidth)
+{
+    return juce::jmin (4, juce::roundToInt ((float) juce::jmax (0, buttonWidth) * 0.15f));
+}
+
 void GrooveboxLookAndFeel::drawButtonText (juce::Graphics& g,
                                            juce::TextButton& button,
                                            bool,
@@ -80,7 +85,8 @@ void GrooveboxLookAndFeel::drawButtonText (juce::Graphics& g,
                                                            : juce::TextButton::textColourOffId)
                     .withMultipliedAlpha (button.isEnabled() ? 1.0f : 0.5f));
 
-    g.drawFittedText (button.getButtonText(), button.getLocalBounds().reduced (4, 0),
+    g.drawFittedText (button.getButtonText(),
+                      button.getLocalBounds().reduced (captionInset (button.getWidth()), 0),
                       juce::Justification::centred, 1, 0.9f);
 }
 

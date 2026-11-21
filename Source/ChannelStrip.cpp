@@ -56,6 +56,16 @@ ChannelStrip::ChannelStrip (GrooveboxProcessor& processorToUse, int channelIndex
     pitchDownButton.setTooltip ("Down a semitone");
     pitchUpButton.setTooltip ("Up a semitone");
     pitchUp12Button.setTooltip ("Up an octave");
+
+    // The narrow buttons' captions are glyphs, so the caption is not a name the layout test can
+    // ask by — "«" and "←" say what they say, and a future caption change would silently move the
+    // identity with it. These six names are the handle; the layout test finds its controls here.
+    shiftLeftButton.setName ("ShiftLeft");
+    shiftRightButton.setName ("ShiftRight");
+    pitchDown12Button.setName ("PitchDown12");
+    pitchDownButton.setName ("PitchDown");
+    pitchUpButton.setName ("PitchUp");
+    pitchUp12Button.setName ("PitchUp12");
     addAndMakeVisible (pitchDown12Button);
     addAndMakeVisible (pitchDownButton);
     addAndMakeVisible (pitchUpButton);

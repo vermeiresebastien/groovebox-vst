@@ -76,11 +76,20 @@ private:
     juce::TextButton shiftLeftButton { juce::CharPointer_UTF8 ("\xe2\x86\x90") };
     juce::TextButton shiftRightButton { juce::CharPointer_UTF8 ("\xe2\x86\x92") };
 
-    juce::TextButton pitchDown12Button { "-12" };
+    /** The pitch row: octave, semitone, the readout they move, semitone, octave.
+
+        The octave pair is « and », not "-12" and "+12": a stepper is 14 px wide and the caption
+        is drawn at the 11 px type floor, where "-12" measures 16 px and "+12" 19. Both were
+        rendered in that box and compared: each caption puts ink on the button and the two pictures
+        are identical, 0 of 280 px, so the two buttons were indistinguishable on screen.
+        The single-step pair already carries the sign by which side of the readout it sits
+        on, and the amount is in the tooltip ("Down an octave") and in the number the row edits.
+        The names are set in the constructor because the caption is a glyph, not an identity. */
+    juce::TextButton pitchDown12Button { juce::CharPointer_UTF8 ("\xc2\xab") };
     juce::TextButton pitchDownButton { "-" };
     juce::Label pitchValueLabel;
     juce::TextButton pitchUpButton { "+" };
-    juce::TextButton pitchUp12Button { "+12" };
+    juce::TextButton pitchUp12Button { juce::CharPointer_UTF8 ("\xc2\xbb") };
 
     juce::Slider levelSlider;
     juce::TextButton muteButton { "Mute" };

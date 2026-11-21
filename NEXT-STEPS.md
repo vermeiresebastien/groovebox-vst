@@ -2960,7 +2960,7 @@ worktree retirement took it to `D:\Projects\tools\groovebox-worktree-evidence-20
 exactly as the house rule intends, which left three doc pointers naming a path that no clone and
 no clean checkout can execute -- item **6.7**'s own complaint, reproduced by the very gate written
 to answer it. It is now `tools/verify-clone.ps1`, tracked, with every path resolved from
-`$PSScriptRoot` and the generator a parameter, and the current check counts in it (628 / 698 / 86).
+`$PSScriptRoot` and the generator a parameter, and the current check counts in it (628 / 730 / 86).
 
 Run at `7c35c29`, in a folder that had never existed and refusing any that had: 58 tracked files,
 `out` / `external` / `build` / `build-new` / `launch` all reported `present : False` on arrival,

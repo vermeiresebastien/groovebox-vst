@@ -38,6 +38,18 @@ public:
     void setValue (EnvelopeStage stage, float value);
     float getValue (EnvelopeStage stage) const;
 
+    /** The one font every piece of text in a row is drawn with. The layout test measures its
+        strings with this rather than rebuilding a Font, so a typeface change cannot leave the
+        width checks describing a picture the control no longer paints. */
+    static juce::Font valueFont();
+
+    /** How many px the value column gets for a stage: the widest reading that stage's formatter
+        can print, measured in valueFont(). */
+    static int valueColumnWidth (EnvelopeStage stage);
+
+    /** Everything left of the track: the letter, the value column and their gap. */
+    static int reservedWidth (EnvelopeStage stage);
+
 private:
     struct Control
     {

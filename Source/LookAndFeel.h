@@ -37,6 +37,15 @@ public:
     juce::Font getTextButtonFont (juce::TextButton&, int buttonHeight) override;
     juce::Font getLabelFont (juce::Label&) override;
 
+    /** How many px a caption is held in from each vertical edge of a button this wide.
+
+        Four px is right for a 40 px "Mute" and leaves 6 px for a 14 px stepper, which is how the
+        pitch row's octave buttons came to paint one picture rather than two — measured at the old
+        inset, both captions inked the box and 0 of 280 px differed. The inset is
+        therefore scaled with the box and capped where it always was, so no button 27 px or wider
+        sees any change. */
+    static int captionInset (int buttonWidth);
+
 private:
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (GrooveboxLookAndFeel)
 };

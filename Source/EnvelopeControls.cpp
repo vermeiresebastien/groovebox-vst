@@ -8,6 +8,79 @@ namespace
     /** How far the pointer must travel to cover the whole range. Vertical, so a
         control this short can still be set precisely. */
     constexpr int dragRangePixels = 140;
+
+    /** The letter column and the gap before the track. The value column is next. */
+    constexpr int letterWidthPx = 10;
+    constexpr int valueGapPx = 2;
+
+    /** Below this the track is not drawn at all, so it is also the smallest width it can be given. */
+    constexpr int minimumTrackWidthPx = 10;
+
+    /** How many px a reading occupies in the font these rows are drawn with. */
+    int drawnWidth (const juce::String& text)
+    {
+        return (int) std::ceil (juce::TextLayout::getStringWidth (EnvelopeControls::valueFont(), text));
+    }
+
+    /** The last reading a time stage takes through its "N ms" branch.
+
+        Bisected from the seconds law rather than sampled: the window that prints the branch's
+        ceiling is the set of values whose seconds land in [0.9995, 1.0), about 1.3e-4 of the
+        travel on the four-second stage, and a fixed step walks past it. The layout test walks it
+        with a 5e-6 sweep, which is the other half of the same fact. */
+    juce::String msBranchCeiling (EnvelopeStage stage)
+    {
+        float below = 0.0f, above = 1.0f;
+
+        for (int i = 0; i < 60; ++i)
+        {
+            const auto middle = (below + above) * 0.5f;
+
+            if (GrooveboxProcessor::envelopeSecondsFor (middle, stage) < 1.0)
+                below = middle;
+            else
+                above = middle;
+        }
+
+        return GrooveboxProcessor::formatEnvelopeValue (below, stage);
+    }
+}
+
+juce::Font EnvelopeControls::valueFont()
+{
+    return juce::Font (juce::FontOptions (10.0f));
+}
+
+int EnvelopeControls::valueColumnWidth (EnvelopeStage stage)
+{
+    // The column is whatever the widest reading needs, so a value is never drawn into a box
+    // shorter than its own text. Two branch ceilings bound a time stage -- the top of its range
+    // through the seconds form, and the ms form's own ceiling -- and sustain has the one percent
+    // reading. Computed once: it is a property of the font and the law, not of the panel.
+    static const auto widths = []
+    {
+        std::array<int, 4> measured {};
+
+        for (int i = 0; i < 4; ++i)
+        {
+            const auto at = static_cast<EnvelopeStage> (i);
+            auto widest = drawnWidth (GrooveboxProcessor::formatEnvelopeValue (1.0f, at));
+
+            if (at != EnvelopeStage::sustain)
+                widest = juce::jmax (widest, drawnWidth (msBranchCeiling (at)));
+
+            measured[(size_t) i] = widest;
+        }
+
+        return measured;
+    }();
+
+    return widths[(int) stage];
+}
+
+int EnvelopeControls::reservedWidth (EnvelopeStage stage)
+{
+    return letterWidthPx + valueColumnWidth (stage) + valueGapPx;
 }
 
 EnvelopeControls::EnvelopeControls()
@@ -141,23 +214,25 @@ void EnvelopeControls::mouseDoubleClick (const juce::MouseEvent& e)
 
 void EnvelopeControls::paint (juce::Graphics& g)
 {
-    const auto font = juce::Font (juce::FontOptions (10.0f));
+    const auto font = valueFont();
 
     for (size_t i = 0; i < controls.size(); ++i)
     {
         const auto& control = controls[i];
         auto row = boundsFor ((int) i);
-        const auto trackArea = row.removeFromRight (juce::jmax (10, row.getWidth() - 38));
+        const auto trackArea = row.removeFromRight (juce::jmax (minimumTrackWidthPx,
+                                                                row.getWidth() - reservedWidth (control.stage)));
 
         // Letter.
         g.setColour (Colours::muted);
         g.setFont (font);
-        g.drawText (control.label, row.removeFromLeft (10), juce::Justification::centredLeft, false);
+        g.drawText (control.label, row.removeFromLeft (letterWidthPx), juce::Justification::centredLeft, false);
 
         // Value, formatted the way the parameter actually behaves.
         g.setColour (Colours::text);
         g.drawText (GrooveboxProcessor::formatEnvelopeValue (control.value, control.stage),
-                    row.removeFromLeft (26), juce::Justification::centredLeft, false);
+                    row.removeFromLeft (valueColumnWidth (control.stage)),
+                    juce::Justification::centredLeft, false);
 
         // Track and fill. The fill starts at the left, so a glance shows how open
         // the control is.

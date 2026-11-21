@@ -10,7 +10,7 @@
 
   For a published repo this is also the completeness proof of the source grant: AGPL
   obliges the *source* of a conveyed binary, and "the clone has no `external/`, fetches
-  JUCE at configure, and reaches 628 / 698 / 86 checks with 0 problems" is what shows the
+  JUCE at configure, and reaches 628 / 730 / 86 checks with 0 problems" is what shows the
   obligation is actually satisfiable from what is on GitHub.
 
   Scope, stated before it runs: three test suites plus ctest. No plugin target, no
@@ -23,7 +23,7 @@ param(
     [string]$Dest     = '',
     [string]$Generator = '',
     [int]   $WantSmoke   = 628,
-    [int]   $WantLayout  = 698,
+    [int]   $WantLayout  = 730,
     [int]   $WantPlan    = 86,
     [string]$WantFinger  = '4BC3AA231178C071'
 )

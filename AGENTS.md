@@ -285,7 +285,7 @@ no generated header ([CMakeLists.txt:232-335](CMakeLists.txt)), which is what ke
 second. All four entries are `add_test` cases carrying a `PASS_REGULAR_EXPRESSION` that requires a
 `, 0 ` problem count, so a run that prints nothing and a run that prints a problem both fail the
 tracked path even at process exit 0, and `-V` is the documented form because the quiet one prints no
-counts. Last green run: 628 smoke checks, 698 layout checks, 86 planner checks, 0 problems, guard OK.
+counts. Last green run: 628 smoke checks, 730 layout checks, 86 planner checks, 0 problems, guard OK.
 
 **CTest does not build.** Measured by the lane that wired it (`ecfe76c`): with `GenrePatterns.h:101`
 broken and no rebuild, `ctest` reported 4/4 passed while the sources no longer matched the binaries.
@@ -522,6 +522,50 @@ gate. The two are not interchangeable and neither alone is the whole check; run 
   was seen), and `BUILD FAILED` (it applied and did not compile, which is also not a
   pass). One anchor was written for the wrong indentation level and printed SKIP for a
   lap; an arm that is missing from the log is not an arm that passed.
+- **`isShowing ()` is false for every control in this harness, so a name lookup folds in
+  `isVisible ()`.** The layout test never puts the editor on the desktop. A first cut of the caption
+  gate matched `button->isShowing ()` and reported all six narrow strip controls missing:
+  `RUN EXIT=1`, `FAILED 718 checks, 6 problems`, on a tree whose `ChannelStrip.obj` was demonstrably
+  newer than its `.cpp`. This is the blind-not-lenient failure, and it is expensive because the
+  first hypothesis it invites is "the build is stale" -- which is exactly the thing this file says
+  to check, and it checked clean. The idiom the other two lookups use is `isVisible ()`.
+- **A driver that makes several edits to one file accumulates them in memory and writes once.**
+  `out/ab-c2.py` applied each arm's edits as `text[rel].replace (...)` and re-stored the dict, so
+  every write restarted from the pristine bytes and only the *last* anchor in an arm landed:
+  `c2a-old-captions`, meant to put both octave captions back, built as `+12`-only and reported 1
+  problem where the pair needs 4, and `c2e` silently lost `-12`. The tell is one member of a pair
+  staying silent inside its own arm. Build a blob per file, mutate the blob, write the blobs.
+- **A driver that dies mid-arm leaves the tree mutated and the newest build is the mutant, because
+  the restore is downstream of the crash.** The same script raised `UnicodeEncodeError` printing a
+  BAD line that quoted `«` into a cp1252 stdout -- after the wide-inset arm had been applied, with
+  the good bytes still only in `out/ab-c2-good/`. Three rules came out of it: a falsifier's
+  *reporting* is load-bearing code, so `sys.stdout.reconfigure (encoding="utf-8", errors="replace")`
+  goes at the top; a pipeline's exit status is not the driver's, because `tee` returned 0 over the
+  crash, so the verdict is read out of the log's `arms that ran: N of N` tail; and recovery is
+  byte-restore plus `git diff --numstat` back to the intended shape, not a rebuild of whatever the
+  working copy happens to hold.
+- **A collision helper that returns its first pair is not a census, and a box of no width makes
+  every pair collide.** `collidesIn` reports one clash per height, so `c2e` names `PitchDown12`
+  against `PitchUp` and is *silent* on the octave twins -- which must not be read as "they differ at
+  6 px". And when the name lookup lost a control, the row width read from that control went to zero
+  and the check announced that two captions "painted the same 0 px at 0 x 20 px": renders of an empty
+  box are trivially equal, so a missing control got credited to the caption gate as an
+  indistinguishability defect. The helper refuses `width <= 0` and the discovery line owns that
+  failure -- which is the arm `c2c` now reports as exactly 1 problem.
+- **A sentence about what a text path *does* is a claim only a render can answer.** The caption
+  gate's preamble said `drawFittedText` "elides", from the API's reputation -- and checking that
+  reputation was worth two corrections at once, neither of them ever committed. The vendored header
+  (`external/JUCE/modules/juce_graphics/contexts/juce_GraphicsContext.h`) names the fifth argument
+  `minimumHorizontalScale`, not the missing-character width the reasoning had assumed; and the same
+  header's doc paragraph *does* say that past the squash floor the text is crammed in with "an
+  ellipsis at the end", so the word the check names use turns out to be defensible after all.
+  What neither the recollection nor the doc can settle is which pixels survive, and that is the claim
+  the gate makes: at 14 x 20 px each of `-12` and `+12` puts ink on the button (the blank-box arm is
+  green for both) and the two pictures are the same 280 px. The renders also said more than the
+  sentence did: at the old fixed inset the octave caption was indistinguishable from the
+  *neighbouring* semitone stepper, not only from its own twin. So a platform doc is a reason to
+  expect a lossy fallback and never evidence about a picture -- and the sentence that cites it is
+  worth reading in the header before anyone repeats it a third time.
 - **Choose the control where the defect can actually show.** The overlay half of that
   mark's test compared two renders at velocity 1.0, and a velocity bar at 1.0 fills the
   whole cell, so a mark that leaked into the overlay was painted over and the check passed

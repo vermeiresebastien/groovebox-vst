@@ -28,7 +28,7 @@ param(
     [string]$BuildDir   = 'build-new',
     [switch]$SkipInstaller,
     [int]   $WantSmoke  = 628,
-    [int]   $WantLayout = 698,
+    [int]   $WantLayout = 730,
     [int]   $WantPlan   = 86,
     [string]$WantFinger = '4BC3AA231178C071'
 )
