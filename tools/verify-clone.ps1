@@ -10,7 +10,7 @@
 
   For a published repo this is also the completeness proof of the source grant: AGPL
   obliges the *source* of a conveyed binary, and "the clone has no `external/`, fetches
-  JUCE at configure, and reaches 628 / 730 / 86 checks with 0 problems" is what shows the
+  JUCE at configure, and reaches 640 / 730 / 86 checks with 0 problems" is what shows the
   obligation is actually satisfiable from what is on GitHub.
 
   Scope, stated before it runs: three test suites plus ctest. No plugin target, no
@@ -22,7 +22,7 @@ param(
     [string]$RepoRoot = '',
     [string]$Dest     = '',
     [string]$Generator = '',
-    [int]   $WantSmoke   = 628,
+    [int]   $WantSmoke   = 640,
     [int]   $WantLayout  = 730,
     [int]   $WantPlan    = 86,
     [string]$WantFinger  = '4BC3AA231178C071'
@@ -186,7 +186,7 @@ $rc = Run "ctest" "$log\06-ctest.log" { ctest --test-dir "$Dest\build" -C Releas
 Say ("  ctest EXIT: " + $rc)
 $ctest = Get-Content "$log\06-ctest.log" -Raw
 
-# The two JUCE suites print "PASSED  628 checks," (TWO spaces -- a single-space pattern
+# The two JUCE suites print "PASSED  640 checks," (TWO spaces -- a single-space pattern
 # matched nothing in any log in this repo, and a gate that silently reports NOT FOUND is a
 # gate that reports nothing), and the std-only planner prints "86 checks, 0 problems" with no
 # PASSED prefix, so one pattern over the raw log cannot tell layout from planner. Split on

@@ -1222,8 +1222,7 @@ void GrooveboxProcessor::setSwingGrid (int stepsPerPair)
 
 void GrooveboxProcessor::setManualTempo (double bpm)
 {
-    writeParameter (Params::tempoId,
-                                     (float) juce::jlimit ((double) Params::tempoMin, (double) Params::tempoMax, bpm));
+    writeParameter (Params::tempoId, (float) Layout::clampedTempoBpm (bpm));
 }
 
 float GrooveboxProcessor::getMutate() const noexcept
@@ -1631,7 +1630,7 @@ void GrooveboxProcessor::applySlotFromState (int slot)
                 const auto atByte = (size_t) at * stride;
 
                 cells.pattern[(size_t) channel][(size_t) step].store (raw[atByte] != 0);
-                cells.velocity[(size_t) channel][(size_t) step].store ((float) raw[atByte + 1] / 127.0f);
+                cells.velocity[(size_t) channel][(size_t) step].store (Layout::levelFromByte (raw[atByte + 1]));
 
                 // A v2 record has no third byte, and what it says about probability is
                 // the value the loop above already stored. Reading past the stride of

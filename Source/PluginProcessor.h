@@ -518,7 +518,6 @@ public:
     //==========================================================================
 
     static constexpr int getNumChannels_() { return Layout::numChannels; }
-    static constexpr int getNumSteps_() { return Layout::numSteps; }
 
     juce::String getChannelName (int channel) const { return samples.getChannelName (channel); }
     void setChannelName (int channel, const juce::String& name);

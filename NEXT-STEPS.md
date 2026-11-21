@@ -112,13 +112,13 @@ Zero coverage today: `setPlayHead` / `PositionInfo` / `AudioPlayHead` appear **n
 
 **B3 — The kit goes silent after enough recalls, and RAM creeps until it does.**
 `applyMetadata` calls `samples.addFile()` for all 12 lanes on **every** `setStateInformation`
-(`PluginProcessor.cpp:1245-1260`) with no path dedupe, and the registry is append-only — an id is
+(`PluginProcessor.cpp:1244-1259`) with no path dedupe, and the registry is append-only — an id is
 "never removed, never moved, never reused" (`SampleStore.h:49`) up to `maxSamples = 512`
 (`SampleStore.h:62`), after which `addSample` returns 0 forever (`SampleStore.cpp:123-131`). Live calls
 state-set on set load, preset recall, track duplicate and its own device undo: ~12 ids a pop, so after
 roughly **43** of those, every sample load in that instance fails and 12 decoded buffers of RAM were
 wasted each time. No test catches it — all four round-trip tests build a fresh processor
-(`SmokeTest.cpp:854,896,1146,1380`).
+(`SmokeTest.cpp:905,947,1146,1380`).
 
 **B4 — Undo is cosmetic and self-erasing.**
 Edits push the encoded 395-char pattern string into the tree with the undo manager
@@ -215,7 +215,7 @@ single sound. It is also the only tier where the current tests are *blind*, so i
 buys the most protection.
 
 **2. Make hits stop clicking and start choking (C1 + C2 + C5).**
-The oldest defect on the list (voice stealing with no fade, `SequencerEngine.cpp:197-205`) is still open,
+The oldest defect on the list (voice stealing with no fade, `SequencerEngine.cpp:196-204`) is still open,
 sample-end cuts click the same way, and choke groups are the one feature the paid competition assumes and
 you do not have. Redrum already solved all three shapes — `DrumEngine.cpp:304-339`, `DrumVoice.cpp:465-492`
 — so this is a port with a known answer, not an invention. Judge it with the level-matched protocol in E3.
@@ -293,7 +293,7 @@ own rule: a test that passes on old code proves nothing.
   existing test `[12]` afterwards. ~6-10 h.
 - **2.4** Make T-PHASE pass: on host takeover and whenever `position` jumps more than one onset, re-arm
   `onsetStep` by scanning the bar the head is in for the first onset ≥ head, instead of clamping a negative
-  distance to zero (`SequencerEngine.cpp:86-107`). ~4-6 h.
+  distance to zero (`SequencerEngine.cpp:85-106`). ~4-6 h.
 - **2.5** Make T-UNDO real: `GrooveboxProcessor` becomes a `ValueTree::Listener`, decodes `"pattern"` back
   into the atomics on change, with a re-entrancy flag so `pushPatternToState` cannot loop. This also makes
   every later pattern feature undoable for free. ~4-6 h.
@@ -329,7 +329,7 @@ touches the velocity law. No step here is allowed to be reported as better becau
   test. ~3-4 h. **Do not touch any gain constant to make this sound better — that is the silent-compensation
   line.**
 - **3.4** Kernel edge renormalisation: taps that fall off either end of the source are skipped, costing level
-  over the first/last ~12 samples of a hit — exactly where a transient lives (`SequencerEngine.cpp:567-587`,
+  over the first/last ~12 samples of a hit — exactly where a transient lives (`SequencerEngine.cpp:566-586`,
   the comment admits it). Renormalise by the weights actually used. Hoist `kernelTable.getWeights` out of the
   per-sample loop where the increment is constant (`:511-512`). Gate: level of the first 12 samples of a
   pitched-up kick, old vs new, level-matched overall. ~4-6 h.
@@ -808,7 +808,7 @@ designed around, and the strip now reports 5 px to spare. *(Dated record, and th
 changed meaning under 5.6: it used to be the leftover of the layout rectangle and is now the plan's
 own deficit. They are the same number wherever the old roomy set fitted — stage 0 is priced at that
 set — and differed only where it did not, which is where the old reading was the lie. The strip is 285
-px today, `Layout::stripDesignHeight` at `Source/Common.h:561`.)* The box is a 34 px `ComboBox` sharing the last row
+px today, `Layout::stripDesignHeight` at `Source/Common.h:597`.)* The box is a 34 px `ComboBox` sharing the last row
 with Mute (40 px), items `0 1 2 3` at ids `1 2 3 4` because JUCE keeps 0 for "no selection"; a combo box
 rather than a popup menu because it shows the value without a click and `setSelectedId` fires synchronously,
 which is what makes both directions testable headless.
@@ -1862,7 +1862,7 @@ than overrunning.
 
 **State, and the fourth byte.** The step record is generation 4: stride 4, 768 bytes a slot,
 1027 characters of payload (`[27]` prints the width it wrote). `Layout::maxRatchetHits` is 8
-(`Source/Common.h:305`) and `Layout::ratchetByte` (`:410`) is the one clamp, applied on the way
+(`Source/Common.h:305`) and `Layout::ratchetByte` (`:446`) is the one clamp, applied on the way
 in, on the way out of the codec, and again where the engine reads the atomic — so a byte that
 meant 60 costs eight strikes, not sixty, and a hand-edited preset cannot ask for a hundred
 voices. A record with no fourth byte — every session written before this — reads as one strike
@@ -2673,8 +2673,8 @@ so the host sees no new row and there is no migration, no default and no state-v
 new name on a tree that holds nothing: the census line in the press gate reads `pattern pattern1` before
 and after, because the take went into a dot the bank already had open.
 
-**Gates: section `[36]`, 82 of the suite's 628 checks** (`Tests/SmokeTest.cpp:11450`, the last section in
-the file). The 82 is counted out of the green log, not out of the source, and it is eleven groups: one
+**Gates: section `[36]`, 82 of the suite's 628 checks** (`Tests/SmokeTest.cpp:11501`, the last section in
+the file until `[37]`). The 82 is counted out of the green log, not out of the source, and it is eleven groups: one
 precondition the refusal arms need before a "no" means anything, five for the target — including the line
 that puts a record in a dot nobody points at, which is what makes "an occupied dot is still the target" a
 claim rather than a tautology — one that the kit's five files really did load onto lanes 0..4, fifteen for
@@ -2960,7 +2960,7 @@ worktree retirement took it to `D:\Projects\tools\groovebox-worktree-evidence-20
 exactly as the house rule intends, which left three doc pointers naming a path that no clone and
 no clean checkout can execute -- item **6.7**'s own complaint, reproduced by the very gate written
 to answer it. It is now `tools/verify-clone.ps1`, tracked, with every path resolved from
-`$PSScriptRoot` and the generator a parameter, and the current check counts in it (628 / 730 / 86).
+`$PSScriptRoot` and the generator a parameter, and the check counts current at that commit (628 / 730 / 86).
 
 Run at `7c35c29`, in a folder that had never existed and refusing any that had: 58 tracked files,
 `out` / `external` / `build` / `build-new` / `launch` all reported `present : False` on arrival,
@@ -3005,3 +3005,75 @@ URL inside the installer, but nothing was verified about what that domain curren
 homepage was claimed); the build remains unsigned, deliberately; and item **5.1**'s
 default-synthesized kit is the next feature, which would also give a first-run user something to
 hear without dragging samples in.
+
+### D — one tempo rail, one level lattice, one voice invariant (done 2026-11-21)
+
+**Three of the four findings were defects and one was a reachability error.** Lane D came out of the critical
+review with four engine smells on it. The fourth -- "`renderVoice` dereferences `voice.sample` behind no guard,
+so a stale pairing crashes" -- was true of the statement and false of the reachability: every `sample = nullptr`
+store in the file sits under an `active = false` in the same block, and both call sites are behind
+`if (voice.active)`. It landed as a `jassert` plus a per-block census instead of as a fix, which is what the
+difference between those two costs. A delegated audit's "this crashes" is a hypothesis about a control flow, and
+the control flow is five lines apart from the deref.
+
+**The rails.** `SequencerEngine::beginBar` clamped with `jlimit (20.0, 400.0, tempo)` while
+`Params::tempoMin/tempoMax` named the same two numbers one file away -- a rail edit would move the parameter the
+host automates and leave the *audio* where it was. They live in `Layout` now, which is the only home both callers
+can see: the dependency runs `Parameters.h -> Common.h` and the engine includes `Common.h` and deliberately not
+`Parameters.h`, so rails in `Params` are unreachable from the clamp and a third copy is the same defect written
+again. `Layout::clampedTempoBpm` is the one clamp; `Layout::levelFromByte` is the one decoder, with the two
+hand-divided `/ 127.0f` readers and `requestPreview`'s hand-rolled quantiser folded into the pair.
+
+**The gate is `[37]` (twelve checks, 628 -> 640) and its own prose was the defect for most of the lane.** The
+rendered-onset check claimed to arm the engine's clamp through a host tempo while its fixture called
+`setManualTempo` -- the panel path -- so it duplicated the write-through line and had no red state at all. Seven
+arms ran before that was visible. What actually reaches the engine's half is a `FakePlayHead` that reports a bpm
+and *no ppq*, because `processBlock` takes host tempo on one branch and host *position* on another; armed that
+way, `d4` reddens the audio line and `d8` reddens it too. And the store-side clamp reddens nothing, ever, for a
+reason this file did not know: the third fence is JUCE's -- `NormalisableRange::convertTo0to1` applies
+`clampTo0To1` unconditionally in 8.0.4, no clip flag to clear -- so the parameter pins every write before either
+caller is consulted. That stays as defence-in-depth with an arm that says so, which is cheaper than a green line
+that implies coverage.
+
+**The arms, and what each one buys** (`out/mut-D-run1.txt`, `out/mut-D-run3-hostpath.txt`,
+`out/mut-D-run4-bytebias.txt`): `d1` a rail moved in `Params` only -- 2 checks; `d2` a ceiling-less clamp -- 1;
+`d4` the engine clamp open -- 1, the rendered onset; `d5` a truncating `levelByte` -- 3, the rung-for-rung take,
+the corners and the twentieths differential; `d9` the same encoder biased a rung -- 16, the byte->byte bijection
+first and the `[28]` canary among them, `4BC3AA231178C071` against `F5D68A3706536EF1`; `d3` and half of `d8`
+green by the JUCE reason above; `d6` (stop-and-keep-the-source) green because the census reads active voices and
+`getVoiceDebug` indexes `voices` only -- that is the `tails` blind spot, shown rather than argued; `d7` (stop and
+keep the flag) does not print a failure line at all, it dies with `0xC0000005` before the summary, so the driver
+now separates a crash, a timeout, an absent summary and a problem count.
+
+**Also in this lane:** five declarations and one member deleted after a census at `HEAD` showed each appearing
+exactly once in the tree -- its own declaration -- namely `getNumSteps_`, `getOnsetStep`, `getPositionInSteps`,
+`getOnsetPositionInSteps`, `SampleStore::clearChannel`, and `SequencerEngine::lastFired`, which was written in
+four places and read in none. `AGENTS.md` lost a bullet that described `Tests/kHumanizeFixture.h`, an
+`add_custom_command` and a pinned onset tuple: none of the three names occurs anywhere in the tree, and none ever
+did -- the deletion is recorded inside the rule it was written under.
+
+**Citations.** The sweep corrected 7 and re-ran at `to correct: 0, unresolvable: 0`; the audit gives
+`UNPINNED miss ... : 0` with 27 pinned, 2 baseline-qualified and 19 listing rows. Three pointers were hand-derived
+because their lines are newer than the pin base and the sweep declines them: the two `Common.h` ones this lane
+moved (`:410` -> `:446`, `:561` -> `:597`) and the `[35]` part-d window, which was already 48 lines wrong when
+this lane started and is now `Tests/SmokeTest.cpp:11169-11285`. One pointer on this page is in the class the audit cannot
+judge -- `Tests/SmokeTest.cpp:11501`, the `[36]` section header, whose clause names no symbol -- so it is a
+hand-check at the next ship, not a green number.
+
+**Audio-neutral and nothing shipped.** The `[28]` fingerprint, its peak `0.68136` and its rms `0.16312` are
+byte-for-byte what they were, the gate is 640 / 730 / 86 with `GUARD OK` and `ctest` 4/4, and the `launch` target
+never ran -- so `launch/Groovebox.exe` is still `f5abfabb...` at 7,169,536 bytes from 2026-11-19 and the bundle
+module still `49dab016...`, i.e. the installed **0.2.1 / `bef0699`** export, and the version line still reads
+0.2.1. Both move at stage F.
+
+**One thing this lane found and deliberately did not touch, because it is stage F's own carrier.**
+`tools/verify-build.ps1` says at stage 6, under `-SkipInstaller`, that "launch/ not rebuilt, census not owed" --
+and then runs the census at stage 7 anyway, writing `out/launch-manifest-<shortsha>` with the header
+`# built <now>`. Measured on the three manifests today's runs left behind: `launch-manifest-60fc601.txt` names
+`60fc601` and is timestamped 19:40 today, and every digest in it is the `bef0699` export -- because a
+`-SkipInstaller` pass rebuilds no plugin, so launch/ and the artefact tree are two copies of the *previous*
+build, their census is true, and it says nothing about the commit in the filename. Stage 5 was fixed for exactly
+this wording (`FROM.txt`: "bytes that were in launch/ while HEAD was X, not bytes built from it") and stage 7
+never got the same sentence. The fix is two lines -- honour the scope the tool already announces, and label a
+census that compares stale sides as stale -- and it belongs to the pass that rebuilds the payload, where the
+manifest becomes the thing its name claims.

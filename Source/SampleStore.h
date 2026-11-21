@@ -107,8 +107,6 @@ public:
     /** Ids of every loaded sample, oldest first (for the channel menus). */
     juce::Array<int> getSampleIds() const;
 
-    void clearChannel (int channel);
-
     //==========================================================================
     // Audio thread access
     //==========================================================================

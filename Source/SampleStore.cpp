@@ -197,11 +197,6 @@ void SampleStore::setChannelSample (int channel, int sampleId)
     channels[(size_t) channel].sampleId.store (sampleId, std::memory_order_release);
 }
 
-void SampleStore::clearChannel (int channel)
-{
-    setChannelSample (channel, 0);
-}
-
 Sample::Ptr SampleStore::getSample (int sampleId) const
 {
     // Wrapping the raw pointer bumps the refcount, which cannot race with a free:

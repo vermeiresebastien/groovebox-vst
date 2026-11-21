@@ -261,12 +261,12 @@ It is fully gitignored and nothing in it is authored in place.
 - **A verified number is not a verified claim.** The Touch A/B quoted `peak 1.438488 -> 1.485904`
   straight out of the run log, so every digit was true -- and both numbers are past 0 dBFS, because
   the fixture is four lanes x all sixteen steps at chance 1.0 on the whole velocity ladder
-  (`Tests/SmokeTest.cpp:8242-8248`), a load the genre table never asks for (densest row 10 of 16,
+  (`Tests/SmokeTest.cpp:8293-8299`), a load the genre table never asks for (densest row 10 of 16,
   average 3.4). So the copy reported a rise in *clipping* as if it were the cost of a control, while
   the headroom section two pages earlier says the latch fires at 0 dBFS and there is no limiter.
   When shipped copy quotes a measured level it states the fixture that produced it, whether that
   fixture is a playing state, and which trim was in place -- and the same test arm's relative ceiling
-  (`<= shut * 1.25`, `Tests/SmokeTest.cpp:8393`) is an anti-renormalisation gate, not a headroom gate,
+  (`<= shut * 1.25`, `Tests/SmokeTest.cpp:8444`) is an anti-renormalisation gate, not a headroom gate,
   which its comment now says, because nothing else in that arm bounds the summed take's level.
   Corrected by the shipping lane in `fbf973c`.
 
@@ -285,7 +285,7 @@ no generated header ([CMakeLists.txt:232-335](CMakeLists.txt)), which is what ke
 second. All four entries are `add_test` cases carrying a `PASS_REGULAR_EXPRESSION` that requires a
 `, 0 ` problem count, so a run that prints nothing and a run that prints a problem both fail the
 tracked path even at process exit 0, and `-V` is the documented form because the quiet one prints no
-counts. Last green run: 628 smoke checks, 730 layout checks, 86 planner checks, 0 problems, guard OK.
+counts. Last green run: 640 smoke checks, 730 layout checks, 86 planner checks, 0 problems, guard OK.
 
 **CTest does not build.** Measured by the lane that wired it (`ecfe76c`): with `GenrePatterns.h:101`
 broken and no rebuild, `ctest` reported 4/4 passed while the sources no longer matched the binaries.
@@ -713,6 +713,101 @@ gate. The two are not interchangeable and neither alone is the whole check; run 
   window and the column window are read separately -- `channelAtY` for the row,
   `getSlotDotBounds (channel, slot)` for the mark -- because a point that is in the right
   column and the wrong row belongs to nobody.
+- **A helper that exists twice is a gate on which one the caller used.** `SequencerEngine` clamped
+  its tempo with `jlimit (20.0, 400.0, tempo)` while `Params::tempoMin/tempoMax` said the same two
+  numbers one file away, so a rail edit moved the parameter and left the engine -- which is the
+  *audio* -- where it was. The rails now live in `Layout` (`Common.h`), which is where `PluginEditor.cpp`
+  and `GenrePatterns.h` already keep theirs, because the dependency runs `Parameters.h -> Common.h`
+  and the engine deliberately includes `Common.h` and not `Parameters.h`: rails in `Params` would be
+  unreachable from the engine, and a third copy would be the same defect written twice. The tempo half of
+  the gate (`[37]`, twelve checks over three subjects) is four checks, because the engine's own
+  `samplesPerStep` has no accessor and the claim
+  is about the *audio*: the live `getParameterRange (Params::tempoId)` is read off the APVTS instead
+  of being restated from `Params`; `Layout::clampedTempoBpm` is probed at 0, 19.9, 20, 137.5, 400,
+  400.1 and 5000 -- both rails and one value on each side of each, which is the pair that separates
+  a `jlimit` from a clamp written at either end; the processor's `getCurrentTempo()` is asked after
+  a panel write of 0 and of 5000, which means a block has to run, because `displayedTempo` is only
+  written inside `processBlock`; and a steps-0-and-8 pattern is *rendered*, with the second onset
+  measured against the 400-rail step length, armed through a `FakePlayHead` that reports a tempo and
+  no ppq -- the engine takes host tempo on one branch and host *position* on another, so this is the
+  one state where the engine's clamp decides the sample grid with no help from the parameter.
+  The arms, and which line each one reaches (`out/mut-D-run1.txt`, `out/mut-D-run3-hostpath.txt`):
+  `Params::tempoMin = 30.0f` reddens the APVTS line and the panel-write line; a ceiling-less
+  `clampedTempoBpm` reddens the probe line; removing the clamp from `beginBar` reddens the rendered
+  line, alone. Removing it from `setManualTempo` reddens nothing and never can: the third fence is
+  JUCE's, not the repo's, because `NormalisableRange::convertTo0to1` applies `clampTo0To1`
+  unconditionally in 8.0.4 (there is no clip flag to clear), so the parameter pins every write to its
+  own rails before either caller is consulted. The store-side call therefore stays what it is --
+  defence-in-depth that keeps two write doors storing one representation -- with an arm that says so
+  rather than a green line that implies coverage. And no interior tempo appears in the panel-write
+  check: 137.5 does not survive the 0..1 round-trip bit-exact, so a mismatch there would be about the
+  quantiser rather than the rail, which is why the interior value is probed on the pure function.
+- **A check that names its own mechanism in its failure text is a claim about that mechanism's
+  source.** The panel-write line above used to read "`writeParameter` maps a value through the range
+  *without binding it*, so nothing below this catches a removed clamp". In JUCE 8.0.4 the mapping does
+  bind, unconditionally, and the sentence that said otherwise is why the audio check was armed through
+  `setManualTempo` -- the panel path -- where it duplicates the write-through line instead of reaching
+  the engine. Seven falsifier arms ran before that was visible, and the rendered-onset line was green
+  in every one of them: an unfalsified check does not announce itself, it just agrees with everything.
+  When a check's text explains *why* it should be able to fail, read the code it names before
+  believing the check exists, and demand of every new gate the one arm that makes it red.
+  The same audit deleted a bullet from this file that described `Tests/kHumanizeFixture.h`, an
+  `add_custom_command` and a pinned onset tuple: none of the three names occurs anywhere in the tree.
+- **Count the sites before replacing them, and count what kind each is.** 5.1-D2 asked for "the five
+  restated `/127.0f` sites" to fold into `Layout::levelFromByte`. The sweep over `Source/` found
+  **three** codec sites: two decoders (`SequencerEngine.cpp`'s roll unpack and the codec's per-step
+  level store in `PluginProcessor.cpp`) and the *encoder* itself. An inverse cannot absorb an encoder.
+  The rest of the `/127` arithmetic in the tree is the velocity rung law (`written * 127.0`,
+  `rung * (1.0 / 127.0)`) and comments, which are a different quantity wearing the same denominator.
+  The gate is three lines. One direction is a bijection: `levelByte (levelFromByte (b)) == b` for all
+  128 bytes, which is what makes the codec's 832-character pattern a lossless encoding rather than a
+  rounding. The other direction is *not* -- `levelFromByte (levelByte (v)) == v` holds only for `v`
+  already on the rung lattice, and the first cut of this check typed the readout's hundredths as if
+  they were, so it went red on `1/127` against `0.01` while the engine was doing nothing wrong. The
+  panel snaps a drag to twentieths (`setValueFromPointer`) and prints a whole percent, so the second
+  line asks the product question instead: set one cell to each of the 21 twentieths, read the percent,
+  save, load, read again, require agreement -- a differential through the real codec, with agreement
+  as the standard rather than a rung this file typed. The third line is the corners, and `64/127` is
+  the *engine's own* struck float, not a typed constant.
+  Both directions of the codec have an arm now, and they are not the same arm. Truncating `levelByte`
+  instead of rounding it reddens the rung-for-rung take, the corners and the twentieths differential
+  (arm d5, 3 failures) but leaves the bijection line green -- which is why the first cut of this
+  section said the lattice was gated when only one way through it was. Biasing the encoder by one
+  rung (`roundToInt (level * 127.0f) + 1`) is the mutation that reaches the bijection, and it reddens
+  that line first and 15 others with it (arm d9, `out/mut-D-run4-bytebias.txt`): the saved record, the
+  four-byte step encoding, the level seam and the `[28]` baseline canary, `4BC3AA231178C071` against
+  `F5D68A3706536EF1`. The difference is what each mutation does to a byte that started as a byte: a
+  truncating encoder maps every decoded value back to the same byte, so the round trip cannot see it
+  and only the value->byte->value lines can; a one-rung bias cannot hide inside the round trip because
+  it moves the answer. Two checks over one law, and the plan that asked for "the bijection" got one
+  direction of it.
+  The rule for a plan that quotes a count: re-derive it from the tree at the moment of the edit.
+- **A guard you cannot reach is still worth a tripwire, but only a tripwire.** The claim that
+  `renderVoice` derefs `voice.sample->buffer` one statement behind the call-site `if (voice.active)`
+  is true, and so is the opposite: `sample` is never null while `active` is set. All five
+  `sample = nullptr` stores sit under an `active = false` in the same block (three of them the
+  voice's own end-of-life), so a delegated audit's "this crashes" was wrong. D5 adds a `jassert`
+  and a census, and the census' shape is what matters: rather than picking the instants to look at,
+  `[37]` drives 40 blocks and reads `debugVoice (i)` after every one, so the pairing is gated at a
+  natural voice end, a choke, a `clearChannelRow` dropped mid-run and the stop whether or not
+  whoever edits this thought to name them. Two preconditions hold it up -- the pool is empty before
+  the transport runs, and the peak active count inside the run is non-zero -- because a census of
+  nothing makes "no active voice lacked a source" true of an engine that never started. The test is
+  `sampleLength > 0` rather than `!= nullptr`: that is the observable `VoiceDebug` exposes, and it is
+  the strictly stronger one -- it also refuses a voice wired to a loaded-but-empty sample, which is
+  the state `renderVoice` retires on the next statement instead of reading. What it does NOT reach:
+  the `tails` array. `getVoiceDebug` only
+  indexes `voices`, and adding a second accessor to the engine so a hygiene check could read the
+  stolen hits would widen the surface for the check rather than for the product, so tails stay a
+  named blind spot and `renderVoice`'s `jassert` is the only thing watching them.
+  Both halves of that blind spot are arms rather than arguments. `stopAllVoices` keeping the source
+  on a voice it has already marked inactive (arm d6) leaves the whole suite green -- the census reads
+  active voices, so it cannot see a source held by an inactive one, and that is the `tails` gap shown
+  from the store side (`out/mut-D-run1.txt`). The mirror mutation, dropping the `active = false` while
+  still clearing `sample`, does not print a failure line either: the process dies with `0xC0000005`
+  and no summary (exit 3221225477, `[NO SUMMARY LINE]`), because the engine dereferences the null
+  source the census exists to catch. A driver that reports that as "0 FAIL lines" is reporting a
+  crash as a pass, so the runner distinguishes a timeout, an absent summary and a problem count.
 - Automatability is testable single-threaded because
   `AudioProcessorParameter::setValueNotifyingHost` notifies listeners synchronously.
 - JUCE 8 removed `AudioProcessorValueTreeState::setParameterNotifyingHost`; the one
@@ -848,7 +943,7 @@ gate. The two are not interchangeable and neither alone is the whole check; run 
   says "while" owes a check that both halves were awake at the same time.
 - **An undo count is not a write count, and neither is a notification count.** The first cut of this seam's
   own comment said the cell-route cost "192 tree writes and 192 undo commands". Measured against a listener
-  and an `UndoManager` (`[35]` part d, `Tests/SmokeTest.cpp:11036-11152`): 768 encodings of the row, **240** tree
+  and an `UndoManager` (`[35]` part d, `Tests/SmokeTest.cpp:11169-11285`): 768 encodings of the row, **240** tree
   notifications, and **two** undo actions. `ValueTree::setProperty` does not notify when the value is
   unchanged, and `UndoManager::perform` coalesces successive `SetPropertyAction`s on one property
   (`juce_UndoManager.cpp:141`) within the transaction the gesture already opened. So the saving this seam
@@ -1337,4 +1432,10 @@ on purpose: see the two bolded rules below.
   edit of these docs checks `git ls-files --eol` and `git diff --numstat` before staging, and
   `re.sub(rb"\r(?!\n)", b"", …)` is the repair -- three such bytes in this repo's two big
   markdown files, all of them written this session.
+- **A consolidation that already happened still has to be counted, not remembered.** 5.1-D3 asked
+  to collapse "the four spellings" of the strike clamp onto `Layout::maxRatchetHits`. They were
+  already one: `grep -rn -- "-ratchetByte (-.*127\|min (127" Source/` returns empty, and the live
+  clamp at `SequencerEngine.cpp` is the `setStepRatchet (3, 7, 999)` check AGENTS.md already names
+  as the one that becomes sound. The item closes as *already done* with that command as its receipt
+  -- which is also why the census is re-run before the edit rather than quoted from the plan.
 - Per-repo conventions live in this file, not in anyone's memory.

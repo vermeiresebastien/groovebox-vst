@@ -304,6 +304,23 @@ namespace Layout
     */
     inline constexpr int maxRatchetHits = 8;
 
+    /** The tempo range the product offers, in BPM — one pair of numbers, in one place.
+
+        The parameter table builds its `AudioParameterFloat` from these and the transport's
+        manual-tempo writer clamps through `clampedTempoBpm`, so a rail the host can be
+        automated to and a rail the engine will run at cannot be two different facts. That is
+        the whole reason this moved out of `Params`: `SequencerEngine.h` includes `Common.h`
+        and deliberately not `Parameters.h`, and a clamp written as two literals at
+        `beginBar` was free to drift from the table that named them. */
+    inline constexpr float tempoMinBpm = 20.0f;
+    inline constexpr float tempoMaxBpm = 400.0f;
+
+    /// The tempo the engine will actually run at for a bpm it was handed.
+    inline double clampedTempoBpm (double bpm) noexcept
+    {
+        return juce::jlimit ((double) tempoMinBpm, (double) tempoMaxBpm, bpm);
+    }
+
     /**
         Which generation of the saved record this build writes.
 
@@ -313,7 +330,10 @@ namespace Layout
         record belongs to, the tag says what codec the string in front of the reader
         is in, and the tag is the one that has to be trusted, because a payload can
         travel on its own — through an undo, a preset the user edited by hand, or a
-        session this build only half-read.
+        session this build only half-read. No load path branches on the root value, and
+        that is by design rather than an omission: the migration decision is carried by
+        the codec prefix, which is the half that travels, and a reader that asked the
+        root first would be a second answer to a question the payload already answers.
 
         Version 1 was rows of two digits a step, with no version anywhere: a session's
         shape was its only label, so a row of sixteen characters meant one digit a
@@ -371,6 +391,22 @@ namespace Layout
     inline juce::uint8 levelByte (float level) noexcept
     {
         return (juce::uint8) juce::jlimit (0, 127, juce::roundToInt (level * 127.0f));
+    }
+
+    /** The level one byte means — `levelByte` read back, and the only way a reader should
+        recover a level from a record or from a packed preview request.
+
+        The writer side has had a name since the codec grew a `cellSaysAnything` that had to
+        round the same way it did; the readers each divided by `127.0f` on the spot, which is
+        the same lattice spelled twice more. It is the model `chanceFromByte` already sets:
+        one number owns the lattice, its encoder and its decoder are both functions beside it,
+        and a test can ask the pair whether it round-trips instead of asking two sites whether
+        they still agree. A value off this lattice is not a level the product can hold, so a
+        reader that invented its own divisor would produce a number its own writer never
+        writes — and only the round trip below can see that. */
+    inline float levelFromByte (juce::uint8 byte) noexcept
+    {
+        return (float) byte / 127.0f;
     }
 
     inline juce::uint8 chanceByte (float chance) noexcept

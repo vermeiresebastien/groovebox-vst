@@ -95,7 +95,7 @@ suites **per target**, refuses any exe newer-input-than-its-own-stamp, and only 
 second run needs `-Dest` or the previous clone deleted. Scope, in its own banner: suites plus
 ctest, no plugin target, `launch/` untouched.
 
-The defaults name the shipped verdicts (628 / 730 / 86 checks, 0 problems, the `[28]` fingerprint
+The defaults name the shipped verdicts (640 / 730 / 86 checks, 0 problems, the `[28]` fingerprint
 `4BC3AA231178C071`), and the run prints the verdict lines it read rather than a count derived from
 them, because a green summary beside an empty evidence field is the failure mode this script was
 born fixing. For a public AGPL repository this is also the completeness proof behind the licence:

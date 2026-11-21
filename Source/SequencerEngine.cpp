@@ -77,7 +77,6 @@ void SequencerEngine::prepare (double sampleRate, int /*maximumBlockSize*/)
     predictedHead = 0.0;
     havePrediction = false;
     onsetStep = -1;
-    lastFired = -1;
     hostDriven = false;
     numNoteEvents = 0;
     nextNoteEvent = 0;
@@ -184,7 +183,7 @@ double SequencerEngine::strikeDelayInSteps (int step, int strike, int strikes) c
 
 void SequencerEngine::beginBar (double tempo)
 {
-    const auto bpm = juce::jlimit (20.0, 400.0, tempo);
+    const auto bpm = Layout::clampedTempoBpm (tempo);
     stepsPerSecond = bpm * 4.0 / 60.0;
     samplesPerStep = currentSampleRate / stepsPerSecond;
 }
@@ -652,8 +651,9 @@ bool SequencerEngine::requestPreview (int channel, float velocity) noexcept
     // comes from a keyboard: JUCE hands back `getFloatVelocity()` as the 0..127 byte
     // divided by 127, so quantising here costs a preview nothing a MIDI note does not
     // already pay, and it is what lets the two be compared sample for sample. A level
-    // off that lattice is not reachable by a note-on at all.
-    const auto struck = (std::uint32_t) juce::roundToInt (juce::jlimit (0.0f, 1.0f, velocity) * 127.0f);
+    // off that lattice is not reachable by a note-on at all. The quantiser is the one the
+    // record uses, so the seam and the file cannot stop agreeing about what a byte means.
+    const auto struck = (std::uint32_t) Layout::levelByte (velocity);
 
     state.previewSlots[(size_t) (produced % (std::uint32_t) SequencerState::maxPreviewRequests)]
         .store ((struck << 8) | (std::uint32_t) channel, std::memory_order_relaxed);
@@ -682,7 +682,7 @@ int SequencerEngine::drainPreviewRequests()
 
         noteEvents[(size_t) taken++] = { 0,
                                          (int) (packed & 0xffu),
-                                         (float) (packed >> 8) / 127.0f,
+                                         Layout::levelFromByte ((juce::uint8) (packed >> 8)),
                                          true };
         ++consumed;
     }
@@ -765,7 +765,6 @@ void SequencerEngine::fireNextOnset()
 
     onsetStep = (step + 1) % Layout::numSteps;
     currentStep.store (step);
-    lastFired = step;
 
     fireStep (step);
 }
@@ -1122,6 +1121,12 @@ void SequencerEngine::renderVoices (juce::AudioBuffer<float>& buffer, int startS
 
 void SequencerEngine::renderVoice (Voice& voice, float* outLeft, float* outRight, int numSamples)
 {
+    // Every store that clears `sample` clears `active` in the same statement pair, and
+    // both call sites here are behind `if (voice.active)`. Smoke [37] censuses that pairing
+    // after every block of a run that reaches a natural end, a choke, a cleared row and the
+    // stop, so this is a tripwire for a future fifth store, not a guard against a reachable null.
+    jassert (voice.sample != nullptr);
+
     const auto& source = voice.sample->buffer;
 
     if (source.getNumSamples() <= 0)
@@ -1562,7 +1567,6 @@ void SequencerEngine::processBlock (juce::AudioBuffer<float>& buffer,
 
         renderBlock (buffer, numSamples, false);
 
-        lastFired = -1;
         onsetStep = -1;
         currentStep.store (-1);
 
@@ -1613,9 +1617,6 @@ void SequencerEngine::processBlock (juce::AudioBuffer<float>& buffer,
 
         position = hostHead;
         hostDriven = true;
-
-        if (tookOver)
-            lastFired = -1;
 
         if (slipped || tookOver)
             onsetStep = firstStepAtOrAfter (position);

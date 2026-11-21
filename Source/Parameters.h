@@ -162,8 +162,10 @@ namespace Params
     inline constexpr int pitchDropMin = 0;
     inline constexpr int pitchDropMax = (int) Layout::maxPitchDropSemitones;
 
-    inline constexpr float tempoMin = 20.0f;
-    inline constexpr float tempoMax = 400.0f;
+    /// The tempo rails are `Layout`'s, not a second copy of them: the engine clamps through
+    /// `Layout::clampedTempoBpm` and cannot see this table, so the shared home is `Common.h`.
+    inline constexpr float tempoMin = Layout::tempoMinBpm;
+    inline constexpr float tempoMax = Layout::tempoMaxBpm;
 
     /**
         How much of the grid's per-step probabilities the machine may use.

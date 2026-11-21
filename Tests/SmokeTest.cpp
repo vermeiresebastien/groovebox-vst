@@ -206,6 +206,49 @@ float peakOf (const std::vector<float>& data)
 }
 
 /**
+    How many of the engine's voices are sounding, and how many of those report a source.
+
+    5.1-D5's invariant is `active => we have something to read`, and `getVoiceDebug` is the
+    only door the engine offers onto a voice. It answers `sampleLength` as `0` for a null
+    sample and for an empty buffer alike, so the pair below gates the stronger claim -- an
+    active voice has a non-empty one -- and the census is what keeps it honest: a pool that
+    is entirely idle satisfies the invariant vacuously, which is a pass that measured nothing.
+*/
+void activeVoiceCensus (GrooveboxProcessor& machine, int& sounding, int& withSource)
+{
+    sounding = 0;
+    withSource = 0;
+
+    for (int i = 0; i < Layout::maxVoices; ++i)
+    {
+        const auto voice = machine.debugVoice (i);
+
+        sounding += voice.active ? 1 : 0;
+        withSource += voice.active && voice.sampleLength > 0 ? 1 : 0;
+    }
+}
+
+/**
+    The tempo the machine takes for a bpm written the way the panel writes it.
+
+    `setManualTempo` is the one public route in (the panel's), and it clamps before it hands
+    the number to the parameter -- which matters because `writeParameter` maps through the
+    range and does not bind it, so an out-of-rail bpm reaches `parameterChanged` intact. The
+    result is read from `displayedTempo`, which the engine's own `beginBar` writes at the end
+    of a block, so a read that has not run one answers with the previous tempo.
+*/
+double tempoAfterPanelWrite (GrooveboxProcessor& machine, double bpm, int block)
+{
+    machine.setManualTempo (bpm);
+
+    juce::AudioBuffer<float> buffer (2, block);
+    juce::MidiBuffer midi;
+    machine.processBlock (buffer, midi);
+
+    return machine.getCurrentTempo();
+}
+
+/**
     Integrated level of a render, for reporting beside a slew measurement.
 
     A taper fixes a discontinuity by taking amplitude away, so a slew gate can be
@@ -513,11 +556,19 @@ struct FakePlayHead final : public juce::AudioPlayHead
     double bpm = 120.0;
     bool playing = false;
 
+    // A host may name a tempo without naming a place in the bar. The engine reads those
+    // two facts on separate branches, so this is the only way to hand it a tempo that
+    // never passed through the parameter while leaving its own walk in charge of the head.
+    bool reportPpq = true;
+
     juce::Optional<PositionInfo> getPosition() const override
     {
         PositionInfo info;
         info.setBpm (bpm);
-        info.setPpqPosition (ppq);
+
+        if (reportPpq)
+            info.setPpqPosition (ppq);
+
         info.setIsPlaying (playing);
         return info;
     }
@@ -12478,6 +12529,297 @@ int main()
         }
 
         kit.remove();
+    }
+
+    //======================================================================
+    // 5.1-D: the three hygiene rules that can be gated rather than commented.
+    //
+    //   D1 -- the tempo rails. `Params::tempoMin/tempoMax` and the engine's own clamp were two
+    //         spellings of 20 and 400 in two files, so editing one moved the automation a host
+    //         sees and left the audio where it was. Comparing the two constants proves nothing
+    //         now that one is spelled from the other, so the check asks the *parameter object*
+    //         what its range is and the *engine* what it settled on: that pair can disagree.
+    //   D2 -- the level lattice. `/ 127.0f` was restated at the two decoders after 4.1 put the
+    //         inverse in `Layout::levelByte`. The gate is the bijection in both directions,
+    //         which is also the proof that a byte is a lossless encoding of a rung.
+    //   D5 -- the voice invariant. `renderVoice` reads `voice.sample->buffer` one statement
+    //         behind the call site's `if (voice.active)`. That was never a crash: every store
+    //         that clears `sample` clears `active` in the same block. A `jassert` plus the pass
+    //         below is what keeps a future fifth store from being found by a host instead.
+    std::printf ("\n[37] the tempo rails, the level lattice and the voice invariant\n");
+    {
+        GrooveboxProcessor rails;
+        rails.prepareToPlay (sampleRate, blockSize);
+
+        const auto range = rails.getValueTreeState().getParameterRange (Params::tempoId);
+
+        check (range.start == (double) Layout::tempoMinBpm && range.end == (double) Layout::tempoMaxBpm,
+               "the Tempo range a host sees and the rails the engine fences at are still one pair of "
+               "numbers -- read off the live parameter object rather than off `Params::tempoMin`, so "
+               "what this reddens is `Params` growing its own literal back, which is the defect this "
+               "section exists to keep out",
+               "parameter " + juce::String (range.start, 1) + ".." + juce::String (range.end, 1)
+                   + ", engine rails " + juce::String (Layout::tempoMinBpm, 1)
+                   + ".." + juce::String (Layout::tempoMaxBpm, 1));
+
+        const double probes[] = { 0.0, 19.9, 20.0, 137.5, 400.0, 400.1, 5000.0 };
+        const double atRails[] = { (double) Layout::tempoMinBpm, (double) Layout::tempoMinBpm,
+                                   20.0, 137.5, 400.0,
+                                   (double) Layout::tempoMaxBpm, (double) Layout::tempoMaxBpm };
+
+        bool clampHolds = true;
+
+        for (size_t i = 0; i < sizeof (probes) / sizeof (probes[0]); ++i)
+            if (Layout::clampedTempoBpm (probes[i]) != atRails[i])
+                clampHolds = false;
+
+        check (clampHolds,
+               "`clampedTempoBpm` -- the one function both the panel's write and the engine's "
+               "`beginBar` call -- lands below on the floor, above on the ceiling and leaves an "
+               "interior tempo whole, so the two callers cannot disagree by construction rather "
+               "than by agreement",
+               "probes 0, 19.9, 20, 137.5, 400, 400.1, 5000 bpm against the rails");
+
+        check (tempoAfterPanelWrite (rails, 0.0, blockSize) == (double) Layout::tempoMinBpm
+                   && tempoAfterPanelWrite (rails, 5000.0, blockSize) == (double) Layout::tempoMaxBpm,
+               "a tempo written the way the panel writes it arrives on a rail rather than outside "
+               "one. This is a read of the whole seam, not a gate on `Layout::clampedTempoBpm`: "
+               "`NormalisableRange::convertTo0to1` clamps to 0..1 unconditionally in JUCE 8.0.4, so "
+               "the parameter fences the value before the store's clamp is ever consulted -- which is "
+               "why the arms that remove the repo's own clamps (d3 the store, d8 store and engine "
+               "together) both leave this line green. What it does catch is a rail that moved in one "
+               "file and not the other: `Params::tempoMin = 30.0f` reddens it (arm d1).",
+               "0 bpm reads " + juce::String (tempoAfterPanelWrite (rails, 0.0, blockSize), 1)
+                   + ", 5000 bpm reads "
+                   + juce::String (tempoAfterPanelWrite (rails, 5000.0, blockSize), 1));
+
+        {
+            // The engine's own half, measured where only the engine speaks. `beginBar` takes the
+            // host's tempo whenever a playhead reports one, and takes the host's *head* only when
+            // that report also carries a ppq -- so a transport that names a tempo and no position
+            // is the one state where the engine's clamp decides the sample grid with no help from
+            // the parameter. Driving this through `setManualTempo`, as the first cut did, puts the
+            // write back on the panel path and leaves the check with no red state at all. The
+            // manual tempo stays at 120 so the only 5000 in the fixture arrives from the host.
+            auto blip = makeClickWav ("d5rail", 120, sampleRate);
+
+            FakePlayHead host;
+            host.bpm = 5000.0;
+            host.playing = true;
+            host.reportPpq = false;
+
+            GrooveboxProcessor fast;
+            fast.prepareToPlay (sampleRate, blockSize);
+            fast.setPlayHead (&host);
+
+            juce::String err;
+            fast.loadSampleIntoChannel (0, blip, err);
+            clearAllSteps (fast);
+            fast.setStep (0, 0, true);
+            fast.setStep (0, 8, true);
+
+            rearm (fast);
+
+            const auto result = render (fast, 20000, blockSize, sampleRate);
+            fast.setPlayHead (nullptr);
+
+            const auto secondOnset = onsetAfter (result.left, 2000);
+            const auto railStep = sampleRate / ((double) Layout::tempoMaxBpm / 60.0 * 4.0);
+            const auto expected = (int) std::llround (railStep * 8.0);
+
+            check (secondOnset > 0 && std::abs (secondOnset - expected) < expected / 50,
+                   "asked for 5000 bpm the grid still steps at the 400 rail, which is the audio "
+                   "answer to the rail question rather than the parameter's",
+                   "second onset at " + juce::String (secondOnset) + ", the rail puts eight steps "
+                       + "at " + juce::String (expected) + " samples");
+
+            blip.deleteFile();
+        }
+
+        // ---- D2: the byte <-> rung bijection ------------------------------------------
+        bool byteRoundTrip = true;
+
+        for (int byte = 0; byte <= 127; ++byte)
+            if (Layout::levelByte (Layout::levelFromByte ((juce::uint8) byte)) != byte)
+                byteRoundTrip = false;
+
+        check (byteRoundTrip,
+               "every stored byte decodes to a level that encodes back to that byte, so the codec's "
+               "832-character pattern is a lossless encoding of the grid and not a rounding",
+               "at least one of the 128 bytes does not survive levelByte (levelFromByte (b))");
+
+        // The other direction cannot be asked of the helpers -- `levelFromByte (levelByte (v))`
+        // only returns `v` when `v` is already on the rung lattice, and the panel does not write
+        // that lattice. `setValueFromPointer` snaps a drag to twentieths and the hover readout
+        // prints a whole percent, so the product-level claim is narrower and stronger: the number
+        // on the cell is the number that comes back off disk. Asked of the codec, and compared
+        // through one expression applied to both sides, so the standard is agreement rather than
+        // a rung this file typed.
+        bool dragValueSurvives = true;
+        int  worstPercentShift = 0;
+        juce::String shiftDetail;
+
+        for (int twentieth = 0; twentieth <= 20; ++twentieth)
+        {
+            GrooveboxProcessor before;
+            before.prepareToPlay (sampleRate, blockSize);
+            clearAllSteps (before);
+            before.setStep (4, 3, true);
+            before.setStepVelocity (4, 3, (float) twentieth / 20.0f);
+
+            const auto shownBefore = juce::roundToInt (before.getStepVelocity (4, 3) * 100.0f);
+
+            juce::MemoryBlock blob;
+            before.getStateInformation (blob);
+
+            GrooveboxProcessor after;
+            after.prepareToPlay (sampleRate, blockSize);
+            after.setStateInformation (blob.getData(), (int) blob.getSize());
+
+            const auto shownAfter = juce::roundToInt (after.getStepVelocity (4, 3) * 100.0f);
+
+            if (shownBefore != shownAfter)
+            {
+                dragValueSurvives = false;
+
+                if (std::abs (shownAfter - shownBefore) > worstPercentShift)
+                {
+                    worstPercentShift = std::abs (shownAfter - shownBefore);
+                    shiftDetail = "at " + juce::String (twentieth) + "/20: showed "
+                                      + juce::String (shownBefore) + "% before the save, "
+                                      + juce::String (shownAfter) + "% after";
+                }
+            }
+        }
+
+        check (dragValueSurvives,
+               "and the lattice the drag can actually write -- the twentieths -- shows the same "
+               "percent after a save and a load as before it, for all 21 of them, which is what a "
+               "7-bit level buys back at the whole-percent readout",
+               shiftDetail.isEmpty() ? "every twentieth keeps its percent across the codec"
+                                     : shiftDetail);
+
+        check (Layout::levelFromByte (0) == 0.0f
+                   && Layout::levelFromByte (127) == 1.0f
+                   && std::abs (Layout::levelFromByte (64) - 64.0f / 127.0f) < 1.0e-6f,
+               "and the corners are the engine's own ladder: silence, full velocity, and the struck "
+               "float a quarter-plus-one of the ladder is",
+               "byte 0 gives " + juce::String (Layout::levelFromByte (0), 5)
+                   + ", 64 gives " + juce::String (Layout::levelFromByte (64), 5)
+                   + " against " + juce::String (64.0f / 127.0f, 5)
+                   + ", 127 gives " + juce::String (Layout::levelFromByte (127), 5));
+
+        // ---- D5: active => there is something to read ---------------------------------
+        // One render, sampled at every block, with the three terminations inside it: a voice
+        // that runs out of source (the 120-sample click on lane 2), a voice a choke group ends
+        // early (lane 0, cut by lane 1's hit on step 8) and a row cleared under a voice that is
+        // already sounding (lane 3, at block 16). A hand-picked probe would only ever look at
+        // the instants someone thought to write down.
+        {
+            auto held  = makeToneWav ("d5held", 300.0, 100000, sampleRate);
+            auto blip  = makeClickWav ("d5short", 120, sampleRate);
+
+            GrooveboxProcessor processor;
+            processor.prepareToPlay (sampleRate, blockSize);
+
+            juce::String err;
+
+            for (int channel = 0; channel < Layout::numChannels; ++channel)
+                processor.loadSampleIntoChannel (channel, held, err);
+
+            processor.loadSampleIntoChannel (2, blip, err);
+
+            clearAllSteps (processor);
+
+            for (int channel = 0; channel < Layout::numChannels; ++channel)
+                processor.setStep (channel, 0, true);
+
+            processor.setStep (1, 8, true);      // the cutter, in lane 0's group
+            processor.setChannelChokeGroup (0, 1);
+            processor.setChannelChokeGroup (1, 1);
+
+            int soundingNow = 0, withSourceNow = 0;
+            activeVoiceCensus (processor, soundingNow, withSourceNow);
+
+            check (soundingNow == 0,
+                   "before the transport runs, no voice is active -- the precondition the rest of "
+                   "this section needs, because a pool that started full would make 'nothing went "
+                   "wrong' mean 'nothing was looked at'",
+                   "idle census has " + juce::String (soundingNow) + " active voices");
+
+            rearm (processor, 120.0);
+            processor.setPlaying (true);
+
+            juce::AudioBuffer<float> buffer (2, blockSize);
+            juce::MidiBuffer midi;
+
+            int peakSounding = 0;
+            int sourcelessBlocks = 0;
+
+            for (int block = 0; block < 40; ++block)
+            {
+                processor.processBlock (buffer, midi);
+
+                if (block == 16)
+                    processor.clearChannelRow (3);
+
+                int sounding = 0, withSource = 0;
+                activeVoiceCensus (processor, sounding, withSource);
+
+                peakSounding = juce::jmax (peakSounding, sounding);
+                sourcelessBlocks += (sounding - withSource) > 0 ? 1 : 0;
+            }
+
+            check (peakSounding > 0,
+                   "voices did sound during the 40 blocks, so the invariant below was checked "
+                   "against a live pool rather than an empty one",
+                   "peak active voices across the run: " + juce::String (peakSounding));
+
+            check (sourcelessBlocks == 0,
+                   "not one block ever held a voice that was active with nothing to read, through a "
+                   "natural end, a choke and a row cleared mid-run -- the invariant `renderVoice` "
+                   "dereferences is gated at every block, not at the instants this fixture names",
+                   juce::String (sourcelessBlocks) + " of 40 blocks had an active voice with no source");
+
+            // Stopping is not a cut. `setPlaying (false)` moves the flag and lets a hit that already
+            // started ring out, so the pool is deliberately non-empty here -- which is exactly the
+            // state a "the stop clears it" assumption would have asserted instead of this one.
+            processor.setPlaying (false);
+
+            int ringOutPeak = 0;
+            int sourcelessAfterStop = 0;
+
+            for (int block = 0; block < 8; ++block)
+            {
+                processor.processBlock (buffer, midi);
+
+                int sounding = 0, withSource = 0;
+                activeVoiceCensus (processor, sounding, withSource);
+
+                ringOutPeak = juce::jmax (ringOutPeak, sounding);
+                sourcelessAfterStop += (sounding - withSource) > 0 ? 1 : 0;
+            }
+
+            check (sourcelessAfterStop == 0,
+                   "and the invariant still holds through a stop, where voices are expected to remain: "
+                   "the claim is that whatever is still sounding has something to read, not that the "
+                   "pool is empty",
+                   juce::String (sourcelessAfterStop) + " of 8 post-stop blocks had a sourceless voice, "
+                       + "against a ring-out peak of " + juce::String (ringOutPeak) + " active");
+
+            processor.resetTransport();
+            activeVoiceCensus (processor, soundingNow, withSourceNow);
+
+            check (soundingNow == 0 && withSourceNow == 0,
+                   "the reset is the path that does empty it -- `releaseResources` -> `stopAllVoices` "
+                   "clears the flag and the source in the same loop, which is the pairing the "
+                   "`renderVoice` jassert stands guard over. Only `voices` is read here: `tails` has "
+                   "no accessor, so it stays this section's named blind spot",
+                   juce::String (soundingNow) + " voices still active after the reset");
+
+            held.deleteFile();
+            blip.deleteFile();
+        }
     }
 
     //======================================================================

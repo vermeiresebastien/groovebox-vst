@@ -562,17 +562,8 @@ public:
     /** Step that is sounding right now, or -1 when stopped. */
     int getCurrentStep() const noexcept { return currentStep.load(); }
 
-    /** The step whose onset is armed next, or -1. For diagnostics and tests. */
-    int getOnsetStep() const noexcept { return onsetStep; }
-
-    /** Playback head position, in steps from the start of the song. */
-    double getPositionInSteps() const noexcept { return position; }
-
     /** Where the engine places one step inside its bar, in steps. */
     double getStepOnsetInSteps (int step) const { return stepOnsetInSteps (step); }
-
-    /** Absolute position in steps of one step, given the bar the head is in. */
-    double getOnsetPositionInSteps (int step) const { return onsetPositionInSteps (step); }
 
     /**
         How much room one onset has before the next one, in steps.
@@ -1168,9 +1159,6 @@ private:
 
     /** The step whose onset has been armed, or -1 before the first one. */
     int onsetStep = -1;
-
-    /** Last step that actually fired, or -1 when stopped. */
-    int lastFired = -1;
 
     /** True while following a host's absolute musical time. */
     bool hostDriven = false;
