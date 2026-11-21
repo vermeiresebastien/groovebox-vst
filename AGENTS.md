@@ -5,6 +5,11 @@ ADSR, velocity, probability, strike count 1-8 and choke group, swing, late-only 
 humanize, four pattern slots per lane, master trim + peak meter). VST3 + Standalone.
 Plugin manufacturer code `Eruw`, product code `Grvb`, version from
 `project(... VERSION ...)` in [CMakeLists.txt](CMakeLists.txt).
+It answers to three names on purpose -- `Groovebox` (product), `Earworm` (the `COMPANY_NAME` JUCE writes
+into the bundle), and `Skeer Audio` (the installer publisher and the `HKLM\Software\Skeer` key) -- and that
+is documented in README rather than fixed: `COMPANY_NAME` and the manufacturer code are what a host stores
+against existing tracks, so changing either orphans every set that already holds this plugin. Do not
+"tidy" the naming in the binary.
 
 ## Deliverables: `launch/` is the one place to build, run and ship from
 
@@ -61,10 +66,19 @@ It is fully gitignored and nothing in it is authored in place.
   **Snapshot before you rebuild:** the next ship copies `launch/` to `out/launch-pre-<ship>` *before*
   running the `launch` target whenever the outgoing export has no such folder, because `launch/` and
   Program Files are the only two loose copies of a build and both are overwritten by design. The
-  `launch-pre-*` archives show the pattern working -- five of them now, the newest
+  `launch-pre-*` archives show the pattern working -- five of them at the time of writing, the newest
   `out/launch-pre-bef0699`, which is the `be65cfd` export kept with a `FROM.txt` and its four
   files SHA-256-matched before the `launch` target ran over them; it lapsed at `3c3f059`, whose
   bytes survived only inside its setup exe.
+  **It is no longer a habit.** Stage 5 of `tools/verify-build.ps1` archives `launch/` to
+  `out/launch-pre-<shortsha>` with a `FROM.txt` before the `launch` target can reach it, and stage 7 writes
+  `out/launch-manifest-<shortsha>` as a replayable record -- LF, no BOM, one separator, `<hash>  <path>` per
+  line, so `sha256sum -c` from the repo root answers "is the deliverable the build?" in four OK lines instead
+  of a person remembering to look. The first snapshot that way is `out/launch-pre-03a70e8`, whose four digests
+  are the 0.2.1 export above; the folder with the `.v1fmt` suffix beside it is the same archive as the
+  writer's first cut, kept to show what the separator and BOM fixes changed.
+  A manifest you can only read is a screenshot of a gate -- and `Out-File -Encoding utf8` on PowerShell 5.1 is
+  what writes the BOM, so these two files are written with `[IO.File]::WriteAllText` and an explicit encoder.
   `moduleinfo.json` is **not** build identity: one 1,404-byte file, `E7C65365...`, came out of four
   different builds (04:06, 12:40, 16:55 and the then-installed `3c3f059`), because it carries the version
   metadata rather than the code -- so it proves the payload is complete, never which build shipped.
@@ -823,6 +837,24 @@ gate. The two are not interchangeable and neither alone is the whole check; run 
   which is the *disclaimer*, so the claim it exists to prove is still true and the count that proves it
   is not. Ask the SCOPE line what it scopes -- a stated invariant checked by a line count dies the first
   time someone names the thing it disclaims in order to disclaim it.
+- **A line a tool *prints* is source code that has never been compiled until the tool runs.** `tools/verify-build.ps1`
+  warned "do NOT wrap it in `timeout N`" -- inside a double-quoted PowerShell string, where `` `t `` is a tab
+  escape, so the shipped banner read `wrap it in <TAB>imeout N`: the backtick and the `t` went into the tab and
+  the sentence about the trap lost its own subject. Same family, same file: `@("a"+$x, "b"+$y)` is ONE element, because the comma binds tighter
+  than `+`, which silently collapsed two `FROM.txt` header lines into one (`Count` was 1 where it should have
+  been 2). Both were invisible in the source and obvious in the log, so the rule for a harness is: read its
+  own output after every edit that touches a printed string, and put the escaping in a single-quoted literal.
+- **A verifier that reaches the end of its file has not therefore verified anything.** The first usable
+  version of `tools/verify-build.ps1` exited **0** having run zero stages: `$RepoRoot = (Split-Path -Parent $PSScriptRoot)`
+  as a *param default* raised "cannot bind ... empty string" (`$PSScriptRoot` is not populated that early), the
+  error went to stderr, and the driver only looked at `$LASTEXITCODE`. Fixes, both now in the file: resolve
+  paths in the **body** and refuse on a missing `CMakeLists.txt` with a loud exit 3, and end the script with an
+  explicit `exit 0` whose comment says what that 0 is a claim about. An implicit fall-through exit code is the
+  same defect as a suite that prints nothing and passes -- the absence of a failure is not a result.
+- **A count a doc quotes about a tool's own config is re-derived from that tool, not from the prose.**
+  `tools/README.md` said the citation gate sweeps "the five tracked docs" while both scripts hold a four-entry
+  `DOCS` list -- and the fifth markdown file in the tree (`tools/README.md` itself) is outside the gate, which
+  is worth saying rather than implying. When a sentence counts what code enumerates, print the code's list.
 
 ## Doc citations: a line number is a claim about one tree
 
@@ -1015,6 +1047,28 @@ because an exemption list needs a provenance exactly like a hash does.
   Lucky, not safe: the same content in a tree whose docs are newer than their last commit has no second
   copy at all. Read into a variable, then write; keep the pre-run bytes outside the file the script opens;
   and have the probe mutate a scratch copy, because its whole job is to be able to break something.
+- **A defect list is a snapshot, so every row and its heading name the same baseline.** `NEXT-STEPS.md` headed
+  its section A table "Status at `460b3bf`" and then said, in the sentence above it, that six items were
+  already fixed at **HEAD** -- two baselines in one paragraph, which is how **B4** survived: four confident
+  sentences about undo ("no `ValueTree::Listener` exists anywhere in `Source/`", "`getUndoManager()` has no
+  callers", "undo cannot be invoked at all", the clears "fire with no confirmation") that `990e4c2` had
+  discharged in full, gate included, at `Tests/SmokeTest.cpp:2956-2959` -- which asserts the *engine* takes the
+  pattern back, not merely the stored string. A section that advertises finished work as open costs the reader
+  a re-derivation session and then discounts the findings that are real. So: one baseline per section, stated
+  in the prose as well as the header, and a superseded row keeps its original claim with the discharging commit
+  named beside it -- annotate the supersession, never rewrite the finding. The same defect in its quiet form:
+  row 4's "no choke concept anywhere" was true at `460b3bf` (re-checked against that blob, zero hits) and is
+  false of every tree since, while the row said only "STILL OPEN".
+- **A runnable instruction must resolve in a fresh clone; a receipt keeps the path it ran from.** These sit one
+  grep apart and the fixes are opposite. `NEXT-STEPS.md` carries eleven mentions of `out/cite-pin.txt` and the
+  retired worktree's script copies, and the plan for this round said repoint them all -- which would have been
+  wrong twice. Two of them are inside past-tense sentences recording what a run printed on a specific tree,
+  and the number reported there came from *that* tree's exemption file, which is the paragraph's whole point;
+  rewriting the path to the promoted `tools/cite/` copy turns a receipt into a claim that cannot be reproduced
+  and reads like a correction. What was owed instead is a key at the top naming the current path for each
+  promoted tool, plus the archive folder for receipts whose worktree was retired. Tell the cases apart by the
+  verb: "run this" is a pointer you own and must resolve, "ran this and got" is a fact about a tree that no
+  longer exists.
 
 ## Installer conventions (Inno Setup 6 -- house template, with two deliberate divergences)
 

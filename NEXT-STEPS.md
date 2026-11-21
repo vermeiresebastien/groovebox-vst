@@ -9,11 +9,28 @@ because they did not survive the check (see A3).
 buildable on its own, with a gate that is supposed to fail before the fix. Phases 1 and 2 are done —
 see **G. Run record** at the end for what each step moved and what is still red.
 
+**Where the paths in this file live now.** This document is a running record, so most of it names a file by
+the path it had *when the sentence was written* — `out/wt-44/out/cite-audit.py`, `out/cite-pin.txt`,
+`out/verify-clone.ps1`. Those are receipts, and leaving them alone is deliberate: rewriting a receipt to
+today's path destroys the evidence that the run happened against that tree. Item 6.7 promoted the runnable
+copies, which are the ones to invoke: `tools/cite/cite-audit.py`, `tools/cite/cite-sweep.py`,
+`tools/cite/cite_pins.py`, `tools/cite/cite-pin.txt`, `tools/verify-sha.ps1` and `tools/verify-clone.ps1`.
+The retired worktrees, and the receipts that lived only inside them, are archived at
+`D:\Projects\tools\groovebox-worktree-evidence-2026-11-18\` — 518 files under `wt-44-out\`, among them the
+`56-T.txt` this file cites for the strip-plan gate and the `audit-14a-*.txt` pair `AGENTS.md` cites for the
+byte-identical promotion, each re-checked to exist before this sentence was written. So: to **run** a gate,
+use `tools/`; to **re-read** a quoted number, use the archive.
+
 ---
 
 ## A. Verified state — the 2026-11-14 review backlog is mostly stale
 
-The previous critical review ranked 8 items. Six are already fixed at HEAD. Re-deriving them would have
+**One baseline for this whole section: `460b3bf`.** Every status below, and the table header, mean "true of
+that tree" — not of HEAD, which has moved a long way since and closes more of it. Where a row has since
+closed, the row says so and names the commit, because a status that silently ages is how this section
+acquired the two false defects it now carries at **B4**.
+
+The previous critical review ranked 8 items. Six are already fixed at `460b3bf`. Re-deriving them would have
 wasted a session, so they are closed here with evidence.
 
 | Backlog item | Status at `460b3bf` | Evidence |
@@ -21,8 +38,8 @@ wasted a session, so they are closed here with evidence.
 | 1. `SpinLock` on the audio thread in `SampleStore` | **FIXED**, better than the proposed RCU | lock-free `std::array<std::atomic<Sample*>, 512>` with release/acquire pairs — `SampleStore.h:141`, `SampleStore.cpp:140,151`; two-thread stress test `Tests/SmokeTest.cpp:1409-1472` |
 | 2. No master section | **FIXED** | `Source/MasterBus.h:59-134`, trim −24..+6 dB default −2 (`Common.h:59-61`), peak/clip latch; tests at `SmokeTest.cpp:1240-1363` |
 | 3. Linear two-tap resampling | **FIXED** — redrum's kernel is already in | 24-tap / 1024-phase / 16-band windowed sinc, `Resampler.h:27-138`; aliasing test `SmokeTest.cpp:1663-1686` proves ≤ −30 dB octave-up fold-back |
-| 4. Voice stealing hard-cuts, no choke groups | **STILL OPEN** | oldest voice overwritten in place with no fade, `SequencerEngine.cpp:151-159`; same class of click at sample end `:390-395`; no choke concept anywhere |
-| 5. Undo contradicts its comments | **OPEN, and wronger than reported** | transactions now exist (`StepGridComponent.cpp:406,413`, `ChannelStrip.cpp:344-445`, `TransportBar.cpp:345,362`) and JUCE pops a whole drag as one step — but nothing reads the tree back; see B4 |
+| 4. Voice stealing hard-cuts, no choke groups | **STILL OPEN** — *choke half closed since, steal-fade still open* | oldest voice overwritten in place with no fade, `SequencerEngine.cpp:151-159`; same class of click at sample end `:390-395`; no choke concept anywhere — that last clause was true at `460b3bf` (re-checked: `git show 460b3bf:Source/SequencerEngine.h` holds no `chokeGroup`) and is false now, where choke groups are a documented lane control with their own budget in `Common.h`; what remains open is the *steal without a fade*, which is why the row is not closed |
+| 5. Undo contradicts its comments | **OPEN, and wronger than reported** — *closed since, by `990e4c2`* | transactions now exist (`StepGridComponent.cpp:406,413`, `ChannelStrip.cpp:344-445`, `TransportBar.cpp:345,362`) and JUCE pops a whole drag as one step — but nothing reads the tree back; see B4, whose supersession note carries the evidence |
 | 6. Standalone clock drifts early | **NOT PRESENT** — the review analysed `67cdf4a`, not HEAD | head advances only by rendered whole samples (`SequencerEngine.cpp:598,613`), the floor residual stays in the head and is re-measured each block; onset error is bounded in (−1, 0] samples, non-monotonic. The "511.5 samples early" figure is the *old* code |
 | 6b. "Multi-bar test must be written first" | **ALREADY EXISTS and passes** | `SmokeTest.cpp:1519-1593`: 32 bars @120/256, 16 @300/4096, 24 @127/333, worst onset error ≤ 2 samples |
 | 7. `getTailLengthSeconds()` 2.0 vs 4 s release | **FIXED** | `PluginProcessor.h:58` returns `Layout::maxReleaseSeconds` (4.0, `Common.h:39`) |
@@ -112,6 +129,24 @@ atomics over the undone string. Also `getUndoManager()` (`PluginProcessor.h:244`
 is no `KeyPressMapping` / `ApplicationCommandTarget` in the repo, so undo cannot be invoked at all. A
 mis-drag that paints a run across a row (`StepGridComponent.cpp:599-612`) is unrecoverable, and "Clear
 pattern" (`TransportBar::handleClearPatternClicked`) / "Clear row" (`ChannelStrip::handleClearRowClicked`) fire with no confirmation.
+
+> **B4 is superseded in full by `990e4c2`, and the sentence that carried it was the third one.** True of
+> `460b3bf`, false of every tree since — kept above because that is what the audit found there.
+> `GrooveboxProcessor` *is* a `juce::ValueTree::Listener` (`PluginProcessor.h`, the base list and the
+> `valueTreePropertyChanged` override; registered on `apvts.state` in the constructor and in
+> `setStateInformation`), and that handler calls `applyPatternFromState ()` behind an
+> `isGridProperty`/`pushingPatternToState` guard. That is exactly the door B4 said did not exist: the undo
+> manager restores the string and the listener carries it into the atomics. `getUndoManager ()` has a caller
+> (`PluginEditor.cpp`'s `undoOrRedo`, reached by the hand-matched `keyPressed` for Cmd/Ctrl+Z, Shift+Z and
+> Ctrl+Y — deliberately not a `CommandManager`, so the plugin stays out of the host's keys), so undo *is*
+> invokable, and both clears ask first (`TransportBar.cpp` "Clear the whole pattern?", `ChannelStrip.cpp`
+> "Clear this row?", each an `AlertWindow::showAsync` so no modal loop runs on the editor thread). The gap is
+> gated rather than merely closed: `Tests/SmokeTest.cpp:2956-2959` asserts "undo takes the engine's pattern
+> back too" — the engine, not only the stored string — with redo arms at `:12386` and `:12406`.
+> What the correction does *not* buy: `isGridProperty` watches the pattern, the bank's slot records and the
+> two lane lists, and no parameters, because `parameterChanged` already writes those atomics. So "the engine
+> atomics are untouched" stays a true warning about any code path that edits the tree without going through a
+> parameter or a watched grid property.
 
 **B5 — A host-automated parameter allocates on the audio thread, and the header says it cannot.**
 `parameterChanged` parses the id with two `juce::String::substring` calls (`PluginProcessor.cpp:92,97`).

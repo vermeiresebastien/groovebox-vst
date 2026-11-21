@@ -21,7 +21,7 @@ param(
     [string]$Sha      = '',
     [string]$RepoRoot = '',
     [string]$Dest     = '',
-    [string]$Generator = 'Visual Studio 18 2026',
+    [string]$Generator = '',
     [int]   $WantSmoke   = 628,
     [int]   $WantLayout  = 698,
     [int]   $WantPlan    = 86,
@@ -62,7 +62,7 @@ Say "=== Groovebox clone verification ==========================================
 Say ("SHA        : " + $Sha)
 Say ("REPO       : " + $repo)
 Say ("DEST       : " + $Dest)
-Say ("GENERATOR  : " + $Generator)
+Say ("GENERATOR  : " + $(if ($Generator) { $Generator } else { 'auto -- newest installed (no -G passed)' }))
 Say ("SCOPE      : three test suites + ctest. No plugin target. launch/ untouched.")
 Say ("START      : " + (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'))
 
@@ -117,8 +117,19 @@ Say ("  licence files in the clone : " + $(if ($licence.Count) { $licence -join 
 
 # ---- 3. configure (this is where JUCE gets fetched from GitHub) ---------------
 Say "`n[3] configure -- external/JUCE is gitignored, so the clone must fetch it"
-$rc = Run "cmake configure" "$log\03-configure.log" {
-    cmake -S $Dest -B (Join-Path $Dest 'build') -G $Generator -A x64
+# An empty -Generator means "let CMake choose the newest installed generator", which is what makes
+# this gate runnable on a machine that does not have the one this project was first built with. The
+# two branches are spelled out rather than splatting an argument array into the Run helper's
+# scriptblock, because a scope slip there would show up as a confusing configure error, not as a
+# missing flag.
+if ($Generator) {
+    $rc = Run "cmake configure" "$log\03-configure.log" {
+        cmake -S $Dest -B (Join-Path $Dest 'build') -G $Generator -A x64
+    }
+} else {
+    $rc = Run "cmake configure" "$log\03-configure.log" {
+        cmake -S $Dest -B (Join-Path $Dest 'build') -A x64
+    }
 }
 if ($rc -ne 0) { Say "FAILED: configure. Tail:"; Get-Content "$log\03-configure.log" -Tail 25; exit 1 }
 $juce = Join-Path $Dest 'external/JUCE/CMakeLists.txt'

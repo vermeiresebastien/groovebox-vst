@@ -744,9 +744,13 @@ Requirements: **CMake 3.22+**, **Visual Studio 2022 or newer** with the C++
 workload (or another C++17 compiler), and **git**.
 
 ```powershell
-cmake -S . -B build-new -G "Visual Studio 18 2026" -A x64
+cmake -S . -B build-new -A x64
 cmake --build build-new --config Release --parallel 2
 ```
+
+No `-G`: CMake picks the newest generator it finds, which is what makes the requirement above read "2022 or
+newer" rather than naming one IDE year. The build that produced the shipped binaries was configured with
+`-G "Visual Studio 18 2026"` on a machine holding that toolset, and nothing in the project depends on it.
 
 `--parallel 2` is not a typo. On this machine MSVC 14.51 fails intermittently
 with "internal compiler error" / `D8040` when too many `cl.exe` processes run at
@@ -879,6 +883,18 @@ Search those for the plugin name; a bug in this plugin was diagnosed that way
 Two things can stop a rebuild from reaching Live: Live holds the plugin DLL open
 while it is running, so quit it before replacing the bundle, and Windows Explorer
 will not overwrite a bundle that is in use.
+
+### The three names in that list are the same product
+
+`Groovebox` is the product, and you see it in the window title, the plugin browser entry and the setup file
+name. `Earworm` is the company name the binary carries — JUCE writes it into the bundle metadata, and a host
+that records a manufacturer *name* rather than the four-character code will show it. `Skeer Audio` is the
+publisher: the installer's own identity, the Add/Remove programs entry and the `HKLM\Software\Skeer` key.
+
+They are not a leftover to be tidied. The company name and the `Eruw` manufacturer code are what a host stores
+against the tracks that already hold this plugin, so changing either one is a rename as far as every existing
+set is concerned — a session pointing at the old identity silently loses its device. The three therefore stay
+as they are, and the only right answer to the inconsistency is this paragraph saying it out loud.
 
 ## Verifying
 

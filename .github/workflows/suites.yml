@@ -1,0 +1,56 @@
+name: suites
+
+# The tracked gate, off one machine. This is deliberately the *replay* form: CTest does not
+# build (measured in ecfe76c -- with a broken GenrePatterns.h and no rebuild, ctest reported 4/4
+# while the sources no longer matched the binaries), so the build step has to run first and the
+# suites have to be built per target. `out/run-gate.ps1` stays the local gate that also refuses an
+# exe older than its own inputs; this job is what makes a red commit visible outside this machine.
+#
+# Scope, stated so nobody reads more into a green tick than it holds: the three test suites and the
+# source guard. No `launch` target, no plugin binary, no installer -- so CI can never overwrite
+# `launch/` while a ship gate is hashing it.
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+  workflow_dispatch:
+
+jobs:
+  suites:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history: the citation tooling reads a named base commit, and a shallow clone
+          # would turn a working gate into a failure that says nothing about the code.
+          fetch-depth: 0
+
+      - name: Configure
+        # The generator is pinned here, and only here. The README tells a human to omit -G so
+        # CMake picks whatever they have; CI wants the same toolset on every run, and windows-2022
+        # is the image that carries VS 2022.
+        run: cmake -S . -B build-new -G "Visual Studio 17 2022" -A x64
+
+      - name: Build the three suites (per target, parallel 2, no /MP)
+        # --parallel 2 with no /MP: MSVC 14.51 emits intermittent D8040 internal compiler errors on
+        # JUCE's larger modules when both layers parallelise. If a run dies that way, re-run the job
+        # -- it is not a code error, and it is not a reason to add /MP.
+        run: >-
+          cmake --build build-new --config Release --parallel 2
+          --target GrooveboxSmokeTest GrooveboxLayoutTest GrooveboxPatternPlanTest
+
+      - name: Run ctest (four entries, each with a PASS_REGULAR_EXPRESSION)
+        # -V, not the quiet form: the regexes are the assertions, and a run that prints nothing has
+        # to fail -- which it does, but only the verbose log lets a reader see why it failed.
+        run: ctest --test-dir build-new -C Release -V
+
+      - name: Upload the ctest log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ctest-log
+          path: build-new/Testing
+          if-no-files-found: warn
+          retention-days: 14
